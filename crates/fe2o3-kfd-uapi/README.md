@@ -155,6 +155,22 @@ prove ownership or one-shot lifecycle state. No queue request is exposed as a
 method on `AdmittedKfdUapi`, because a successful KFD 1.18 version query does
 not authenticate the queue schema or any active driver semantics.
 
+The separate gfx942 queue-resource output schema admits only numeric outputs
+from an already successful CREATE_QUEUE operation. It records that process
+queue slot zero is valid, bounds the active PQM slot to 0..1023, and validates
+the non-MES doorbell mmap type, GPU-ID hash, 8192-byte process slice, and
+8-byte offset alignment. Its types still grant no queue, mmap, MMIO, or
+doorbell-store authority. The caller must independently validate ioctl success,
+unchanged inputs, allocation ownership, currentness, and lifecycle state.
+The output decomposition clears the full 8191-byte slice mask to produce a
+canonical encoded process-slice offset observation and retains the low bits as
+the in-process byte offset. This follows active ROCr's SOC15 path. Clearing only
+the 4095-byte page mask would incorrectly retain the second-page selector for
+offsets from 4096 through 8184. Active KFD requires the doorbell VMA length to
+equal the complete 8192-byte non-MES process slice; it selects the device from
+the encoded high fields and maps that whole allocation. The decomposed
+integers remain observations, not an executable mmap plan.
+
 The memory records are wire data, not resource wrappers. Addresses and handles
 remain opaque integers. Allocation construction zeros the output handle and
 mmap offset. Map and unmap construction distinguishes an initial request from a
@@ -181,7 +197,7 @@ recomputed in tests. These manifests identify reviewed userspace content;
 running kernel, module, boot, device, and process identities remain separate
 contracted observations.
 
-The independent C oracle is preserved at
+The independent C ABI oracle is preserved at
 `tests/oracles/kfd_uapi_1_18.c`. On the reviewed host it is built directly
 against the active header with:
 
@@ -190,6 +206,12 @@ cc -std=c11 -Wall -Wextra -Werror \
   -I/usr/src/amdgpu-6.16.13-2341068.24.04/include/uapi \
   tests/oracles/kfd_uapi_1_18.c -o /tmp/kfd-uapi-oracle
 ```
+
+`tests/oracles/run-kfd-gfx942-queue-resources-oracle.sh` separately hashes
+the exact active kernel and ROCr source set, compiles a C formula oracle
+against the active KFD header, and prints the queue-ID, CWSR, ring, EOP,
+counter, doorbell, and ROCr flag goldens. This source-profile oracle is
+read-only and creates no queue.
 
 ## Fail-closed boundary
 

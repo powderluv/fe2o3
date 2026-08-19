@@ -20,6 +20,9 @@ pub const KFD_MEMORY_LIFECYCLE_SCHEMA_ID: &str = "linux-kfd-memory-lifecycle-1.1
 pub const KFD_AQL_QUEUE_LIFECYCLE_SCHEMA_ID: &str =
     "linux-kfd-aql-queue-lifecycle-1.18-generic-ioc-v1";
 
+/// Stable name of the reviewed gfx942 CREATE_QUEUE output-observation schema.
+pub const KFD_GFX942_QUEUE_RESOURCE_SCHEMA_ID: &str = "linux-kfd-gfx942-queue-resources-1.18-v1";
+
 /// Path of the Linux UAPI header from which this schema was reviewed.
 pub const KFD_UAPI_SOURCE_HEADER: &str = "include/uapi/linux/kfd_ioctl.h";
 
@@ -106,6 +109,10 @@ pub const KFD_AQL_QUEUE_GC9_SH_MASK_HEADER_SHA256: &str =
 /// SHA-256 of the active gfx9.4.3 register field definitions used by gfx942.
 pub const KFD_AQL_QUEUE_GC943_SH_MASK_HEADER_SHA256: &str =
     "8ee3fb2c721703a1643c118502e2900bd622b4d8d287103bd53922f92d35611b";
+
+/// SHA-256 of the active driver's doorbell implementation.
+pub const KFD_GFX942_QUEUE_DOORBELL_SOURCE_SHA256: &str =
+    "de30437ee1ed9ccbdaf855899482c0bebb7f55adc120ac712c96cadef1a0ec6d";
 
 /// Canonical content manifest for the frozen R1 discovery and identity schema.
 ///
@@ -250,6 +257,42 @@ pub const KFD_AQL_QUEUE_LIFECYCLE_SCHEMA_MANIFEST_SHA256_BYTES: [u8; 32] = [
     0x0c, 0x8a, 0x33, 0xac, 0xb9, 0x8f, 0x74, 0xcb, 0xa2, 0xa8, 0x2e, 0x95, 0xfa, 0x18, 0x5c, 0x4e,
 ];
 
+/// Canonical manifest for reviewed gfx942 CREATE_QUEUE output observations.
+///
+/// This composes, but does not modify, the frozen queue-lifecycle schema. It
+/// identifies validation of kernel-written numeric fields only. It grants no
+/// queue ownership, doorbell mapping or MMIO authority, and it does not make a
+/// successful ioctl trustworthy.
+pub const KFD_GFX942_QUEUE_RESOURCE_SCHEMA_MANIFEST: &str = concat!(
+    "schema_id=linux-kfd-gfx942-queue-resources-1.18-v1\n",
+    "queue_schema_id=linux-kfd-aql-queue-lifecycle-1.18-generic-ioc-v1\n",
+    "queue_schema_manifest_sha256=b11f3c8c766dd25394350646e35269e10c8a33acb98f74cba2a82e95fa185c4e\n",
+    "target=linux-x86_64,gfx942,kfd:1.18,non-mes\n",
+    "pqm_source=amd/amdkfd/kfd_process_queue_manager.c\n",
+    "pqm_source_sha256=8526e258824dbe145e4209cf0fed26463729234ba24369f39e3413e7e6e028db\n",
+    "doorbell_source=amd/amdkfd/kfd_doorbell.c\n",
+    "doorbell_source_sha256=de30437ee1ed9ccbdaf855899482c0bebb7f55adc120ac712c96cadef1a0ec6d\n",
+    "device_source=amd/amdkfd/kfd_device.c\n",
+    "device_source_sha256=ccf20227c5cdd5b258758f50f61bbc1008a09ea776c101f035f83963e7d23037\n",
+    "priv_header=amd/amdkfd/kfd_priv.h\n",
+    "priv_header_sha256=f991330031c14725b2be0636ec1896ab530dc3d07d530ebd4f47efff97a82a99\n",
+    "queue_id=first-zero-slot,range:0..1023,zero-valid,max-sentinel-invalid\n",
+    "doorbell=type:3,type-shift:62,gpu-id-hash-shift:46,gpu-id-hash-bits:16\n",
+    "gfx942_doorbell=width:8,process-slice:8192,offset-alignment:8\n",
+    "doorbell_decomposition=encoded-process-slice-offset:raw&~8191,in-process-byte-offset:raw&8191,not-page-mask\n",
+    "authority=observation-only,no-queue,no-mmap,no-mmio\n",
+);
+
+/// SHA-256 of the gfx942 queue-resource schema manifest.
+pub const KFD_GFX942_QUEUE_RESOURCE_SCHEMA_MANIFEST_SHA256: &str =
+    "63753a9c0dcef0f69e0235b95b44fe6ce22cb5b0d1df6f60a971a5ed28f15904";
+
+/// Typed digest bytes of the gfx942 queue-resource schema manifest.
+pub const KFD_GFX942_QUEUE_RESOURCE_SCHEMA_MANIFEST_SHA256_BYTES: [u8; 32] = [
+    0x63, 0x75, 0x3a, 0x9c, 0x0d, 0xce, 0xf0, 0xf6, 0x9e, 0x02, 0x35, 0xb9, 0x5b, 0x44, 0xfe, 0x6c,
+    0xe2, 0x2c, 0xb5, 0xb0, 0xd1, 0xdf, 0x6f, 0x60, 0xa9, 0x71, 0xa5, 0xed, 0x28, 0xf1, 0x59, 0x04,
+];
+
 /// Major version declared by the reviewed AMDGPU 6.16.13 KFD UAPI header.
 pub const KFD_IOCTL_MAJOR_VERSION: u32 = 1;
 
@@ -311,6 +354,148 @@ pub const KFD_MAX_QUEUE_PRIORITY: u32 = 15;
 
 /// Minimum queue ring size declared by KFD UAPI 1.18.
 pub const KFD_MIN_QUEUE_RING_SIZE: u32 = 1024;
+
+/// Number of process queue slots in the active KFD PQM bitmap.
+pub const KFD_MAX_QUEUE_SLOTS_PER_PROCESS: u32 = 1024;
+
+/// gfx942 doorbell width reported by the active non-MES device profile.
+pub const KFD_GFX942_DOORBELL_BYTES: u64 = 8;
+
+/// Non-MES per-process doorbell slice rounded to the active 4096-byte page.
+pub const KFD_GFX942_PROCESS_DOORBELL_SLICE_BYTES: u64 = 8192;
+
+/// Internal KFD mmap type used for doorbells.
+pub const KFD_MMAP_TYPE_DOORBELL: u64 = 3;
+
+/// Shift of the two-bit KFD mmap type field.
+pub const KFD_MMAP_TYPE_SHIFT: u32 = 62;
+
+/// Shift of the 16-bit GPU-ID hash in an encoded KFD mmap offset.
+pub const KFD_MMAP_GPU_ID_HASH_SHIFT: u32 = 46;
+
+const KFD_MMAP_GPU_ID_HASH_MASK: u64 = 0xffff;
+const KFD_MMAP_OFFSET_MASK: u64 = (1_u64 << KFD_MMAP_GPU_ID_HASH_SHIFT) - 1;
+
+/// A returned process queue slot admitted under the active PQM source profile.
+///
+/// Slot zero is valid: a zeroed process bitmap allocates it first.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct KfdQueueIdObservation(u32);
+
+impl KfdQueueIdObservation {
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+}
+
+/// A checked encoded gfx942 doorbell offset observation.
+///
+/// This is still an untrusted integer observation. It does not authorize an
+/// mmap, a doorbell store, or any queue operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KfdGfx942DoorbellOffsetObservation {
+    raw: u64,
+    encoded_process_slice_offset: u64,
+    in_process_byte_offset: u64,
+}
+
+impl KfdGfx942DoorbellOffsetObservation {
+    pub const fn raw(self) -> u64 {
+        self.raw
+    }
+
+    /// Canonical encoded offset observation for the complete process slice.
+    ///
+    /// On SOC15, active ROCr clears the complete 8192-byte process-slice mask,
+    /// not merely the 4096-byte page mask. The active KFD mmap path requires an
+    /// exact 8192-byte VMA and uses the high mmap-type/GPU-ID fields to select
+    /// the process doorbell allocation. This integer remains non-authoritative.
+    pub const fn encoded_process_slice_offset(self) -> u64 {
+        self.encoded_process_slice_offset
+    }
+
+    pub const fn in_process_byte_offset(self) -> u64 {
+        self.in_process_byte_offset
+    }
+}
+
+/// Checked numeric outputs of a successful gfx942 CREATE_QUEUE ioctl.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KfdGfx942CreateQueueOutputs {
+    queue_id: KfdQueueIdObservation,
+    doorbell_offset: KfdGfx942DoorbellOffsetObservation,
+}
+
+impl KfdGfx942CreateQueueOutputs {
+    pub const fn queue_id(self) -> KfdQueueIdObservation {
+        self.queue_id
+    }
+
+    pub const fn doorbell_offset(self) -> KfdGfx942DoorbellOffsetObservation {
+        self.doorbell_offset
+    }
+}
+
+/// Why kernel-written gfx942 CREATE_QUEUE outputs were not admitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KfdGfx942CreateQueueOutputError {
+    QueueIdOutOfRange { queue_id: u32 },
+    DoorbellMmapType { observed: u64 },
+    DoorbellGpuIdHash { expected: u16, observed: u16 },
+    DoorbellOffsetOutOfRange { offset: u64 },
+    DoorbellOffsetMisaligned { offset: u64 },
+}
+
+/// Admits the numeric outputs of an already successful CREATE_QUEUE ioctl.
+///
+/// The caller must separately prove syscall success and unchanged inputs. This
+/// function only checks the pinned active-driver slot and encoded-offset
+/// profile. It deliberately does not create authority.
+pub const fn admit_kfd_gfx942_create_queue_outputs(
+    queue_id: u32,
+    raw_doorbell_offset: u64,
+    gpu_id: u32,
+) -> Result<KfdGfx942CreateQueueOutputs, KfdGfx942CreateQueueOutputError> {
+    if queue_id >= KFD_MAX_QUEUE_SLOTS_PER_PROCESS {
+        return Err(KfdGfx942CreateQueueOutputError::QueueIdOutOfRange { queue_id });
+    }
+
+    let observed_type = raw_doorbell_offset >> KFD_MMAP_TYPE_SHIFT;
+    if observed_type != KFD_MMAP_TYPE_DOORBELL {
+        return Err(KfdGfx942CreateQueueOutputError::DoorbellMmapType {
+            observed: observed_type,
+        });
+    }
+
+    let observed_hash =
+        ((raw_doorbell_offset >> KFD_MMAP_GPU_ID_HASH_SHIFT) & KFD_MMAP_GPU_ID_HASH_MASK) as u16;
+    let expected_hash = (gpu_id & KFD_MMAP_GPU_ID_HASH_MASK as u32) as u16;
+    if observed_hash != expected_hash {
+        return Err(KfdGfx942CreateQueueOutputError::DoorbellGpuIdHash {
+            expected: expected_hash,
+            observed: observed_hash,
+        });
+    }
+
+    let offset = raw_doorbell_offset & KFD_MMAP_OFFSET_MASK;
+    if offset >= KFD_GFX942_PROCESS_DOORBELL_SLICE_BYTES {
+        return Err(KfdGfx942CreateQueueOutputError::DoorbellOffsetOutOfRange { offset });
+    }
+    if !offset.is_multiple_of(KFD_GFX942_DOORBELL_BYTES) {
+        return Err(KfdGfx942CreateQueueOutputError::DoorbellOffsetMisaligned { offset });
+    }
+
+    Ok(KfdGfx942CreateQueueOutputs {
+        queue_id: KfdQueueIdObservation(queue_id),
+        doorbell_offset: KfdGfx942DoorbellOffsetObservation {
+            raw: raw_doorbell_offset,
+            encoded_process_slice_offset: raw_doorbell_offset
+                & !(KFD_GFX942_PROCESS_DOORBELL_SLICE_BYTES - 1),
+            in_process_byte_offset: offset,
+        },
+    })
+}
 
 /// An exact, reviewed allocation-flag profile accepted by fe2o3's R2 builder.
 ///

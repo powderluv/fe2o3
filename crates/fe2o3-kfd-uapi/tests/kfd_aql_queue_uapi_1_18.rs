@@ -12,13 +12,18 @@ use fe2o3_kfd_uapi::{
     KFD_AQL_QUEUE_LIFECYCLE_SCHEMA_MANIFEST_SHA256_BYTES, KFD_AQL_QUEUE_MQD_MANAGER_HEADER_SHA256,
     KFD_AQL_QUEUE_PACKET_MANAGER_SOURCE_SHA256, KFD_AQL_QUEUE_PQM_SOURCE_SHA256,
     KFD_AQL_QUEUE_PRIV_SOURCE_SHA256, KFD_AQL_QUEUE_V9_STRUCTS_HEADER_SHA256,
-    KFD_IOC_QUEUE_TYPE_COMPUTE_AQL, KFD_MAX_QUEUE_PERCENTAGE, KFD_MAX_QUEUE_PRIORITY,
+    KFD_GFX942_DOORBELL_BYTES, KFD_GFX942_PROCESS_DOORBELL_SLICE_BYTES,
+    KFD_GFX942_QUEUE_DOORBELL_SOURCE_SHA256, KFD_GFX942_QUEUE_RESOURCE_SCHEMA_ID,
+    KFD_GFX942_QUEUE_RESOURCE_SCHEMA_MANIFEST, KFD_GFX942_QUEUE_RESOURCE_SCHEMA_MANIFEST_SHA256,
+    KFD_GFX942_QUEUE_RESOURCE_SCHEMA_MANIFEST_SHA256_BYTES, KFD_IOC_QUEUE_TYPE_COMPUTE_AQL,
+    KFD_MAX_QUEUE_PERCENTAGE, KFD_MAX_QUEUE_PRIORITY, KFD_MAX_QUEUE_SLOTS_PER_PROCESS,
     KFD_MEMORY_LIFECYCLE_SCHEMA_MANIFEST_SHA256, KFD_MIN_QUEUE_RING_SIZE,
+    KFD_MMAP_GPU_ID_HASH_SHIFT, KFD_MMAP_TYPE_DOORBELL, KFD_MMAP_TYPE_SHIFT,
     KFD_UAPI_SCHEMA_MANIFEST_SHA256, KfdAqlComputeQueueBuffers, KfdAqlQueueRingAddressError,
-    KfdAqlQueueRingSizeError, KfdIoctlCreateQueueArgs, KfdIoctlDestroyQueueArgs,
-    KfdIoctlUpdateQueueArgs, KfdQueuePercentageError, KfdQueuePriorityError,
-    admit_kfd_aql_queue_ring_address, admit_kfd_aql_queue_ring_size, admit_kfd_queue_percentage,
-    admit_kfd_queue_priority,
+    KfdAqlQueueRingSizeError, KfdGfx942CreateQueueOutputError, KfdIoctlCreateQueueArgs,
+    KfdIoctlDestroyQueueArgs, KfdIoctlUpdateQueueArgs, KfdQueuePercentageError,
+    KfdQueuePriorityError, admit_kfd_aql_queue_ring_address, admit_kfd_aql_queue_ring_size,
+    admit_kfd_gfx942_create_queue_outputs, admit_kfd_queue_percentage, admit_kfd_queue_priority,
 };
 use sha2::{Digest, Sha256};
 
@@ -48,6 +53,128 @@ fn queue_schema_is_separate_and_composes_with_frozen_prerequisites() {
     assert_eq!(
         &digest[..],
         &KFD_AQL_QUEUE_LIFECYCLE_SCHEMA_MANIFEST_SHA256_BYTES
+    );
+}
+
+#[test]
+fn gfx942_output_schema_is_separate_and_composes_with_queue_schema() {
+    assert_eq!(
+        KFD_GFX942_QUEUE_RESOURCE_SCHEMA_ID,
+        "linux-kfd-gfx942-queue-resources-1.18-v1"
+    );
+    assert!(KFD_GFX942_QUEUE_RESOURCE_SCHEMA_MANIFEST.contains(
+        "queue_schema_manifest_sha256=b11f3c8c766dd25394350646e35269e10c8a33acb98f74cba2a82e95fa185c4e"
+    ));
+    assert!(
+        KFD_GFX942_QUEUE_RESOURCE_SCHEMA_MANIFEST
+            .contains("queue_id=first-zero-slot,range:0..1023,zero-valid,max-sentinel-invalid")
+    );
+    assert_eq!(
+        KFD_GFX942_QUEUE_DOORBELL_SOURCE_SHA256,
+        "de30437ee1ed9ccbdaf855899482c0bebb7f55adc120ac712c96cadef1a0ec6d"
+    );
+
+    let digest = Sha256::digest(KFD_GFX942_QUEUE_RESOURCE_SCHEMA_MANIFEST);
+    assert_eq!(
+        hex(&digest),
+        KFD_GFX942_QUEUE_RESOURCE_SCHEMA_MANIFEST_SHA256
+    );
+    assert_eq!(
+        &digest[..],
+        &KFD_GFX942_QUEUE_RESOURCE_SCHEMA_MANIFEST_SHA256_BYTES
+    );
+}
+
+const fn encoded_doorbell(gpu_id: u32, offset: u64) -> u64 {
+    (KFD_MMAP_TYPE_DOORBELL << KFD_MMAP_TYPE_SHIFT)
+        | (((gpu_id & 0xffff) as u64) << KFD_MMAP_GPU_ID_HASH_SHIFT)
+        | offset
+}
+
+#[test]
+fn gfx942_create_outputs_admit_zero_queue_id_and_exact_doorbell_geometry() {
+    let gpu_id = 73;
+    let raw = encoded_doorbell(gpu_id, 24);
+    let outputs = admit_kfd_gfx942_create_queue_outputs(0, raw, gpu_id).unwrap();
+
+    assert_eq!(outputs.queue_id().value(), 0);
+    assert_eq!(outputs.doorbell_offset().raw(), raw);
+    assert_eq!(outputs.doorbell_offset().in_process_byte_offset(), 24);
+    assert_eq!(
+        outputs.doorbell_offset().encoded_process_slice_offset(),
+        raw & !(KFD_GFX942_PROCESS_DOORBELL_SLICE_BYTES - 1)
+    );
+    assert_eq!(KFD_MAX_QUEUE_SLOTS_PER_PROCESS, 1024);
+    assert_eq!(KFD_GFX942_DOORBELL_BYTES, 8);
+    assert_eq!(KFD_GFX942_PROCESS_DOORBELL_SLICE_BYTES, 8192);
+
+    assert_eq!(
+        admit_kfd_gfx942_create_queue_outputs(1023, encoded_doorbell(gpu_id, 8184), gpu_id)
+            .unwrap()
+            .queue_id()
+            .value(),
+        1023
+    );
+}
+
+#[test]
+fn gfx942_create_outputs_fail_closed_on_sentinels_and_malformed_offsets() {
+    let gpu_id = 0x1234_5678;
+    let valid = encoded_doorbell(gpu_id, 0);
+
+    assert_eq!(
+        admit_kfd_gfx942_create_queue_outputs(1024, valid, gpu_id),
+        Err(KfdGfx942CreateQueueOutputError::QueueIdOutOfRange { queue_id: 1024 })
+    );
+    assert_eq!(
+        admit_kfd_gfx942_create_queue_outputs(u32::MAX, valid, gpu_id),
+        Err(KfdGfx942CreateQueueOutputError::QueueIdOutOfRange { queue_id: u32::MAX })
+    );
+    assert_eq!(
+        admit_kfd_gfx942_create_queue_outputs(0, 0, gpu_id),
+        Err(KfdGfx942CreateQueueOutputError::DoorbellMmapType { observed: 0 })
+    );
+    assert_eq!(
+        admit_kfd_gfx942_create_queue_outputs(0, encoded_doorbell(gpu_id + 1, 0), gpu_id),
+        Err(KfdGfx942CreateQueueOutputError::DoorbellGpuIdHash {
+            expected: 0x5678,
+            observed: 0x5679
+        })
+    );
+    assert_eq!(
+        admit_kfd_gfx942_create_queue_outputs(
+            0,
+            encoded_doorbell(gpu_id, KFD_GFX942_PROCESS_DOORBELL_SLICE_BYTES),
+            gpu_id
+        ),
+        Err(KfdGfx942CreateQueueOutputError::DoorbellOffsetOutOfRange {
+            offset: KFD_GFX942_PROCESS_DOORBELL_SLICE_BYTES
+        })
+    );
+    assert_eq!(
+        admit_kfd_gfx942_create_queue_outputs(0, encoded_doorbell(gpu_id, 7), gpu_id),
+        Err(KfdGfx942CreateQueueOutputError::DoorbellOffsetMisaligned { offset: 7 })
+    );
+}
+
+#[test]
+fn gfx942_doorbell_decomposition_uses_the_full_process_slice() {
+    let gpu_id = 0x1234;
+    for offset in [0, 4096, 8184] {
+        let raw = encoded_doorbell(gpu_id, offset);
+        let observed = admit_kfd_gfx942_create_queue_outputs(0, raw, gpu_id)
+            .unwrap()
+            .doorbell_offset();
+        assert_eq!(observed.in_process_byte_offset(), offset);
+        assert_eq!(
+            observed.encoded_process_slice_offset(),
+            encoded_doorbell(gpu_id, 0)
+        );
+    }
+
+    assert_eq!(
+        admit_kfd_gfx942_create_queue_outputs(0, encoded_doorbell(gpu_id, 8192), gpu_id),
+        Err(KfdGfx942CreateQueueOutputError::DoorbellOffsetOutOfRange { offset: 8192 })
     );
 }
 

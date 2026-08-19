@@ -165,6 +165,9 @@ pub struct AmdgpuModuleObservation {
     inode: u64,
     version: Option<String>,
     srcversion: Option<String>,
+    mes: Option<i32>,
+    sched_policy: Option<i32>,
+    cwsr_enable: Option<i32>,
 }
 
 impl AmdgpuModuleObservation {
@@ -182,6 +185,21 @@ impl AmdgpuModuleObservation {
 
     pub fn srcversion(&self) -> Option<&str> {
         self.srcversion.as_deref()
+    }
+
+    /// Raw read-only module-parameter observation.
+    pub const fn mes(&self) -> Option<i32> {
+        self.mes
+    }
+
+    /// Raw read-only module-parameter observation.
+    pub const fn sched_policy(&self) -> Option<i32> {
+        self.sched_policy
+    }
+
+    /// Raw read-only module-parameter observation.
+    pub const fn cwsr_enable(&self) -> Option<i32> {
+        self.cwsr_enable
     }
 }
 
@@ -388,6 +406,12 @@ impl TopologyProvenance {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GpuCapacityObservation {
     simd_count: u32,
+    simd_per_cu: u32,
+    array_count: u32,
+    simd_arrays_per_engine: u32,
+    lds_size_in_kb: u32,
+    max_waves_per_simd: u32,
+    compute_queue_count: u32,
     memory_bank_count: u32,
     cache_count: u32,
     io_link_count: u32,
@@ -399,6 +423,30 @@ pub struct GpuCapacityObservation {
 impl GpuCapacityObservation {
     pub const fn simd_count(self) -> u32 {
         self.simd_count
+    }
+
+    pub const fn simd_per_cu(self) -> u32 {
+        self.simd_per_cu
+    }
+
+    pub const fn array_count(self) -> u32 {
+        self.array_count
+    }
+
+    pub const fn simd_arrays_per_engine(self) -> u32 {
+        self.simd_arrays_per_engine
+    }
+
+    pub const fn lds_size_in_kb(self) -> u32 {
+        self.lds_size_in_kb
+    }
+
+    pub const fn max_waves_per_simd(self) -> u32 {
+        self.max_waves_per_simd
+    }
+
+    pub const fn compute_queue_count(self) -> u32 {
+        self.compute_queue_count
     }
 
     pub const fn memory_bank_count(self) -> u32 {
@@ -1050,6 +1098,32 @@ fn read_optional_module_field(
     Ok(Some(value.to_owned()))
 }
 
+fn read_optional_module_i32(path: &Path) -> Result<Option<i32>, TopologyError> {
+    let Some(value) =
+        read_optional_module_field(path, |byte| byte.is_ascii_digit() || byte == b'-')?
+    else {
+        return Ok(None);
+    };
+    let digits = value.strip_prefix('-').unwrap_or(&value);
+    if digits.is_empty()
+        || digits.starts_with('0') && digits != "0"
+        || value == "-0"
+        || !digits.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(TopologyError::InvalidModuleField {
+            path: path.to_path_buf(),
+            value,
+        });
+    }
+    value
+        .parse()
+        .map(Some)
+        .map_err(|_| TopologyError::InvalidModuleField {
+            path: path.to_path_buf(),
+            value,
+        })
+}
+
 fn observe_amdgpu_module(path: &Path) -> Result<AmdgpuModuleObservation, TopologyError> {
     let identity = ensure_directory(path)?;
     let version = read_optional_module_field(&path.join("version"), |byte| {
@@ -1058,6 +1132,10 @@ fn observe_amdgpu_module(path: &Path) -> Result<AmdgpuModuleObservation, Topolog
     let srcversion = read_optional_module_field(&path.join("srcversion"), |byte| {
         byte.is_ascii_digit() || matches!(byte, b'A'..=b'F')
     })?;
+    let parameters = path.join("parameters");
+    let mes = read_optional_module_i32(&parameters.join("mes"))?;
+    let sched_policy = read_optional_module_i32(&parameters.join("sched_policy"))?;
+    let cwsr_enable = read_optional_module_i32(&parameters.join("cwsr_enable"))?;
     if ensure_directory(path)? != identity {
         return Err(TopologyError::ChangedDuringRead(path.to_path_buf()));
     }
@@ -1066,6 +1144,9 @@ fn observe_amdgpu_module(path: &Path) -> Result<AmdgpuModuleObservation, Topolog
         inode: identity.inode,
         version,
         srcversion,
+        mes,
+        sched_policy,
+        cwsr_enable,
     })
 }
 
@@ -1563,6 +1644,24 @@ fn parse_gpu_node(
     )?;
     let capacity = GpuCapacityObservation {
         simd_count: bounded_u32(properties, properties_path, "simd_count", 1, 65_536)?,
+        simd_per_cu: bounded_u32(properties, properties_path, "simd_per_cu", 1, 64)?,
+        array_count: bounded_u32(properties, properties_path, "array_count", 1, 4096)?,
+        simd_arrays_per_engine: bounded_u32(
+            properties,
+            properties_path,
+            "simd_arrays_per_engine",
+            1,
+            4096,
+        )?,
+        lds_size_in_kb: bounded_u32(properties, properties_path, "lds_size_in_kb", 1, 1 << 30)?,
+        max_waves_per_simd: bounded_u32(
+            properties,
+            properties_path,
+            "max_waves_per_simd",
+            1,
+            4096,
+        )?,
+        compute_queue_count: bounded_u32(properties, properties_path, "num_cp_queues", 1, 1 << 20)?,
         memory_bank_count: bounded_u32(properties, properties_path, "mem_banks_count", 1, 4096)?,
         cache_count: bounded_u32(properties, properties_path, "caches_count", 1, 16_384)?,
         io_link_count: bounded_u32(properties, properties_path, "io_links_count", 1, 4096)?,
@@ -1931,7 +2030,9 @@ mod tests {
                      io_links_count 8\np2p_links_count 1\nwave_front_size 64\n\
                      gfx_target_version 90402\nvendor_id 4098\ndevice_id 29857\n\
                      location_id {}\ndomain 0\ndrm_render_minor {}\nhive_id 99\n\
-                     unique_id {}\nfw_version 192\nsdma_fw_version 25\nnum_xcc 8\n",
+                     unique_id {}\nfw_version 192\nsdma_fw_version 25\nnum_xcc 8\n\
+                     simd_per_cu 4\narray_count 32\nsimd_arrays_per_engine 1\n\
+                     lds_size_in_kb 64\nmax_waves_per_simd 8\nnum_cp_queues 24\n",
                     4096 * identity,
                     127 + identity,
                     2000 + u64::from(identity),
@@ -2027,6 +2128,12 @@ mod tests {
                     sdma_fw_version: 25,
                     capacity: GpuCapacityObservation {
                         simd_count: 1216,
+                        simd_per_cu: 4,
+                        array_count: 32,
+                        simd_arrays_per_engine: 1,
+                        lds_size_in_kb: 64,
+                        max_waves_per_simd: 8,
+                        compute_queue_count: 24,
                         memory_bank_count: 1,
                         cache_count: 626,
                         io_link_count: 8,
@@ -2115,9 +2222,16 @@ mod tests {
     #[test]
     fn strict_module_observation_reports_optional_fields() {
         let fixture = RenderFixture::valid();
+        fs::create_dir(fixture.module_root.join("parameters")).unwrap();
+        fs::write(fixture.module_root.join("parameters/mes"), "0\n").unwrap();
+        fs::write(fixture.module_root.join("parameters/sched_policy"), "0\n").unwrap();
+        fs::write(fixture.module_root.join("parameters/cwsr_enable"), "1\n").unwrap();
         let module = observe_amdgpu_module(&fixture.module_root).unwrap();
         assert_eq!(module.version(), Some("6.16.13"));
         assert_eq!(module.srcversion(), Some("A6F143BEC60C0AFC3263226"));
+        assert_eq!(module.mes(), Some(0));
+        assert_eq!(module.sched_policy(), Some(0));
+        assert_eq!(module.cwsr_enable(), Some(1));
         fs::remove_file(fixture.module_root.join("version")).unwrap();
         let module = observe_amdgpu_module(&fixture.module_root).unwrap();
         assert_eq!(module.version(), None);
