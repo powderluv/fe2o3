@@ -23,8 +23,9 @@ use fe2o3_runtime_model::{
     DeviceProjectionSourceV1, DrmDriverNameObservationV1, DrmFamilyObservationV1, IdentityDigestV1,
     InclusiveRangeProjectionV1, InventoryDeviceProjectionV1, InventoryInputErrorV1,
     KernelReleaseObservationV1, KfdProjectionV1, ModelAdmissionStatusV1, ModelDeviceAdmissionV1,
-    PciAddressV1, ProcessApertureProjectionV1, RenderProjectionV1, TopologyProjectionV1,
-    ValidatedDeviceProjectionV1, XnackObservationV1,
+    ModelVmAdmissionV1, PciAddressV1, ProcessApertureProjectionV1, RenderProjectionV1,
+    TopologyProjectionV1, UntrustedVmObservationV1, ValidatedDeviceProjectionV1, VmIdV1,
+    XnackObservationV1,
 };
 use rustix::fd::OwnedFd;
 use sha2::{Digest, Sha256};
@@ -120,6 +121,11 @@ impl InclusiveAperture {
 
     pub const fn size(self) -> u64 {
         self.limit - self.base + 1
+    }
+
+    #[cfg(test)]
+    pub(super) const fn from_checked_parts_for_memory_tests(base: u64, limit: u64) -> Self {
+        Self { base, limit }
     }
 }
 
@@ -279,6 +285,7 @@ pub struct CheckedGfx942XnackMinusDevice {
     pub(super) process: ProcessIncarnationObservation,
     pub(super) reset_fence: crate::currentness::ResetEventFence,
     pub(super) currentness_poisoned: bool,
+    pub(super) retire_model_on_drop: bool,
     _lease: MutexGuard<'static, ()>,
 }
 
@@ -292,6 +299,7 @@ impl fmt::Debug for CheckedGfx942XnackMinusDevice {
             .field("process", &self.process)
             .field("reset_fence", &self.reset_fence)
             .field("currentness_poisoned", &self.currentness_poisoned)
+            .field("retire_model_on_drop", &self.retire_model_on_drop)
             .finish_non_exhaustive()
     }
 }
@@ -350,10 +358,49 @@ impl CheckedGfx942XnackMinusDevice {
         let _ = &self.reset_fence;
         3
     }
+
+    pub(super) fn register_memory_vm_model_only(
+        &mut self,
+        vm_id: VmIdV1,
+    ) -> Result<ModelVmAdmissionV1, DeviceBindingError> {
+        // ACQUIRE_VM has already made process-lifetime state irreversible.
+        self.retire_model_on_drop = false;
+        let correlation = self.model_admission.correlation();
+        let observation = UntrustedVmObservationV1 {
+            domain_id: self.model_admission.domain_id(),
+            device: self.model_admission.model_key(),
+            vm_id,
+            kfd_gpu_id: correlation.kfd_gpu_id(),
+            render_node: correlation.render_node(),
+            pci: correlation.identity().pci,
+        };
+        let mut history = DEVICE_MODEL_HISTORY
+            .lock()
+            .map_err(|_| DeviceBindingError::ModelHistoryPoisoned)?;
+        let DeviceModelHistory::State {
+            identities,
+            projections,
+        } = &*history
+        else {
+            *history = DeviceModelHistory::Poisoned;
+            return Err(DeviceBindingError::ModelHistoryPoisoned);
+        };
+        let (next, vm) = identities
+            .register_vm_model_only(self.model_admission, observation)
+            .map_err(DeviceBindingError::ModelAdmission)?;
+        *history = DeviceModelHistory::State {
+            identities: next,
+            projections: projections.clone(),
+        };
+        Ok(vm)
+    }
 }
 
 impl Drop for CheckedGfx942XnackMinusDevice {
     fn drop(&mut self) {
+        if !self.retire_model_on_drop {
+            return;
+        }
         let Ok(mut history) = DEVICE_MODEL_HISTORY.lock() else {
             return;
         };
@@ -538,6 +585,7 @@ impl KfdWithAdmittedUapi {
             process: process_before,
             reset_fence,
             currentness_poisoned: false,
+            retire_model_on_drop: true,
             _lease: lease,
         })
     }

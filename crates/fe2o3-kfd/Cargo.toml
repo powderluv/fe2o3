@@ -11,11 +11,20 @@ publish = false
 [lib]
 name = "fe2o3_kfd"
 
+[features]
+default = []
+# Process-forking hardware validation only. This is not runtime authority.
+live-validation = ["rustix/process", "rustix/runtime"]
+
+[[example]]
+name = "kfd-host-visible-memory"
+required-features = ["live-validation"]
+
 [dependencies]
 fe2o3-drm-uapi.workspace = true
 fe2o3-kfd-uapi.workspace = true
 fe2o3-runtime-model.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, features = ["mm", "param"] }
 sha2.workspace = true
 
 [lints.rust]

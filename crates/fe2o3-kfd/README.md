@@ -97,3 +97,70 @@ evidence schema, CI separation, and limitations are documented in
 The evidence marks contracted currentness and the VRAM-loss counter as
 pure-Rust-only observations; neither is represented as an HSA differential
 match.
+
+## R2 host-visible memory slice
+
+CheckedGfx942XnackMinusDevice::acquire_host_visible_memory_session consumes
+the selected device and makes one irreversible ACQUIRE_VM attempt for the
+process. A successful HostVisibleMemorySession owns the retained KFD/render
+files and admits one ordinary, single-device, host-visible coherent GTT
+allocation. The adapter rounds a nonzero requested length to a checked
+4096-byte footprint, obtains a temporary anonymous address reservation, checks
+the entire half-open interval against the selected process GPUVM aperture, and
+passes that fixed GPU VA to ALLOC_MEMORY_OF_GPU. It rejects any mutation of
+the input fields, zero handle/offset, unaligned offset, overflow, or profile
+flag mismatch.
+
+GPU VA, the opaque allocation handle, and the CPU VMA remain separate private
+authorities. After successful ALLOC, the temporary address reservation is
+unmapped. The BO is then mapped through the retained selected render file at a
+kernel-selected CPU address with MAP_SHARED and PROT_NONE. MADV_DONTFORK must
+succeed before mprotect enables read/write access and before any safe
+closure-scoped byte borrow can be formed. Failed madvise or mprotect setup is
+synchronously unmapped; failed cleanup is process-fatal rather than returning
+an ambiguously inheritable VMA.
+
+The mmap-to-DONTFORK step is not atomic. Absence of an external raw fork or
+clone during that interval is Contracted; this API does not claim atomic
+no-inheritance. Every borrow requires mutable session authority and checks the
+opener PID and observable currentness before and after the closure. A reset
+concurrent with the closure remains Contracted. CPU borrows are unavailable
+while the BO is mapped to the GPU. Native KFD handles, GPU virtual addresses,
+and descriptors remain private. Safe byte borrows cannot escape their closure,
+but safe code can observe and retain a raw address derived from a slice;
+dereferencing it outside the borrow requires unsafe code and is an external
+contract.
+
+MAP and UNMAP always use an immutable one-element `[selected_gpu_id]` array.
+The returned n_success is cumulative and must satisfy old <= new <= 1.
+Only ioctl success plus the full prefix commits a phase transition. An errno
+with n_success == 1, malformed output, or a failed currentness check after
+any mutation permanently quarantines the session. Cleanup requires successful
+UNMAP, then CPU munmap, then exactly one FREE attempt. Any FREE error is
+terminal because the pinned driver removes validation-list state before all
+interruptible failure points. Drop performs no memory ioctl, munmap, FREE, or
+retry; normal Rust ownership still closes the retained descriptors and invokes
+driver process teardown.
+
+HOST_VISIBLE_MEMORY_PROFILE_MANIFEST_V1 composes the frozen KFD memory schema
+with the R1 device profile, active module digest, 4096-byte page profile, and
+the reviewed transitive driver-source closure. The source-to-loaded-binary
+relationship and kernel behavior remain Contracted. The completion-only model
+journal records only fully committed adapter transitions. It is not a history
+of every concrete syscall side effect: a
+quarantined ALLOC, MAP, or UNMAP path can have unmodeled kernel effects. The
+journal is model-only evidence, not production authority or a Verus/concrete
+refinement proof.
+
+AQL, executable, kernarg, VRAM, USERPTR, peer-device mapping, multiple
+allocations, retry, queues, and dispatch are rejected or absent. The
+default-feature `kfd-host-visible-memory-policy` example links and reaches the
+complete production memory adapter without enabling process/fork support. CI
+builds and ELF-audits that executable under the pure-Rust runtime policy so
+dead-code elimination cannot hide the production syscall closure.
+
+The `live-validation` feature is non-production only. It enables the
+`kfd-host-visible-memory` example and a single-threaded fork/mincore negative
+that verifies the DONTFORK VMA is absent in the child. The example always
+launches the selected-GPU transaction in an isolated subprocess and creates no
+queue or reset.
