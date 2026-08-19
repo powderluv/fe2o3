@@ -7,6 +7,7 @@ lifecycle_proof="$script_dir/runtime_lifecycle_v1.rs"
 identity_proof="$script_dir/device_identity_generation_v1.rs"
 projection_proof="$script_dir/device_projection_refinement_v1.rs"
 memory_proof="$script_dir/memory_lifecycle_v1.rs"
+queue_proof="$script_dir/queue_lifecycle_v1.rs"
 load_plan_proof="$script_dir/load_plan_v1.rs"
 materialization_proof="$script_dir/materialization_v1.rs"
 negative_lifecycle="$script_dir/negative/runtime_lifecycle_v1_release_while_published.rs"
@@ -20,6 +21,17 @@ negative_projection_currentness="$script_dir/negative/device_projection_refineme
 negative_memory_free="$script_dir/negative/memory_lifecycle_v1_free_while_partial.rs"
 negative_memory_unmap="$script_dir/negative/memory_lifecycle_v1_unmap_prefix.rs"
 negative_memory_failed_full="$script_dir/negative/memory_lifecycle_v1_failed_full_release.rs"
+negative_queue_resource_substitution="$script_dir/negative/queue_lifecycle_v1_resource_substitution.rs"
+negative_queue_destroy_ambiguity="$script_dir/negative/queue_lifecycle_v1_destroy_ambiguity.rs"
+negative_queue_history_prefix="$script_dir/negative/queue_lifecycle_v1_history_prefix.rs"
+negative_queue_sentinel_returned="$script_dir/negative/queue_lifecycle_v1_sentinel_returned.rs"
+negative_queue_publication_owner="$script_dir/negative/queue_lifecycle_v1_publication_owner.rs"
+negative_queue_ambiguous_id_reuse="$script_dir/negative/queue_lifecycle_v1_ambiguous_id_reuse.rs"
+negative_queue_mapping_generation="$script_dir/negative/queue_lifecycle_v1_mapping_generation.rs"
+negative_queue_illegal_ambiguity="$script_dir/negative/queue_lifecycle_v1_illegal_ambiguity.rs"
+negative_queue_generic_create_ambiguity="$script_dir/negative/queue_lifecycle_v1_generic_create_ambiguity.rs"
+negative_queue_cancel_retention="$script_dir/negative/queue_lifecycle_v1_cancel_retention.rs"
+negative_queue_pending_create_overlap="$script_dir/negative/queue_lifecycle_v1_pending_create_overlap.rs"
 negative_load_page_overlap="$script_dir/negative/load_plan_v1_page_overlap.rs"
 negative_load_descriptor_delta="$script_dir/negative/load_plan_v1_descriptor_delta.rs"
 negative_materialization_source="$script_dir/negative/materialization_v1_source_substitution.rs"
@@ -51,6 +63,7 @@ expected_lifecycle=$(read_pin "$pin_dir/MODEL_SHA256")
 expected_identity=$(read_pin "$pin_dir/DEVICE_IDENTITY_MODEL_SHA256")
 expected_projection=$(read_pin "$pin_dir/DEVICE_PROJECTION_REFINEMENT_SHA256")
 expected_memory=$(read_pin "$pin_dir/MEMORY_LIFECYCLE_SHA256")
+expected_queue=$(read_pin "$pin_dir/QUEUE_LIFECYCLE_SHA256")
 expected_load_plan=$(read_pin "$pin_dir/LOAD_PLAN_SHA256")
 expected_materialization=$(read_pin "$pin_dir/MATERIALIZATION_SHA256")
 expected_negative_lifecycle=$(read_pin "$pin_dir/NEGATIVE_SHA256")
@@ -64,6 +77,17 @@ expected_negative_projection_currentness=$(read_pin "$pin_dir/NEGATIVE_PROJECTIO
 expected_negative_memory_free=$(read_pin "$pin_dir/NEGATIVE_MEMORY_FREE_SHA256")
 expected_negative_memory_unmap=$(read_pin "$pin_dir/NEGATIVE_MEMORY_UNMAP_SHA256")
 expected_negative_memory_failed_full=$(read_pin "$pin_dir/NEGATIVE_MEMORY_FAILED_FULL_SHA256")
+expected_negative_queue_resource_substitution=$(read_pin "$pin_dir/NEGATIVE_QUEUE_RESOURCE_SUBSTITUTION_SHA256")
+expected_negative_queue_destroy_ambiguity=$(read_pin "$pin_dir/NEGATIVE_QUEUE_DESTROY_AMBIGUITY_SHA256")
+expected_negative_queue_history_prefix=$(read_pin "$pin_dir/NEGATIVE_QUEUE_HISTORY_PREFIX_SHA256")
+expected_negative_queue_sentinel_returned=$(read_pin "$pin_dir/NEGATIVE_QUEUE_SENTINEL_RETURNED_SHA256")
+expected_negative_queue_publication_owner=$(read_pin "$pin_dir/NEGATIVE_QUEUE_PUBLICATION_OWNER_SHA256")
+expected_negative_queue_ambiguous_id_reuse=$(read_pin "$pin_dir/NEGATIVE_QUEUE_AMBIGUOUS_ID_REUSE_SHA256")
+expected_negative_queue_mapping_generation=$(read_pin "$pin_dir/NEGATIVE_QUEUE_MAPPING_GENERATION_SHA256")
+expected_negative_queue_illegal_ambiguity=$(read_pin "$pin_dir/NEGATIVE_QUEUE_ILLEGAL_AMBIGUITY_SHA256")
+expected_negative_queue_generic_create_ambiguity=$(read_pin "$pin_dir/NEGATIVE_QUEUE_GENERIC_CREATE_AMBIGUITY_SHA256")
+expected_negative_queue_cancel_retention=$(read_pin "$pin_dir/NEGATIVE_QUEUE_CANCEL_RETENTION_SHA256")
+expected_negative_queue_pending_create_overlap=$(read_pin "$pin_dir/NEGATIVE_QUEUE_PENDING_CREATE_OVERLAP_SHA256")
 expected_negative_load_page_overlap=$(read_pin "$pin_dir/NEGATIVE_LOAD_PAGE_OVERLAP_SHA256")
 expected_negative_load_descriptor_delta=$(read_pin "$pin_dir/NEGATIVE_LOAD_DESCRIPTOR_DELTA_SHA256")
 expected_negative_materialization_source=$(read_pin "$pin_dir/NEGATIVE_MATERIALIZATION_SOURCE_SHA256")
@@ -98,6 +122,7 @@ check_sources() {
     check_digest "$expected_identity" "$identity_proof"
     check_digest "$expected_projection" "$projection_proof"
     check_digest "$expected_memory" "$memory_proof"
+    check_digest "$expected_queue" "$queue_proof"
     check_digest "$expected_load_plan" "$load_plan_proof"
     check_digest "$expected_materialization" "$materialization_proof"
     check_digest "$expected_negative_lifecycle" "$negative_lifecycle"
@@ -111,6 +136,17 @@ check_sources() {
     check_digest "$expected_negative_memory_free" "$negative_memory_free"
     check_digest "$expected_negative_memory_unmap" "$negative_memory_unmap"
     check_digest "$expected_negative_memory_failed_full" "$negative_memory_failed_full"
+    check_digest "$expected_negative_queue_resource_substitution" "$negative_queue_resource_substitution"
+    check_digest "$expected_negative_queue_destroy_ambiguity" "$negative_queue_destroy_ambiguity"
+    check_digest "$expected_negative_queue_history_prefix" "$negative_queue_history_prefix"
+    check_digest "$expected_negative_queue_sentinel_returned" "$negative_queue_sentinel_returned"
+    check_digest "$expected_negative_queue_publication_owner" "$negative_queue_publication_owner"
+    check_digest "$expected_negative_queue_ambiguous_id_reuse" "$negative_queue_ambiguous_id_reuse"
+    check_digest "$expected_negative_queue_mapping_generation" "$negative_queue_mapping_generation"
+    check_digest "$expected_negative_queue_illegal_ambiguity" "$negative_queue_illegal_ambiguity"
+    check_digest "$expected_negative_queue_generic_create_ambiguity" "$negative_queue_generic_create_ambiguity"
+    check_digest "$expected_negative_queue_cancel_retention" "$negative_queue_cancel_retention"
+    check_digest "$expected_negative_queue_pending_create_overlap" "$negative_queue_pending_create_overlap"
     check_digest "$expected_negative_load_page_overlap" "$negative_load_page_overlap"
     check_digest "$expected_negative_load_descriptor_delta" "$negative_load_descriptor_delta"
     check_digest "$expected_negative_materialization_source" "$negative_materialization_source"
@@ -126,6 +162,7 @@ check_sources
     "$identity_proof" \
     "$projection_proof" \
     "$memory_proof" \
+    "$queue_proof" \
     "$load_plan_proof" \
     "$materialization_proof" \
     "$negative_lifecycle" \
@@ -139,6 +176,17 @@ check_sources
     "$negative_memory_free" \
     "$negative_memory_unmap" \
     "$negative_memory_failed_full" \
+    "$negative_queue_resource_substitution" \
+    "$negative_queue_destroy_ambiguity" \
+    "$negative_queue_history_prefix" \
+    "$negative_queue_sentinel_returned" \
+    "$negative_queue_publication_owner" \
+    "$negative_queue_ambiguous_id_reuse" \
+    "$negative_queue_mapping_generation" \
+    "$negative_queue_illegal_ambiguity" \
+    "$negative_queue_generic_create_ambiguity" \
+    "$negative_queue_cancel_retention" \
+    "$negative_queue_pending_create_overlap" \
     "$negative_load_page_overlap" \
     "$negative_load_descriptor_delta" \
     "$negative_materialization_source" \
@@ -245,6 +293,7 @@ check_positive "$lifecycle_proof" 'verification results:: 2 verified, 0 errors' 
 check_positive "$identity_proof" 'verification results:: 4 verified, 0 errors' identity-generation
 check_positive "$projection_proof" 'verification results:: 4 verified, 0 errors' device-projection-refinement
 check_positive "$memory_proof" 'verification results:: 6 verified, 0 errors' memory-lifecycle
+check_positive "$queue_proof" 'verification results:: 10 verified, 0 errors' queue-lifecycle
 check_positive "$load_plan_proof" 'verification results:: 3 verified, 0 errors' load-plan
 check_positive "$materialization_proof" 'verification results:: 8 verified, 0 errors' materialization
 check_negative "$negative_lifecycle" mutated_release_while_published_is_safe_v1 release-while-published
@@ -258,6 +307,17 @@ check_negative "$negative_projection_currentness" mutated_projection_drops_reset
 check_negative "$negative_memory_free" mutated_free_while_partial_is_safe_v1 memory-free-while-partial
 check_negative "$negative_memory_unmap" mutated_unmap_uses_absolute_cumulative_progress_v1 memory-unmap-cumulative
 check_negative "$negative_memory_failed_full" mutated_failed_full_unmap_is_unreleasable_v1 memory-unmap-failed-full
+check_negative "$negative_queue_resource_substitution" mutated_queue_resource_substitution_preserves_roles_v1 queue-resource-substitution
+check_negative "$negative_queue_destroy_ambiguity" mutated_indeterminate_destroy_remains_retaining_v1 queue-destroy-ambiguity
+check_negative "$negative_queue_history_prefix" mutated_queue_history_overwrite_preserves_prefix_v1 queue-history-prefix
+check_negative "$negative_queue_sentinel_returned" mutated_returned_sentinel_is_rejected_v1 queue-sentinel-returned
+check_negative "$negative_queue_publication_owner" mutated_generic_release_rejects_queue_owner_v1 queue-publication-owner
+check_negative "$negative_queue_ambiguous_id_reuse" mutated_ambiguous_known_id_blocks_reuse_v1 queue-ambiguous-id-reuse
+check_negative "$negative_queue_mapping_generation" mutated_mapping_generation_substitution_is_exact_v1 queue-mapping-generation
+check_negative "$negative_queue_illegal_ambiguity" mutated_illegal_indeterminate_update_preserves_active_v1 queue-illegal-ambiguity
+check_negative "$negative_queue_generic_create_ambiguity" mutated_generic_create_ambiguity_is_excluded_v1 queue-generic-create-ambiguity
+check_negative "$negative_queue_cancel_retention" mutated_cancelled_plan_is_nonretaining_v1 queue-cancel-retention
+check_negative "$negative_queue_pending_create_overlap" mutated_pending_create_blocks_second_begin_v1 queue-pending-create-overlap
 check_negative "$negative_load_page_overlap" mutated_memory_only_check_rejects_page_overlap_v1 load-page-overlap
 check_negative "$negative_load_descriptor_delta" mutated_descriptor_delta_substitution_is_bound_v1 load-descriptor-delta
 check_negative "$negative_materialization_source" mutated_source_substitution_preserves_exact_byte_v1 materialization-source-substitution
@@ -268,7 +328,7 @@ check_sources
 check_digest "$expected_verus" "$verus_path"
 "$closure_checker" "$verus_root" "$closure_manifest"
 
-transcript='FE2O3_RUNTIME_MODEL_VERUS_OK lifecycle_obligations=2 identity_obligations=4 projection_obligations=4 memory_obligations=6 load_plan_obligations=3 materialization_obligations=8 mutations=15'
+transcript='FE2O3_RUNTIME_MODEL_VERUS_OK lifecycle_obligations=2 identity_obligations=4 projection_obligations=4 memory_obligations=6 queue_obligations=10 load_plan_obligations=3 materialization_obligations=8 mutations=26'
 actual_transcript=$(printf '%s\n' "$transcript" | "$sha256_path" | awk '{ print $1 }')
 if [ "$actual_transcript" != "$expected_transcript" ]; then
     printf 'FAIL: verification transcript does not match the pin\n' >&2

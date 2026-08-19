@@ -56,6 +56,10 @@ digest_identity!(
     QueuePlanIdV1
 );
 digest_identity!(
+    /// Identity of one model-only compute-AQL queue configuration.
+    QueueConfigurationIdV1
+);
+digest_identity!(
     /// Identity of one model-only device-observation domain.
     DeviceObservationDomainIdV1
 );

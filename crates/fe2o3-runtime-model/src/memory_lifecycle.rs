@@ -127,6 +127,17 @@ pub enum MemoryPublicationStateV1 {
     Released,
 }
 
+/// Structural owner of a mapping-retention publication.
+///
+/// Queue-owned publications can only be minted and released by the joint queue
+/// lifecycle transition. Public generic memory transitions cannot discharge
+/// them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryPublicationOwnerV1 {
+    Generic,
+    ComputeAqlQueue(QueueKeyV1),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PartialOperationStatusV1 {
     Succeeded,
@@ -194,6 +205,7 @@ impl MemoryMappingRecordV1 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MemoryPublicationRecordV1 {
     pub key: MemoryPublicationKeyV1,
+    pub owner: MemoryPublicationOwnerV1,
     pub state: MemoryPublicationStateV1,
 }
 
@@ -366,11 +378,60 @@ impl MemoryLifecycleStateV1 {
         &self.publications
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_generic_publications_for_test(
+        &self,
+        mapping: MemoryMappingKeyV1,
+        count: usize,
+    ) -> Self {
+        let mut next = self.clone();
+        for offset in 0..count {
+            next.publications.push(MemoryPublicationRecordV1 {
+                key: MemoryPublicationKeyV1 {
+                    mapping,
+                    id: MemoryPublicationIdV1(10_000 + offset as u64),
+                },
+                owner: MemoryPublicationOwnerV1::Generic,
+                state: MemoryPublicationStateV1::Live,
+            });
+        }
+        assert!(next.validate_global_invariants().is_ok());
+        next
+    }
+
     pub fn next(&self, transition: MemoryTransitionV1) -> Result<Self, MemoryTransitionErrorV1> {
         self.validate_global_invariants()
             .map_err(MemoryTransitionErrorV1::SourceInvariant)?;
         let mut next = self.clone();
         next.apply(transition)?;
+        next.validate_global_invariants()
+            .map_err(MemoryTransitionErrorV1::NextInvariant)?;
+        Ok(next)
+    }
+
+    pub(crate) fn publish_compute_aql_queue_mapping(
+        &self,
+        key: MemoryPublicationKeyV1,
+        queue: QueueKeyV1,
+    ) -> Result<Self, MemoryTransitionErrorV1> {
+        self.validate_global_invariants()
+            .map_err(MemoryTransitionErrorV1::SourceInvariant)?;
+        let mut next = self.clone();
+        next.publish_mapping(key, MemoryPublicationOwnerV1::ComputeAqlQueue(queue))?;
+        next.validate_global_invariants()
+            .map_err(MemoryTransitionErrorV1::NextInvariant)?;
+        Ok(next)
+    }
+
+    pub(crate) fn release_compute_aql_queue_publication(
+        &self,
+        key: MemoryPublicationKeyV1,
+        queue: QueueKeyV1,
+    ) -> Result<Self, MemoryTransitionErrorV1> {
+        self.validate_global_invariants()
+            .map_err(MemoryTransitionErrorV1::SourceInvariant)?;
+        let mut next = self.clone();
+        next.release_queue_publication(key, queue)?;
         next.validate_global_invariants()
             .map_err(MemoryTransitionErrorV1::NextInvariant)?;
         Ok(next)
@@ -418,7 +479,9 @@ impl MemoryLifecycleStateV1 {
             MemoryTransitionV1::BeginUnmap { key } => self.begin_unmap(key),
             MemoryTransitionV1::ObserveUnmap { key, progress } => self.observe_unmap(key, progress),
             MemoryTransitionV1::ReleaseMapping { key } => self.release_mapping(key),
-            MemoryTransitionV1::PublishMapping { key } => self.publish_mapping(key),
+            MemoryTransitionV1::PublishMapping { key } => {
+                self.publish_mapping(key, MemoryPublicationOwnerV1::Generic)
+            }
             MemoryTransitionV1::ReleasePublication { key } => self.release_publication(key),
         }
     }
@@ -792,6 +855,7 @@ impl MemoryLifecycleStateV1 {
     fn publish_mapping(
         &mut self,
         key: MemoryPublicationKeyV1,
+        owner: MemoryPublicationOwnerV1,
     ) -> Result<(), MemoryTransitionErrorV1> {
         ensure_memory_room(
             self.publications.len(),
@@ -810,8 +874,14 @@ impl MemoryLifecycleStateV1 {
                 MemoryRecordRefV1::Mapping(key.mapping),
             ));
         }
+        if let MemoryPublicationOwnerV1::ComputeAqlQueue(queue) = owner
+            && (queue.vm != key.mapping.allocation.vm || queue.id.0 == 0 || queue.generation.0 == 0)
+        {
+            return Err(MemoryTransitionErrorV1::BindingMismatch(reference));
+        }
         self.publications.push(MemoryPublicationRecordV1 {
             key,
+            owner,
             state: MemoryPublicationStateV1::Live,
         });
         Ok(())
@@ -822,11 +892,32 @@ impl MemoryLifecycleStateV1 {
         key: MemoryPublicationKeyV1,
     ) -> Result<(), MemoryTransitionErrorV1> {
         let reference = MemoryRecordRefV1::Publication(key);
+        let publication = self.publication(key)?;
+        if publication.owner != MemoryPublicationOwnerV1::Generic {
+            return Err(MemoryTransitionErrorV1::ResourceInUse(reference));
+        }
         let publication = self.publication_mut(key)?;
         if publication.state != MemoryPublicationStateV1::Live {
             return Err(MemoryTransitionErrorV1::IllegalState(reference));
         }
         publication.state = MemoryPublicationStateV1::Released;
+        Ok(())
+    }
+
+    fn release_queue_publication(
+        &mut self,
+        key: MemoryPublicationKeyV1,
+        queue: QueueKeyV1,
+    ) -> Result<(), MemoryTransitionErrorV1> {
+        let reference = MemoryRecordRefV1::Publication(key);
+        let publication = self.publication(key)?;
+        if publication.owner != MemoryPublicationOwnerV1::ComputeAqlQueue(queue) {
+            return Err(MemoryTransitionErrorV1::BindingMismatch(reference));
+        }
+        if publication.state != MemoryPublicationStateV1::Live {
+            return Err(MemoryTransitionErrorV1::IllegalState(reference));
+        }
+        self.publication_mut(key)?.state = MemoryPublicationStateV1::Released;
         Ok(())
     }
 
@@ -1050,6 +1141,13 @@ impl MemoryLifecycleStateV1 {
             if publication.key.id.0 == 0 {
                 return Err(MemoryInvariantViolationV1::InvalidIdentity(reference));
             }
+            if let MemoryPublicationOwnerV1::ComputeAqlQueue(queue) = publication.owner
+                && (queue.vm != publication.key.mapping.allocation.vm
+                    || queue.id.0 == 0
+                    || queue.generation.0 == 0)
+            {
+                return Err(MemoryInvariantViolationV1::BindingMismatch(reference));
+            }
             if publication.state == MemoryPublicationStateV1::Live
                 && mapping.state != MemoryMappingStateV1::Mapped
             {
@@ -1231,6 +1329,18 @@ impl MemoryLifecycleStateV1 {
     ) -> Result<&mut MemoryPublicationRecordV1, MemoryTransitionErrorV1> {
         self.publications
             .iter_mut()
+            .find(|record| record.key == key)
+            .ok_or(MemoryTransitionErrorV1::NotFound(
+                MemoryRecordRefV1::Publication(key),
+            ))
+    }
+
+    fn publication(
+        &self,
+        key: MemoryPublicationKeyV1,
+    ) -> Result<&MemoryPublicationRecordV1, MemoryTransitionErrorV1> {
+        self.publications
+            .iter()
             .find(|record| record.key == key)
             .ok_or(MemoryTransitionErrorV1::NotFound(
                 MemoryRecordRefV1::Publication(key),

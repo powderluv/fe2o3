@@ -360,6 +360,10 @@ fn publications_block_unmap_and_partial_unmap_retains_the_unreported_suffix() {
         MemoryTransitionV1::PublishMapping { key: publication },
     );
     assert_eq!(
+        state.publications()[0].owner,
+        MemoryPublicationOwnerV1::Generic
+    );
+    assert_eq!(
         state.next(MemoryTransitionV1::BeginUnmap { key: mapping }),
         Err(MemoryTransitionErrorV1::ResourceInUse(
             MemoryRecordRefV1::Mapping(mapping)

@@ -20,12 +20,14 @@ mod device_projection;
 mod identity;
 mod memory_lifecycle;
 mod model;
+mod queue_lifecycle;
 
 pub use device_identity::*;
 pub use device_projection::*;
 pub use identity::*;
 pub use memory_lifecycle::*;
 pub use model::*;
+pub use queue_lifecycle::*;
 
 #[cfg(test)]
 mod device_identity_tests;
@@ -33,5 +35,7 @@ mod device_identity_tests;
 mod device_projection_tests;
 #[cfg(test)]
 mod memory_lifecycle_tests;
+#[cfg(test)]
+mod queue_lifecycle_tests;
 #[cfg(test)]
 mod tests;
