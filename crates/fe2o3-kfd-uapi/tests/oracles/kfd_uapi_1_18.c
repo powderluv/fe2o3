@@ -10,6 +10,57 @@ int main(void) {
            offsetof(struct kfd_ioctl_get_version_args, minor_version),
            (unsigned long)AMDKFD_IOC_GET_VERSION);
 
+    printf("create_queue:size=%zu align=%zu ring_base=%zu write_pointer=%zu "
+           "read_pointer=%zu doorbell_offset=%zu ring_size=%zu gpu_id=%zu "
+           "queue_type=%zu queue_percentage=%zu queue_priority=%zu queue_id=%zu "
+           "eop_address=%zu eop_size=%zu ctx_address=%zu ctx_size=%zu "
+           "ctl_stack_size=%zu sdma_engine_id=%zu pad=%zu request=%#lx\n",
+           sizeof(struct kfd_ioctl_create_queue_args),
+           _Alignof(struct kfd_ioctl_create_queue_args),
+           offsetof(struct kfd_ioctl_create_queue_args, ring_base_address),
+           offsetof(struct kfd_ioctl_create_queue_args, write_pointer_address),
+           offsetof(struct kfd_ioctl_create_queue_args, read_pointer_address),
+           offsetof(struct kfd_ioctl_create_queue_args, doorbell_offset),
+           offsetof(struct kfd_ioctl_create_queue_args, ring_size),
+           offsetof(struct kfd_ioctl_create_queue_args, gpu_id),
+           offsetof(struct kfd_ioctl_create_queue_args, queue_type),
+           offsetof(struct kfd_ioctl_create_queue_args, queue_percentage),
+           offsetof(struct kfd_ioctl_create_queue_args, queue_priority),
+           offsetof(struct kfd_ioctl_create_queue_args, queue_id),
+           offsetof(struct kfd_ioctl_create_queue_args, eop_buffer_address),
+           offsetof(struct kfd_ioctl_create_queue_args, eop_buffer_size),
+           offsetof(struct kfd_ioctl_create_queue_args, ctx_save_restore_address),
+           offsetof(struct kfd_ioctl_create_queue_args, ctx_save_restore_size),
+           offsetof(struct kfd_ioctl_create_queue_args, ctl_stack_size),
+           offsetof(struct kfd_ioctl_create_queue_args, sdma_engine_id),
+           offsetof(struct kfd_ioctl_create_queue_args, pad),
+           (unsigned long)AMDKFD_IOC_CREATE_QUEUE);
+
+    printf("destroy_queue:size=%zu align=%zu queue_id=%zu pad=%zu request=%#lx\n",
+           sizeof(struct kfd_ioctl_destroy_queue_args),
+           _Alignof(struct kfd_ioctl_destroy_queue_args),
+           offsetof(struct kfd_ioctl_destroy_queue_args, queue_id),
+           offsetof(struct kfd_ioctl_destroy_queue_args, pad),
+           (unsigned long)AMDKFD_IOC_DESTROY_QUEUE);
+
+    printf("update_queue:size=%zu align=%zu ring_base=%zu queue_id=%zu "
+           "ring_size=%zu queue_percentage=%zu queue_priority=%zu request=%#lx\n",
+           sizeof(struct kfd_ioctl_update_queue_args),
+           _Alignof(struct kfd_ioctl_update_queue_args),
+           offsetof(struct kfd_ioctl_update_queue_args, ring_base_address),
+           offsetof(struct kfd_ioctl_update_queue_args, queue_id),
+           offsetof(struct kfd_ioctl_update_queue_args, ring_size),
+           offsetof(struct kfd_ioctl_update_queue_args, queue_percentage),
+           offsetof(struct kfd_ioctl_update_queue_args, queue_priority),
+           (unsigned long)AMDKFD_IOC_UPDATE_QUEUE);
+
+    printf("queue_constants:compute_aql=%#x max_percentage=%u max_priority=%u "
+           "min_ring_size=%u\n",
+           KFD_IOC_QUEUE_TYPE_COMPUTE_AQL,
+           KFD_MAX_QUEUE_PERCENTAGE,
+           KFD_MAX_QUEUE_PRIORITY,
+           KFD_MIN_QUEUE_RING_SIZE);
+
     printf("process_apertures:size=%zu align=%zu lds_base=%zu lds_limit=%zu "
            "scratch_base=%zu scratch_limit=%zu gpuvm_base=%zu gpuvm_limit=%zu "
            "gpu_id=%zu pad=%zu\n",
