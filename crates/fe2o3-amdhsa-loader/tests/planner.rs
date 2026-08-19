@@ -1,7 +1,8 @@
 use std::{env, fs};
 
 use fe2o3_amdhsa_loader::{
-    AdmittedProfile, LOAD_SEGMENT_COUNT, PlanError, SegmentPermissions, plan,
+    AdmittedProfile, ImageRange, InterSegmentGapOrdinal, LOAD_SEGMENT_COUNT, PlanError,
+    SegmentOrdinal, SegmentPermissions, plan, validate,
 };
 
 const PHOFF: usize = 64;
@@ -40,6 +41,157 @@ fn builds_a_canonical_inert_plan() {
     assert_eq!(plan.segments()[2].zero_fill_size(), 0xf80);
     assert_eq!(plan.metadata_note().file_offset(), 0x214);
     assert_eq!(plan.metadata_note().byte_len(), 1);
+}
+
+#[test]
+fn binds_sources_metadata_and_zero_then_copy_instructions() {
+    let bytes = fixture();
+    let envelope = validate(&bytes, AdmittedProfile::Gfx942XnackOffCov6).unwrap();
+    let inert = plan(&bytes, AdmittedProfile::Gfx942XnackOffCov6).unwrap();
+    assert_eq!(*envelope.plan(), inert);
+    assert_eq!(envelope.input_len(), bytes.len() as u64);
+    assert_eq!(envelope.metadata_descriptor(), &[0x80]);
+
+    let first = envelope.segment_source(SegmentOrdinal::First);
+    let second = envelope.segment_source(SegmentOrdinal::Second);
+    let third = envelope.segment_source(SegmentOrdinal::Third);
+    assert_eq!((first.file_offset(), first.byte_len()), (0, 0x300));
+    assert_eq!((second.file_offset(), second.byte_len()), (0x1000, 0x100));
+    assert_eq!((third.file_offset(), third.byte_len()), (0x2000, 0x80));
+    assert_eq!(first.bytes(), &bytes[..0x300]);
+    assert_eq!(second.bytes(), &bytes[0x1000..0x1100]);
+    assert_eq!(third.bytes(), &bytes[0x2000..0x2080]);
+
+    let materialization = envelope.materialization();
+    assert_eq!(materialization.image_len(), 0x5000);
+    let zero = materialization.zero_phase();
+    assert_range(zero.mapping(SegmentOrdinal::First).destination(), 0, 0x1000);
+    assert_range(
+        zero.inter_segment_gap(InterSegmentGapOrdinal::FirstToSecond)
+            .destination(),
+        0x1000,
+        0x1000,
+    );
+    assert_range(
+        zero.mapping(SegmentOrdinal::Second).destination(),
+        0x2000,
+        0x1000,
+    );
+    assert_range(
+        zero.inter_segment_gap(InterSegmentGapOrdinal::SecondToThird)
+            .destination(),
+        0x3000,
+        0x1000,
+    );
+    assert_range(
+        zero.mapping(SegmentOrdinal::Third).destination(),
+        0x4000,
+        0x1000,
+    );
+
+    let copy = materialization.copy_phase();
+    assert_range(copy.segment(SegmentOrdinal::First).destination(), 0, 0x300);
+    assert_range(
+        copy.segment(SegmentOrdinal::Second).destination(),
+        0x2000,
+        0x100,
+    );
+    assert_range(
+        copy.segment(SegmentOrdinal::Third).destination(),
+        0x4000,
+        0x80,
+    );
+    let third_zero = envelope.segment_zero_fill(SegmentOrdinal::Third);
+    assert_range(third_zero.mapping_prefix().destination(), 0x4000, 0);
+    assert_range(third_zero.memory_suffix().destination(), 0x4080, 0xf80);
+    assert_range(third_zero.mapping_tail().destination(), 0x5000, 0);
+}
+
+#[test]
+fn copy_destination_accounts_for_a_nonzero_mapping_prefix() {
+    let mut bytes = fixture();
+    write_phdr_u64(&mut bytes, 2, 8, 0x1100);
+    write_phdr_u64(&mut bytes, 2, 16, 0x2100);
+    write_phdr_u64(&mut bytes, 2, 24, 0x2100);
+    bytes[0x1100] = 0xa5;
+
+    let envelope = validate(&bytes, AdmittedProfile::Gfx942XnackOffCov6).unwrap();
+    let source = envelope.segment_source(SegmentOrdinal::Second);
+    assert_eq!(source.file_offset(), 0x1100);
+    assert_eq!(source.bytes()[0], 0xa5);
+    assert_range(
+        envelope
+            .materialization()
+            .zero_phase()
+            .mapping(SegmentOrdinal::Second)
+            .destination(),
+        0x2000,
+        0x1000,
+    );
+    assert_range(
+        envelope
+            .materialization()
+            .copy_phase()
+            .segment(SegmentOrdinal::Second)
+            .destination(),
+        0x2100,
+        0x100,
+    );
+    let zero_fill = envelope.segment_zero_fill(SegmentOrdinal::Second);
+    assert_range(zero_fill.mapping_prefix().destination(), 0x2000, 0x100);
+    assert_range(zero_fill.memory_suffix().destination(), 0x2200, 0);
+    assert_range(zero_fill.mapping_tail().destination(), 0x2200, 0xe00);
+}
+
+#[test]
+fn validated_envelopes_do_not_substitute_sources_between_objects() {
+    let mut first_bytes = fixture();
+    let mut second_bytes = fixture();
+    first_bytes[0x1000] = 0xaa;
+    second_bytes[0x1000] = 0xbb;
+    first_bytes[0x214] = 0x80;
+    second_bytes[0x214] = 0x81;
+
+    let first = validate(&first_bytes, AdmittedProfile::Gfx942XnackOffCov6).unwrap();
+    let second = validate(&second_bytes, AdmittedProfile::Gfx942XnackOffCov6).unwrap();
+    let first_source = first.segment_source(SegmentOrdinal::Second);
+    let second_source = second.segment_source(SegmentOrdinal::Second);
+    assert_eq!(first_source.bytes()[0], 0xaa);
+    assert_eq!(second_source.bytes()[0], 0xbb);
+    assert_eq!(
+        first_source.bytes().as_ptr(),
+        first_bytes[0x1000..].as_ptr()
+    );
+    assert_eq!(
+        second_source.bytes().as_ptr(),
+        second_bytes[0x1000..].as_ptr()
+    );
+    assert_ne!(
+        first_source.bytes().as_ptr(),
+        second_source.bytes().as_ptr()
+    );
+    assert_eq!(first.metadata_descriptor(), &[0x80]);
+    assert_eq!(second.metadata_descriptor(), &[0x81]);
+    assert_eq!(
+        first
+            .materialization()
+            .copy_phase()
+            .segment(SegmentOrdinal::Second)
+            .source()
+            .bytes()
+            .as_ptr(),
+        first_source.bytes().as_ptr()
+    );
+}
+
+#[test]
+fn validated_path_rejects_an_out_of_bounds_segment_source() {
+    let mut bytes = fixture();
+    write_phdr_u64(&mut bytes, 2, 8, SHOFF as u64);
+    assert!(matches!(
+        validate(&bytes, AdmittedProfile::Gfx942XnackOffCov6),
+        Err(PlanError::FileRangeOutOfBounds { index: 2 })
+    ));
 }
 
 #[test]
@@ -310,6 +462,22 @@ fn plans_a_real_pinned_finalizer_artifact() {
     let plan = plan(&bytes, AdmittedProfile::Gfx942XnackOffCov6).unwrap();
     assert_eq!(plan.segments().len(), 3);
     assert!(plan.metadata_note().byte_len() > 0);
+    let envelope = validate(&bytes, AdmittedProfile::Gfx942XnackOffCov6).unwrap();
+    assert_eq!(*envelope.plan(), plan);
+    assert_eq!(
+        envelope.metadata_descriptor().len() as u64,
+        plan.metadata_note().byte_len()
+    );
+    for ordinal in [
+        SegmentOrdinal::First,
+        SegmentOrdinal::Second,
+        SegmentOrdinal::Third,
+    ] {
+        let source = envelope.segment_source(ordinal);
+        let copy = envelope.materialization().copy_phase().segment(ordinal);
+        assert_eq!(copy.source().bytes().as_ptr(), source.bytes().as_ptr());
+        assert_eq!(copy.destination().byte_len(), source.byte_len());
+    }
 }
 
 fn fixture() -> Vec<u8> {
@@ -405,6 +573,11 @@ fn swap_program_headers(bytes: &mut [u8], first: usize, second: usize) {
     for offset in 0..PHENT {
         bytes.swap(first + offset, second + offset);
     }
+}
+
+fn assert_range(range: ImageRange, offset_from_image_start: u64, byte_len: u64) {
+    assert_eq!(range.offset_from_image_start(), offset_from_image_start);
+    assert_eq!(range.byte_len(), byte_len);
 }
 
 fn write_phdr_u32(bytes: &mut [u8], index: usize, field: usize, value: u32) {

@@ -264,6 +264,269 @@ impl LoadPlan {
     }
 }
 
+/// Ordinal of a canonical load segment, in increasing virtual-address order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SegmentOrdinal {
+    First,
+    Second,
+    Third,
+}
+
+impl SegmentOrdinal {
+    const fn index(self) -> usize {
+        match self {
+            Self::First => 0,
+            Self::Second => 1,
+            Self::Third => 2,
+        }
+    }
+}
+
+/// Ordinal of an unmapped gap between adjacent canonical load mappings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterSegmentGapOrdinal {
+    FirstToSecond,
+    SecondToThird,
+}
+
+impl InterSegmentGapOrdinal {
+    const fn index(self) -> usize {
+        match self {
+            Self::FirstToSecond => 0,
+            Self::SecondToThird => 1,
+        }
+    }
+}
+
+/// A checked range relative to [`LoadPlan::image_start`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ImageRange {
+    offset_from_image_start: u64,
+    byte_len: u64,
+}
+
+impl ImageRange {
+    /// Offset from the plan's lowest page-rounded mapping address.
+    pub const fn offset_from_image_start(self) -> u64 {
+        self.offset_from_image_start
+    }
+
+    /// Length of the range in bytes.
+    pub const fn byte_len(self) -> u64 {
+        self.byte_len
+    }
+}
+
+/// Exact file-backed bytes for one validated canonical segment.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct SegmentSource<'a> {
+    ordinal: SegmentOrdinal,
+    file_offset: u64,
+    bytes: &'a [u8],
+}
+
+impl<'a> SegmentSource<'a> {
+    /// Canonical segment to which these bytes belong.
+    pub const fn ordinal(self) -> SegmentOrdinal {
+        self.ordinal
+    }
+
+    /// Offset of the borrowed bytes in the validated input object.
+    pub const fn file_offset(self) -> u64 {
+        self.file_offset
+    }
+
+    /// Number of borrowed source bytes.
+    pub const fn byte_len(self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    /// Exact source bytes borrowed from the object passed to [`validate`].
+    pub const fn bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+}
+
+/// Instruction to zero a checked image-relative range.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ZeroInstruction {
+    destination: ImageRange,
+}
+
+impl ZeroInstruction {
+    /// Image-relative range that must be zeroed.
+    pub const fn destination(self) -> ImageRange {
+        self.destination
+    }
+}
+
+/// Explicit zero-filled portions associated with one segment mapping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SegmentZeroFill {
+    mapping_prefix: ZeroInstruction,
+    memory_suffix: ZeroInstruction,
+    mapping_tail: ZeroInstruction,
+}
+
+impl SegmentZeroFill {
+    /// Page prefix before the segment's virtual address.
+    pub const fn mapping_prefix(self) -> ZeroInstruction {
+        self.mapping_prefix
+    }
+
+    /// In-memory suffix after the file-backed bytes, including BSS.
+    pub const fn memory_suffix(self) -> ZeroInstruction {
+        self.memory_suffix
+    }
+
+    /// Page-rounding tail after the segment's in-memory range.
+    pub const fn mapping_tail(self) -> ZeroInstruction {
+        self.mapping_tail
+    }
+}
+
+/// Instruction to copy one exact borrowed segment source into the image.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct CopyInstruction<'a> {
+    source: SegmentSource<'a>,
+    destination: ImageRange,
+}
+
+impl<'a> CopyInstruction<'a> {
+    /// Exact bytes borrowed from the validated object.
+    pub const fn source(self) -> SegmentSource<'a> {
+        self.source
+    }
+
+    /// Prefix-adjusted image-relative copy destination.
+    pub const fn destination(self) -> ImageRange {
+        self.destination
+    }
+}
+
+/// First materialization phase: zero the complete planned image span.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ZeroPhase {
+    mappings: [ZeroInstruction; LOAD_SEGMENT_COUNT],
+    gaps: [ZeroInstruction; LOAD_SEGMENT_COUNT - 1],
+    segments: [SegmentZeroFill; LOAD_SEGMENT_COUNT],
+}
+
+impl ZeroPhase {
+    /// Complete page-rounded mapping to zero for a segment.
+    pub const fn mapping(&self, ordinal: SegmentOrdinal) -> ZeroInstruction {
+        self.mappings[ordinal.index()]
+    }
+
+    /// Complete gap to zero between two adjacent mappings.
+    pub const fn inter_segment_gap(&self, ordinal: InterSegmentGapOrdinal) -> ZeroInstruction {
+        self.gaps[ordinal.index()]
+    }
+
+    /// Descriptions of the zero-preserved portions of one segment mapping.
+    pub const fn segment(&self, ordinal: SegmentOrdinal) -> SegmentZeroFill {
+        self.segments[ordinal.index()]
+    }
+}
+
+/// Second materialization phase: copy exact file-backed segment bytes.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct CopyPhase<'a> {
+    segments: [CopyInstruction<'a>; LOAD_SEGMENT_COUNT],
+}
+
+impl<'a> CopyPhase<'a> {
+    /// Copy instruction for a canonical segment.
+    pub const fn segment(&self, ordinal: SegmentOrdinal) -> CopyInstruction<'a> {
+        self.segments[ordinal.index()]
+    }
+}
+
+/// Checked, descriptive materialization instructions for a validated object.
+///
+/// A later adapter must complete every [`ZeroPhase`] instruction before any
+/// [`CopyPhase`] instruction. This type performs neither phase and grants no
+/// allocation, mapping, copying, permission-transition, or execution authority.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct MaterializationPlan<'a> {
+    image_len: u64,
+    zero_phase: ZeroPhase,
+    copy_phase: CopyPhase<'a>,
+}
+
+impl<'a> MaterializationPlan<'a> {
+    /// Length of the complete image span described by the instructions.
+    pub const fn image_len(&self) -> u64 {
+        self.image_len
+    }
+
+    /// Complete-mapping and inter-mapping-gap zero instructions.
+    pub const fn zero_phase(&self) -> &ZeroPhase {
+        &self.zero_phase
+    }
+
+    /// Exact borrowed-source copy instructions.
+    pub const fn copy_phase(&self) -> &CopyPhase<'a> {
+        &self.copy_phase
+    }
+}
+
+/// A validated envelope permanently associated with its exact borrowed bytes.
+///
+/// This type has no public constructor. In particular, a caller cannot combine
+/// an inert [`LoadPlan`] with a different byte slice to construct one:
+///
+/// ```compile_fail
+/// use fe2o3_amdhsa_loader::{LoadPlan, ValidatedEnvelope};
+///
+/// fn substitute<'a>(plan: LoadPlan, unrelated: &'a [u8]) -> ValidatedEnvelope<'a> {
+///     ValidatedEnvelope { bytes: unrelated, plan }
+/// }
+/// ```
+///
+/// The object remains descriptive validated data. It is not loaded-code or
+/// launch authority.
+pub struct ValidatedEnvelope<'a> {
+    bytes: &'a [u8],
+    plan: LoadPlan,
+    metadata_descriptor: &'a [u8],
+    materialization: MaterializationPlan<'a>,
+}
+
+impl<'a> ValidatedEnvelope<'a> {
+    /// Length of the exact input borrow retained by this envelope.
+    pub const fn input_len(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    /// Inert canonical plan derived from the retained input bytes.
+    pub const fn plan(&self) -> &LoadPlan {
+        &self.plan
+    }
+
+    /// Exact borrowed source bytes for a canonical segment.
+    pub const fn segment_source(&self, ordinal: SegmentOrdinal) -> SegmentSource<'a> {
+        self.materialization.copy_phase.segment(ordinal).source()
+    }
+
+    /// Zero-preserved portions associated with a canonical segment.
+    pub const fn segment_zero_fill(&self, ordinal: SegmentOrdinal) -> SegmentZeroFill {
+        self.materialization.zero_phase.segment(ordinal)
+    }
+
+    /// Exact metadata descriptor borrowed from the validated input object.
+    ///
+    /// The bytes are not decoded and convey no metadata or kernel authority.
+    pub const fn metadata_descriptor(&self) -> &'a [u8] {
+        self.metadata_descriptor
+    }
+
+    /// Checked zero-then-copy instructions tied to the retained input bytes.
+    pub const fn materialization(&self) -> &MaterializationPlan<'a> {
+        &self.materialization
+    }
+}
+
 /// Fail-closed parser or profile-admission error.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlanError {
@@ -337,6 +600,9 @@ pub enum PlanError {
     UnsupportedDynamicFeature(u64),
     UnsupportedDynamicTag(u64),
     DynamicReferenceOutOfBounds(u64),
+    ValidatedRangeUnavailable,
+    MaterializationRangeInvalid,
+    MaterializationZeroCoverageMismatch,
 }
 
 #[derive(Clone, Copy)]
@@ -433,6 +699,187 @@ pub fn plan(bytes: &[u8], profile: AdmittedProfile) -> Result<LoadPlan, PlanErro
         image_start,
         image_end,
     })
+}
+
+/// Validates an object and binds its canonical plan to the exact input borrow.
+///
+/// Unlike [`plan`], the returned envelope retains the source association needed
+/// to describe checked zero-then-copy materialization. It still performs no
+/// allocation, copying, mapping, permission transition, or execution.
+pub fn validate<'a>(
+    bytes: &'a [u8],
+    profile: AdmittedProfile,
+) -> Result<ValidatedEnvelope<'a>, PlanError> {
+    let plan = plan(bytes, profile)?;
+    let metadata = plan.metadata_note;
+    let metadata_descriptor = validated_slice(bytes, metadata.file_offset, metadata.byte_len)?;
+    let materialization = build_materialization(bytes, plan)?;
+
+    Ok(ValidatedEnvelope {
+        bytes,
+        plan,
+        metadata_descriptor,
+        materialization,
+    })
+}
+
+fn build_materialization<'a>(
+    bytes: &'a [u8],
+    plan: LoadPlan,
+) -> Result<MaterializationPlan<'a>, PlanError> {
+    let first = build_segment_instructions(bytes, plan, SegmentOrdinal::First, plan.segments[0])?;
+    let second = build_segment_instructions(bytes, plan, SegmentOrdinal::Second, plan.segments[1])?;
+    let third = build_segment_instructions(bytes, plan, SegmentOrdinal::Third, plan.segments[2])?;
+    let mappings = [first.0, second.0, third.0];
+    let gaps = [
+        build_inter_segment_gap(plan, plan.segments[0], plan.segments[1])?,
+        build_inter_segment_gap(plan, plan.segments[1], plan.segments[2])?,
+    ];
+    let image_len = plan
+        .image_end
+        .checked_sub(plan.image_start)
+        .ok_or(PlanError::MaterializationRangeInvalid)?;
+    validate_zero_coverage(mappings, gaps, image_len)?;
+
+    Ok(MaterializationPlan {
+        image_len,
+        zero_phase: ZeroPhase {
+            mappings,
+            gaps,
+            segments: [first.1, second.1, third.1],
+        },
+        copy_phase: CopyPhase {
+            segments: [first.2, second.2, third.2],
+        },
+    })
+}
+
+fn build_segment_instructions<'a>(
+    bytes: &'a [u8],
+    plan: LoadPlan,
+    ordinal: SegmentOrdinal,
+    segment: LoadSegment,
+) -> Result<(ZeroInstruction, SegmentZeroFill, CopyInstruction<'a>), PlanError> {
+    let mapping = ZeroInstruction {
+        destination: checked_image_range(plan, segment.mapping_address, segment.mapping_size)?,
+    };
+    let prefix = ZeroInstruction {
+        destination: checked_image_range(
+            plan,
+            segment.mapping_address,
+            segment.mapping_prefix_size(),
+        )?,
+    };
+    let memory_suffix_start = segment
+        .virtual_address
+        .checked_add(segment.file_size)
+        .ok_or(PlanError::MaterializationRangeInvalid)?;
+    let memory_suffix = ZeroInstruction {
+        destination: checked_image_range(plan, memory_suffix_start, segment.zero_fill_size())?,
+    };
+    let mapping_tail_len = segment
+        .mapping_end()
+        .checked_sub(segment.memory_end())
+        .ok_or(PlanError::MaterializationRangeInvalid)?;
+    let mapping_tail = ZeroInstruction {
+        destination: checked_image_range(plan, segment.memory_end(), mapping_tail_len)?,
+    };
+
+    let source_bytes = validated_slice(bytes, segment.file_offset, segment.file_size)?;
+    let source = SegmentSource {
+        ordinal,
+        file_offset: segment.file_offset,
+        bytes: source_bytes,
+    };
+    let destination = checked_image_range(plan, segment.virtual_address, segment.file_size)?;
+    if destination.byte_len != source.byte_len() {
+        return Err(PlanError::MaterializationRangeInvalid);
+    }
+
+    Ok((
+        mapping,
+        SegmentZeroFill {
+            mapping_prefix: prefix,
+            memory_suffix,
+            mapping_tail,
+        },
+        CopyInstruction {
+            source,
+            destination,
+        },
+    ))
+}
+
+fn build_inter_segment_gap(
+    plan: LoadPlan,
+    first: LoadSegment,
+    second: LoadSegment,
+) -> Result<ZeroInstruction, PlanError> {
+    let start = first.mapping_end();
+    let byte_len = second
+        .mapping_address
+        .checked_sub(start)
+        .ok_or(PlanError::MaterializationRangeInvalid)?;
+    Ok(ZeroInstruction {
+        destination: checked_image_range(plan, start, byte_len)?,
+    })
+}
+
+fn checked_image_range(
+    plan: LoadPlan,
+    absolute_start: u64,
+    byte_len: u64,
+) -> Result<ImageRange, PlanError> {
+    let image_len = plan
+        .image_end
+        .checked_sub(plan.image_start)
+        .ok_or(PlanError::MaterializationRangeInvalid)?;
+    let offset_from_image_start = absolute_start
+        .checked_sub(plan.image_start)
+        .ok_or(PlanError::MaterializationRangeInvalid)?;
+    let end = offset_from_image_start
+        .checked_add(byte_len)
+        .ok_or(PlanError::MaterializationRangeInvalid)?;
+    if end > image_len {
+        return Err(PlanError::MaterializationRangeInvalid);
+    }
+    Ok(ImageRange {
+        offset_from_image_start,
+        byte_len,
+    })
+}
+
+fn validate_zero_coverage(
+    mappings: [ZeroInstruction; LOAD_SEGMENT_COUNT],
+    gaps: [ZeroInstruction; LOAD_SEGMENT_COUNT - 1],
+    image_len: u64,
+) -> Result<(), PlanError> {
+    let ordered = [mappings[0], gaps[0], mappings[1], gaps[1], mappings[2]];
+    let mut expected_start = 0;
+    for instruction in ordered {
+        let range = instruction.destination;
+        if range.offset_from_image_start != expected_start {
+            return Err(PlanError::MaterializationZeroCoverageMismatch);
+        }
+        expected_start = expected_start
+            .checked_add(range.byte_len)
+            .ok_or(PlanError::MaterializationZeroCoverageMismatch)?;
+    }
+    if expected_start != image_len {
+        return Err(PlanError::MaterializationZeroCoverageMismatch);
+    }
+    Ok(())
+}
+
+fn validated_slice(bytes: &[u8], offset: u64, byte_len: u64) -> Result<&[u8], PlanError> {
+    let end = offset
+        .checked_add(byte_len)
+        .ok_or(PlanError::ValidatedRangeUnavailable)?;
+    let start = usize::try_from(offset).map_err(|_| PlanError::ValidatedRangeUnavailable)?;
+    let end = usize::try_from(end).map_err(|_| PlanError::ValidatedRangeUnavailable)?;
+    bytes
+        .get(start..end)
+        .ok_or(PlanError::ValidatedRangeUnavailable)
 }
 
 fn validate_header(bytes: &[u8], profile: AdmittedProfile) -> Result<Header, PlanError> {
