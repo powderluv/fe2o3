@@ -42,6 +42,70 @@ int main(void) {
            offsetof(struct kfd_ioctl_acquire_vm_args, gpu_id),
            (unsigned long)AMDKFD_IOC_ACQUIRE_VM);
 
+    printf("alloc_memory:size=%zu align=%zu va_addr=%zu size_field=%zu "
+           "handle=%zu mmap_offset=%zu gpu_id=%zu flags=%zu request=%#lx\n",
+           sizeof(struct kfd_ioctl_alloc_memory_of_gpu_args),
+           _Alignof(struct kfd_ioctl_alloc_memory_of_gpu_args),
+           offsetof(struct kfd_ioctl_alloc_memory_of_gpu_args, va_addr),
+           offsetof(struct kfd_ioctl_alloc_memory_of_gpu_args, size),
+           offsetof(struct kfd_ioctl_alloc_memory_of_gpu_args, handle),
+           offsetof(struct kfd_ioctl_alloc_memory_of_gpu_args, mmap_offset),
+           offsetof(struct kfd_ioctl_alloc_memory_of_gpu_args, gpu_id),
+           offsetof(struct kfd_ioctl_alloc_memory_of_gpu_args, flags),
+           (unsigned long)AMDKFD_IOC_ALLOC_MEMORY_OF_GPU);
+
+    printf("free_memory:size=%zu align=%zu handle=%zu request=%#lx\n",
+           sizeof(struct kfd_ioctl_free_memory_of_gpu_args),
+           _Alignof(struct kfd_ioctl_free_memory_of_gpu_args),
+           offsetof(struct kfd_ioctl_free_memory_of_gpu_args, handle),
+           (unsigned long)AMDKFD_IOC_FREE_MEMORY_OF_GPU);
+
+    printf("map_memory:size=%zu align=%zu handle=%zu pointer=%zu devices=%zu "
+           "success=%zu request=%#lx\n",
+           sizeof(struct kfd_ioctl_map_memory_to_gpu_args),
+           _Alignof(struct kfd_ioctl_map_memory_to_gpu_args),
+           offsetof(struct kfd_ioctl_map_memory_to_gpu_args, handle),
+           offsetof(struct kfd_ioctl_map_memory_to_gpu_args, device_ids_array_ptr),
+           offsetof(struct kfd_ioctl_map_memory_to_gpu_args, n_devices),
+           offsetof(struct kfd_ioctl_map_memory_to_gpu_args, n_success),
+           (unsigned long)AMDKFD_IOC_MAP_MEMORY_TO_GPU);
+
+    printf("unmap_memory:size=%zu align=%zu handle=%zu pointer=%zu devices=%zu "
+           "success=%zu request=%#lx\n",
+           sizeof(struct kfd_ioctl_unmap_memory_from_gpu_args),
+           _Alignof(struct kfd_ioctl_unmap_memory_from_gpu_args),
+           offsetof(struct kfd_ioctl_unmap_memory_from_gpu_args, handle),
+           offsetof(struct kfd_ioctl_unmap_memory_from_gpu_args, device_ids_array_ptr),
+           offsetof(struct kfd_ioctl_unmap_memory_from_gpu_args, n_devices),
+           offsetof(struct kfd_ioctl_unmap_memory_from_gpu_args, n_success),
+           (unsigned long)AMDKFD_IOC_UNMAP_MEMORY_FROM_GPU);
+
+    printf("alloc_flags:gtt=%#x writable=%#x executable=%#x aql_queue=%#x "
+           "coherent=%#x uncached=%#x host_visible_coherent=%#x kernarg=%#x "
+           "aql_profile=%#x executable_profile=%#x\n",
+           KFD_IOC_ALLOC_MEM_FLAGS_GTT,
+           KFD_IOC_ALLOC_MEM_FLAGS_WRITABLE,
+           KFD_IOC_ALLOC_MEM_FLAGS_EXECUTABLE,
+           KFD_IOC_ALLOC_MEM_FLAGS_AQL_QUEUE_MEM,
+           KFD_IOC_ALLOC_MEM_FLAGS_COHERENT,
+           KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED,
+           KFD_IOC_ALLOC_MEM_FLAGS_GTT |
+               KFD_IOC_ALLOC_MEM_FLAGS_WRITABLE |
+               KFD_IOC_ALLOC_MEM_FLAGS_COHERENT,
+           KFD_IOC_ALLOC_MEM_FLAGS_GTT |
+               KFD_IOC_ALLOC_MEM_FLAGS_WRITABLE |
+               KFD_IOC_ALLOC_MEM_FLAGS_COHERENT |
+               KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED,
+           KFD_IOC_ALLOC_MEM_FLAGS_GTT |
+               KFD_IOC_ALLOC_MEM_FLAGS_WRITABLE |
+               KFD_IOC_ALLOC_MEM_FLAGS_COHERENT |
+               KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED |
+               KFD_IOC_ALLOC_MEM_FLAGS_AQL_QUEUE_MEM,
+           KFD_IOC_ALLOC_MEM_FLAGS_GTT |
+               KFD_IOC_ALLOC_MEM_FLAGS_WRITABLE |
+               KFD_IOC_ALLOC_MEM_FLAGS_COHERENT |
+               KFD_IOC_ALLOC_MEM_FLAGS_EXECUTABLE);
+
     printf("xnack:size=%zu align=%zu field=%zu request=%#lx query=-1 disabled=0 "
            "enabled=1\n",
            sizeof(struct kfd_ioctl_set_xnack_mode_args),
