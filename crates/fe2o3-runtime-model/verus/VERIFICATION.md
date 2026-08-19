@@ -1,9 +1,10 @@
 # Runtime model verification
 
 This directory contains the initial issue #137 Verus specifications. The
-authenticated runner proves nineteen obligations over finite abstract values
-and traces. The
-sequence lengths are not bounded by these proofs.
+authenticated runner proves twenty-seven obligations over finite abstract values
+and traces. The materialization input and image sequences are capped at 64 MiB
+and its phase trace has exactly four entries. The lifecycle-history sequence
+lengths are not bounded by these proofs.
 
 `runtime_lifecycle_v1.rs` proves:
 
@@ -62,6 +63,37 @@ the executable adapter:
 3. an admitted descriptor has the same file-to-virtual-address delta within
    exactly one same-permission containing `PT_LOAD` segment.
 
+`materialization_v1.rs` proves the next R3 abstract materialization operation:
+
+1. the three canonical source and destination ranges use checked offset/end
+   arithmetic, remain within the 64 MiB input and image bounds, and have
+   pairwise-disjoint destinations;
+2. the deterministic full-zero transition creates an image of the requested
+   length with every byte equal to zero;
+3. the deterministic copy-range transition writes the corresponding exact
+   source byte at every destination index and preserves every byte outside the
+   destination range;
+4. for every canonical bounded three-segment plan and exact-length input, the
+   defined zero/copy-first/copy-second/copy-third execution has all four states
+   at the exact image length and its final byte at every index follows the
+   corresponding deterministic transition;
+5. the completed execution therefore places every byte from each of the three
+   exact input source ranges at its checked destination;
+6. every checked range disjoint from all three copy destinations remains zero;
+   and
+7. the modeled mapping prefixes, in-memory suffixes including BSS, modeled
+   mapping tails, and inter-segment gaps satisfy that derived zero-preservation
+   property; and
+8. one concrete canonical three-segment plan is inhabited, and its constructed
+   final image contains both a nonzero copied byte and an uncopied zero byte.
+
+The materialization model receives already-formed mapping ranges. No theorem in
+this file composes `MaterializationPlanV1` with
+`load_plan_v1::canonical_load_plan_v1`, imports the separate load-plan
+invariants, or proves that its mapping starts and sizes use 4096-byte rounding.
+The 4 KiB and page-rounded properties listed above remain claims of the separate
+`load_plan_v1.rs` proof only.
+
 Run the proofs and all expected-negative mutations with the exact Verus
 release whose executable, complete release closure, version, proof sources,
 source checker, transcript, and mutations are pinned under `verus/pins`:
@@ -82,8 +114,10 @@ substitution, dropped DRM schema identity, lost history predecessor, mixed
 cross-source identity, a dropped final reset-fence observation, allocation free
 while a partial mapping remains, cumulative unmap progress incorrectly added to
 prior progress, a failed full-prefix unmap treated as releasable, load segments
-whose memory bytes are disjoint but whose rounded pages overlap, and descriptor
-containment that substitutes a different file-to-virtual-address delta. The launcher
+whose memory bytes are disjoint but whose rounded pages overlap, descriptor
+containment that substitutes a different file-to-virtual-address delta, the
+production-shaped copy transition substituting another source byte, and the
+production-shaped zero-first transition omitting the first zero byte. The launcher
 rejects source substitution, lexically audits all proof files for trusted
 constructs, clears the environment, bounds execution time, pins Z3 through the
 authenticated Verus release closure, and rechecks the authenticated inputs after
@@ -114,11 +148,20 @@ also does not prove that a copied R1 admission token is still active in a
 separately evolved `DeviceIdentityStateV1`; that state-composition refinement is
 required before a production adapter can consume the memory transitions.
 
-The R3 load-plan proof establishes only the stated mathematical relation over
-already-formed abstract segment and descriptor records. It does not prove that
-`fe2o3-amdhsa-loader::plan` implements that relation or that its untrusted ELF
-byte parser constructs the modeled records. It does not verify metadata or
-symbols, copied or zero-filled bytes, relocations, authentication, allocation,
-mapping permissions, W^X transitions, or materialization on a GPU. Those need
-separate executable-to-model refinement and loaded-image proofs before any
-`loader_refined` authority claim.
+The R3 load-plan and materialization proofs establish only the stated
+mathematical relations over already-formed abstract values. They do not prove
+that `fe2o3-amdhsa-loader::plan` implements those relations or that its
+untrusted ELF byte parser constructs the modeled records. Given a canonical
+abstract plan and exact-length mathematical input sequence, the materialization
+proof constructs the zero and three copy states rather than assuming a final
+image relation. Those sequences and transitions are still mathematical values,
+not evidence that executable Rust performed them. In particular, the proof does
+not refine `ValidatedEnvelope`, `MaterializationPlan`, slice identity, a CPU or
+GPU copy, allocation identity, or any syscall to the abstract operation. It does
+not decode or verify metadata or symbols, execute relocations, authenticate
+content, establish W^X transitions, or prove materialization on a GPU. Separate
+executable parser/copy/syscall refinement and loaded-image proofs remain
+required before any `loader_refined` authority claim. There is also no theorem
+connecting the materialization plan to the separately proved load-plan profile,
+so the materialization proof alone establishes neither 4 KiB alignment nor page
+rounding.

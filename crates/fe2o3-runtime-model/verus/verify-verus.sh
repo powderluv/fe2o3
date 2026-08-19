@@ -8,6 +8,7 @@ identity_proof="$script_dir/device_identity_generation_v1.rs"
 projection_proof="$script_dir/device_projection_refinement_v1.rs"
 memory_proof="$script_dir/memory_lifecycle_v1.rs"
 load_plan_proof="$script_dir/load_plan_v1.rs"
+materialization_proof="$script_dir/materialization_v1.rs"
 negative_lifecycle="$script_dir/negative/runtime_lifecycle_v1_release_while_published.rs"
 negative_vm="$script_dir/negative/device_identity_generation_v1_vm_substitution.rs"
 negative_stale="$script_dir/negative/device_identity_generation_v1_stale_reuse.rs"
@@ -21,6 +22,8 @@ negative_memory_unmap="$script_dir/negative/memory_lifecycle_v1_unmap_prefix.rs"
 negative_memory_failed_full="$script_dir/negative/memory_lifecycle_v1_failed_full_release.rs"
 negative_load_page_overlap="$script_dir/negative/load_plan_v1_page_overlap.rs"
 negative_load_descriptor_delta="$script_dir/negative/load_plan_v1_descriptor_delta.rs"
+negative_materialization_source="$script_dir/negative/materialization_v1_source_substitution.rs"
+negative_materialization_zero="$script_dir/negative/materialization_v1_zero_omission.rs"
 pin_dir="$script_dir/pins"
 closure_manifest="$pin_dir/VERUS_CLOSURE_MANIFEST"
 closure_checker="$repo_root/examples/row_softmax_v1/verify-verus-closure.sh"
@@ -49,6 +52,7 @@ expected_identity=$(read_pin "$pin_dir/DEVICE_IDENTITY_MODEL_SHA256")
 expected_projection=$(read_pin "$pin_dir/DEVICE_PROJECTION_REFINEMENT_SHA256")
 expected_memory=$(read_pin "$pin_dir/MEMORY_LIFECYCLE_SHA256")
 expected_load_plan=$(read_pin "$pin_dir/LOAD_PLAN_SHA256")
+expected_materialization=$(read_pin "$pin_dir/MATERIALIZATION_SHA256")
 expected_negative_lifecycle=$(read_pin "$pin_dir/NEGATIVE_SHA256")
 expected_negative_vm=$(read_pin "$pin_dir/NEGATIVE_VM_SUBSTITUTION_SHA256")
 expected_negative_stale=$(read_pin "$pin_dir/NEGATIVE_STALE_REUSE_SHA256")
@@ -62,6 +66,8 @@ expected_negative_memory_unmap=$(read_pin "$pin_dir/NEGATIVE_MEMORY_UNMAP_SHA256
 expected_negative_memory_failed_full=$(read_pin "$pin_dir/NEGATIVE_MEMORY_FAILED_FULL_SHA256")
 expected_negative_load_page_overlap=$(read_pin "$pin_dir/NEGATIVE_LOAD_PAGE_OVERLAP_SHA256")
 expected_negative_load_descriptor_delta=$(read_pin "$pin_dir/NEGATIVE_LOAD_DESCRIPTOR_DELTA_SHA256")
+expected_negative_materialization_source=$(read_pin "$pin_dir/NEGATIVE_MATERIALIZATION_SOURCE_SHA256")
+expected_negative_materialization_zero=$(read_pin "$pin_dir/NEGATIVE_MATERIALIZATION_ZERO_SHA256")
 expected_verus=$(read_pin "$pin_dir/VERUS_SHA256")
 expected_closure=$(read_pin "$pin_dir/VERUS_CLOSURE_MANIFEST_SHA256")
 expected_source_checker=$(read_pin "$pin_dir/PROOF_SOURCE_CHECKER_SHA256")
@@ -93,6 +99,7 @@ check_sources() {
     check_digest "$expected_projection" "$projection_proof"
     check_digest "$expected_memory" "$memory_proof"
     check_digest "$expected_load_plan" "$load_plan_proof"
+    check_digest "$expected_materialization" "$materialization_proof"
     check_digest "$expected_negative_lifecycle" "$negative_lifecycle"
     check_digest "$expected_negative_vm" "$negative_vm"
     check_digest "$expected_negative_stale" "$negative_stale"
@@ -106,6 +113,8 @@ check_sources() {
     check_digest "$expected_negative_memory_failed_full" "$negative_memory_failed_full"
     check_digest "$expected_negative_load_page_overlap" "$negative_load_page_overlap"
     check_digest "$expected_negative_load_descriptor_delta" "$negative_load_descriptor_delta"
+    check_digest "$expected_negative_materialization_source" "$negative_materialization_source"
+    check_digest "$expected_negative_materialization_zero" "$negative_materialization_zero"
     check_digest "$expected_closure" "$closure_manifest"
     check_digest 'c0f5f201dca9ea6b3fa953884cdfaca8ca38413ad2a9de7700b3aaeb3a610d0c' "$closure_checker"
     check_digest "$expected_source_checker" "$source_checker"
@@ -118,6 +127,7 @@ check_sources
     "$projection_proof" \
     "$memory_proof" \
     "$load_plan_proof" \
+    "$materialization_proof" \
     "$negative_lifecycle" \
     "$negative_vm" \
     "$negative_stale" \
@@ -130,7 +140,9 @@ check_sources
     "$negative_memory_unmap" \
     "$negative_memory_failed_full" \
     "$negative_load_page_overlap" \
-    "$negative_load_descriptor_delta"
+    "$negative_load_descriptor_delta" \
+    "$negative_materialization_source" \
+    "$negative_materialization_zero"
 
 case "$verus_bin" in
     */*) [ -x "$verus_bin" ] && verus_path=$verus_bin || verus_path= ;;
@@ -234,6 +246,7 @@ check_positive "$identity_proof" 'verification results:: 4 verified, 0 errors' i
 check_positive "$projection_proof" 'verification results:: 4 verified, 0 errors' device-projection-refinement
 check_positive "$memory_proof" 'verification results:: 6 verified, 0 errors' memory-lifecycle
 check_positive "$load_plan_proof" 'verification results:: 3 verified, 0 errors' load-plan
+check_positive "$materialization_proof" 'verification results:: 8 verified, 0 errors' materialization
 check_negative "$negative_lifecycle" mutated_release_while_published_is_safe_v1 release-while-published
 check_negative "$negative_vm" mutated_vm_generation_substitution_is_exact_v1 vm-generation-substitution
 check_negative "$negative_stale" mutated_stale_generation_reuse_advances_v1 stale-generation-reuse
@@ -247,13 +260,15 @@ check_negative "$negative_memory_unmap" mutated_unmap_uses_absolute_cumulative_p
 check_negative "$negative_memory_failed_full" mutated_failed_full_unmap_is_unreleasable_v1 memory-unmap-failed-full
 check_negative "$negative_load_page_overlap" mutated_memory_only_check_rejects_page_overlap_v1 load-page-overlap
 check_negative "$negative_load_descriptor_delta" mutated_descriptor_delta_substitution_is_bound_v1 load-descriptor-delta
+check_negative "$negative_materialization_source" mutated_source_substitution_preserves_exact_byte_v1 materialization-source-substitution
+check_negative "$negative_materialization_zero" mutated_zero_first_initializes_every_byte_v1 materialization-zero-omission
 
 # Detect source, checker, closure, or executable replacement during the run.
 check_sources
 check_digest "$expected_verus" "$verus_path"
 "$closure_checker" "$verus_root" "$closure_manifest"
 
-transcript='FE2O3_RUNTIME_MODEL_VERUS_OK lifecycle_obligations=2 identity_obligations=4 projection_obligations=4 memory_obligations=6 load_plan_obligations=3 mutations=13'
+transcript='FE2O3_RUNTIME_MODEL_VERUS_OK lifecycle_obligations=2 identity_obligations=4 projection_obligations=4 memory_obligations=6 load_plan_obligations=3 materialization_obligations=8 mutations=15'
 actual_transcript=$(printf '%s\n' "$transcript" | "$sha256_path" | awk '{ print $1 }')
 if [ "$actual_transcript" != "$expected_transcript" ]; then
     printf 'FAIL: verification transcript does not match the pin\n' >&2
