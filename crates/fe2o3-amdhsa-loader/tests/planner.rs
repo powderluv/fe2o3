@@ -1,8 +1,8 @@
 use std::{env, fs};
 
 use fe2o3_amdhsa_loader::{
-    AdmittedProfile, ImageRange, InterSegmentGapOrdinal, LOAD_SEGMENT_COUNT, PlanError,
-    SegmentOrdinal, SegmentPermissions, plan, validate,
+    AdmittedProfile, ImageRange, InterSegmentGapOrdinal, LOAD_SEGMENT_COUNT, MaterializationError,
+    PlanError, SegmentOrdinal, SegmentPermissions, ValidatedEnvelope, plan, validate,
 };
 
 const PHOFF: usize = 64;
@@ -108,6 +108,54 @@ fn binds_sources_metadata_and_zero_then_copy_instructions() {
 }
 
 #[test]
+fn materializes_exact_sources_and_zeros_every_uncopied_region() {
+    let mut bytes = fixture();
+    write_phdr_u64(&mut bytes, 2, 8, 0x1100);
+    write_phdr_u64(&mut bytes, 2, 16, 0x2100);
+    write_phdr_u64(&mut bytes, 2, 24, 0x2100);
+    bytes[0x1100] = 0xa5;
+    bytes[0x11ff] = 0x5a;
+    bytes[0x207f] = 0x3c;
+
+    let envelope = validate(&bytes, AdmittedProfile::Gfx942XnackOffCov6).unwrap();
+    let mut image = vec![0xcc; envelope.materialization().image_len() as usize];
+    envelope.materialize_into(&mut image).unwrap();
+
+    assert_materialized_image(&envelope, &image);
+    assert_eq!(&image[..0x300], &bytes[..0x300]);
+    assert!(image[0x300..0x2000].iter().all(|byte| *byte == 0));
+    assert!(image[0x2000..0x2100].iter().all(|byte| *byte == 0));
+    assert_eq!(&image[0x2100..0x2200], &bytes[0x1100..0x1200]);
+    assert!(image[0x2200..0x4000].iter().all(|byte| *byte == 0));
+    assert_eq!(&image[0x4000..0x4080], &bytes[0x2000..0x2080]);
+    assert!(image[0x4080..].iter().all(|byte| *byte == 0));
+
+    let first = image.clone();
+    image.fill(0x7e);
+    envelope.materialize_into(&mut image).unwrap();
+    assert_eq!(image, first);
+}
+
+#[test]
+fn rejects_nonexact_destination_lengths_without_mutation() {
+    let bytes = fixture();
+    let envelope = validate(&bytes, AdmittedProfile::Gfx942XnackOffCov6).unwrap();
+    let expected = envelope.materialization().image_len();
+
+    for actual in [expected as usize - 1, expected as usize + 1] {
+        let mut image = vec![0xa7; actual];
+        assert_eq!(
+            envelope.materialize_into(&mut image),
+            Err(MaterializationError::DestinationLengthMismatch {
+                expected,
+                actual: actual as u64,
+            })
+        );
+        assert!(image.iter().all(|byte| *byte == 0xa7));
+    }
+}
+
+#[test]
 fn copy_destination_accounts_for_a_nonzero_mapping_prefix() {
     let mut bytes = fixture();
     write_phdr_u64(&mut bytes, 2, 8, 0x1100);
@@ -182,6 +230,13 @@ fn validated_envelopes_do_not_substitute_sources_between_objects() {
             .as_ptr(),
         first_source.bytes().as_ptr()
     );
+
+    let mut first_image = vec![0; first.materialization().image_len() as usize];
+    let mut second_image = vec![0; second.materialization().image_len() as usize];
+    first.materialize_into(&mut first_image).unwrap();
+    second.materialize_into(&mut second_image).unwrap();
+    assert_eq!(first_image[0x2000], 0xaa);
+    assert_eq!(second_image[0x2000], 0xbb);
 }
 
 #[test]
@@ -456,7 +511,7 @@ fn rejects_relocation_and_unknown_dynamic_tags() {
 
 #[test]
 #[ignore = "requires FE2O3_TEST_COV6 to name a pinned finalizer artifact"]
-fn plans_a_real_pinned_finalizer_artifact() {
+fn plans_and_materializes_a_real_pinned_finalizer_artifact() {
     let path = env::var("FE2O3_TEST_COV6").expect("set FE2O3_TEST_COV6");
     let bytes = fs::read(path).unwrap();
     let plan = plan(&bytes, AdmittedProfile::Gfx942XnackOffCov6).unwrap();
@@ -478,6 +533,9 @@ fn plans_a_real_pinned_finalizer_artifact() {
         assert_eq!(copy.source().bytes().as_ptr(), source.bytes().as_ptr());
         assert_eq!(copy.destination().byte_len(), source.byte_len());
     }
+    let mut image = vec![0xa5; envelope.materialization().image_len() as usize];
+    envelope.materialize_into(&mut image).unwrap();
+    assert_materialized_image(&envelope, &image);
 }
 
 fn fixture() -> Vec<u8> {
@@ -578,6 +636,33 @@ fn swap_program_headers(bytes: &mut [u8], first: usize, second: usize) {
 fn assert_range(range: ImageRange, offset_from_image_start: u64, byte_len: u64) {
     assert_eq!(range.offset_from_image_start(), offset_from_image_start);
     assert_eq!(range.byte_len(), byte_len);
+}
+
+fn assert_materialized_image(envelope: &ValidatedEnvelope<'_>, image: &[u8]) {
+    assert_eq!(image.len() as u64, envelope.materialization().image_len());
+    let copy = envelope.materialization().copy_phase();
+    let instructions = [
+        copy.segment(SegmentOrdinal::First),
+        copy.segment(SegmentOrdinal::Second),
+        copy.segment(SegmentOrdinal::Third),
+    ];
+    for instruction in instructions {
+        let range = instruction.destination();
+        let start = range.offset_from_image_start() as usize;
+        let end = start + range.byte_len() as usize;
+        assert_eq!(&image[start..end], instruction.source().bytes());
+    }
+    for (index, byte) in image.iter().copied().enumerate() {
+        let copied = instructions.iter().any(|instruction| {
+            let range = instruction.destination();
+            let start = range.offset_from_image_start() as usize;
+            let end = start + range.byte_len() as usize;
+            (start..end).contains(&index)
+        });
+        if !copied {
+            assert_eq!(byte, 0, "uncopied byte {index:#x} was not zero");
+        }
+    }
 }
 
 fn write_phdr_u32(bytes: &mut [u8], index: usize, field: usize, value: u32) {

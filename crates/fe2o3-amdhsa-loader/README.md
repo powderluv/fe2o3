@@ -1,9 +1,12 @@
 # fe2o3-amdhsa-loader
 
-`fe2o3-amdhsa-loader` is the data-only foundation for issue #137's R3 loader.
-It accepts an untrusted byte slice and either returns a canonical, inert load
-plan or rejects the object. It performs no file access, allocation, mapping,
-copy, relocation, symbol lookup, or dispatch.
+`fe2o3-amdhsa-loader` is the bounded pure-Rust foundation for issue #137's R3
+loader. It accepts an untrusted byte slice and either returns a canonical,
+inert load plan or rejects the object. A lifetime-bound validated envelope can
+deterministically materialize that plan into an exact caller-provided,
+exclusively borrowed byte slice.
+The crate performs no file access, allocation, GPU mapping, relocation, symbol
+lookup, permission transition, or dispatch.
 
 ## Admitted foundation profile
 
@@ -29,7 +32,7 @@ The returned segments are sorted by virtual address independent of program
 header order. Every range and page rounding is checked before it is exposed.
 The plan is validated data only; it grants no load or launch authority.
 
-## Content-bound envelope and materialization description
+## Content-bound envelope and safe materialization
 
 `validate(&bytes, profile)` returns a `ValidatedEnvelope<'_>` whose private
 fields permanently associate the canonical plan with that exact input borrow.
@@ -40,18 +43,27 @@ it. The original `plan()` API remains an inert, copyable description and does
 not itself prove any byte association.
 
 The envelope also provides checked materialization instructions in two explicit
-phases. The first phase zeros every complete page-rounded segment mapping and
-every gap between adjacent mappings; those ranges are checked to form an exact,
-gap-free cover of the full image span. Per-segment descriptions identify the
-page prefix, in-memory suffix (including BSS), and page-rounding tail that stay
-zero. Only after the complete zero phase may an adapter apply the second phase,
-which copies each exact borrowed file range to its checked image-relative,
-prefix-adjusted destination.
+phases. The first phase covers every complete page-rounded segment mapping and
+every gap between adjacent mappings; those ranges form an exact, gap-free cover
+of the full image span. Per-segment descriptions identify the page prefix,
+in-memory suffix (including BSS), and page-rounding tail that stay zero. The
+second phase associates each exact borrowed file range with its checked
+image-relative, prefix-adjusted destination.
 
-These are instructions only. The crate allocates no image, executes no zero or
-copy operation, and owns no syscall or device handle. A later adapter is
-responsible for honoring the phase order and for binding image-relative ranges
-to one allocation without substitution.
+`ValidatedEnvelope::materialize_into` requires a caller-provided destination
+that is exclusively borrowed for the call and whose length exactly equals the
+checked image span. It rechecks all three structured copy ranges before
+mutation, zeros the complete destination, and then copies the exact borrowed
+`PT_LOAD` sources in canonical virtual-address order. Wrong lengths reject
+without changing the destination. The method allocates nothing and cannot
+substitute unrelated source bytes because the sources remain tied to the
+validated envelope's input lifetime.
+
+The resulting bytes are a CPU-side image only. The crate owns no syscall or
+device handle and grants no allocation identity, raw-address authority, GPU
+mapping, permission, W^X, relocation, symbol, kernel, loaded-code, launch, or
+execution authority. A later adapter must bind the image to one allocation
+without substitution and enforce the remaining lifecycle.
 
 `fe2o3-hsaco` remains the repository's existing descriptive MessagePack,
 kernel metadata, symbol, and descriptor inspector. This crate does not copy
@@ -78,6 +90,7 @@ refactor a shared validated envelope) before granting loader authority.
 - Borrow identity prevents construction of a validated envelope from a plan and
   unrelated bytes, but it is not a digest, signature, authenticated content
   identity, or proof about bytes after an external copy.
-- Materialization execution, allocation identity, copy/zero refinement, mapping
-  permissions, W^X lifecycle enforcement, immutable loaded-image transition,
-  KFD/HSA comparison, and hardware behavior remain outside this crate.
+- The executable zero/copy method is not proved to refine the runtime-model
+  Verus materialization relation. Allocation identity, mapping permissions, W^X
+  lifecycle enforcement, immutable loaded-image transition, KFD/HSA comparison,
+  and hardware behavior remain outside this crate.

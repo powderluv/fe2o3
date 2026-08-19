@@ -471,6 +471,17 @@ impl<'a> MaterializationPlan<'a> {
     }
 }
 
+/// Fail-closed caller-buffer materialization error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MaterializationError {
+    /// The caller-provided image does not exactly match the checked image span.
+    DestinationLengthMismatch { expected: u64, actual: u64 },
+    /// A private, previously checked copy range was not representable.
+    CopyRangeUnavailable { ordinal: SegmentOrdinal },
+    /// A private copy destination no longer matched its exact borrowed source.
+    CopyLengthMismatch { ordinal: SegmentOrdinal },
+}
+
 /// A validated envelope permanently associated with its exact borrowed bytes.
 ///
 /// This type has no public constructor. In particular, a caller cannot combine
@@ -484,8 +495,9 @@ impl<'a> MaterializationPlan<'a> {
 /// }
 /// ```
 ///
-/// The object remains descriptive validated data. It is not loaded-code or
-/// launch authority.
+/// The object retains validated data and can materialize its checked bytes into
+/// an exact caller-provided, exclusively borrowed image. It is not loaded-code
+/// or launch authority.
 pub struct ValidatedEnvelope<'a> {
     bytes: &'a [u8],
     plan: LoadPlan,
@@ -525,6 +537,63 @@ impl<'a> ValidatedEnvelope<'a> {
     pub const fn materialization(&self) -> &MaterializationPlan<'a> {
         &self.materialization
     }
+
+    /// Deterministically materializes the checked image into caller-provided,
+    /// exclusively borrowed bytes.
+    ///
+    /// The destination must have exactly [`MaterializationPlan::image_len`]
+    /// bytes. After all private copy ranges are rechecked, the complete image is
+    /// zeroed once and the exact borrowed `PT_LOAD` sources are copied in
+    /// canonical virtual-address order. Prefixes, BSS suffixes, mapping tails,
+    /// and inter-mapping gaps are therefore left zero.
+    ///
+    /// This operation allocates nothing and grants no GPU mapping, permission,
+    /// relocation, symbol, kernel, loaded-image, or execution authority.
+    pub fn materialize_into(&self, destination: &mut [u8]) -> Result<(), MaterializationError> {
+        let expected = self.materialization.image_len;
+        if destination.len() as u64 != expected {
+            return Err(MaterializationError::DestinationLengthMismatch {
+                expected,
+                actual: destination.len() as u64,
+            });
+        }
+
+        let copy = self.materialization.copy_phase;
+        let instructions = [
+            copy.segment(SegmentOrdinal::First),
+            copy.segment(SegmentOrdinal::Second),
+            copy.segment(SegmentOrdinal::Third),
+        ];
+        let mut bounds = [(0usize, 0usize); LOAD_SEGMENT_COUNT];
+        for (index, instruction) in instructions.iter().copied().enumerate() {
+            bounds[index] = checked_copy_bounds(destination.len(), instruction)?;
+        }
+
+        destination.fill(0);
+        for (instruction, (start, end)) in instructions.into_iter().zip(bounds) {
+            destination[start..end].copy_from_slice(instruction.source.bytes);
+        }
+        Ok(())
+    }
+}
+
+fn checked_copy_bounds(
+    image_len: usize,
+    instruction: CopyInstruction<'_>,
+) -> Result<(usize, usize), MaterializationError> {
+    let ordinal = instruction.source.ordinal;
+    let start = usize::try_from(instruction.destination.offset_from_image_start)
+        .map_err(|_| MaterializationError::CopyRangeUnavailable { ordinal })?;
+    let byte_len = usize::try_from(instruction.destination.byte_len)
+        .map_err(|_| MaterializationError::CopyRangeUnavailable { ordinal })?;
+    let end = start
+        .checked_add(byte_len)
+        .filter(|end| *end <= image_len)
+        .ok_or(MaterializationError::CopyRangeUnavailable { ordinal })?;
+    if byte_len != instruction.source.bytes.len() {
+        return Err(MaterializationError::CopyLengthMismatch { ordinal });
+    }
+    Ok((start, end))
 }
 
 /// Fail-closed parser or profile-admission error.
