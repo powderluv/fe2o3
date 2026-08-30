@@ -80,6 +80,49 @@ compile_error!(
     "an AMDGPU build must not select more than one gfx950 advanced-systems kernel feature"
 );
 
+#[cfg(all(target_arch = "amdgpu", feature = "ablation-route-owner-only"))]
+compile_error!(
+    "ablation-route-owner-only is rejected because lane-conditional induction does not satisfy production semantic-to-ranked projection"
+);
+#[cfg(all(target_arch = "amdgpu", feature = "ablation-route-unpacked"))]
+compile_error!("ablation-route-unpacked is retained only in the rejected-variant registry");
+#[cfg(all(
+    target_arch = "amdgpu",
+    feature = "ablation-expert-serial",
+    not(feature = "kernel-moe-expert-rank")
+))]
+compile_error!("ablation-expert-serial requires kernel-moe-expert-rank");
+#[cfg(all(
+    target_arch = "amdgpu",
+    feature = "ablation-combine-transposed",
+    not(feature = "kernel-combine-expert-ranks")
+))]
+compile_error!("ablation-combine-transposed requires kernel-combine-expert-ranks");
+#[cfg(all(
+    target_arch = "amdgpu",
+    feature = "ablation-speculative-recompute-prefix",
+    not(feature = "kernel-speculative-transaction")
+))]
+compile_error!("ablation-speculative-recompute-prefix requires kernel-speculative-transaction");
+#[cfg(all(
+    target_arch = "amdgpu",
+    feature = "ablation-ngram-reverse-probe",
+    not(feature = "kernel-qwen-ngram-gather")
+))]
+compile_error!("ablation-ngram-reverse-probe requires kernel-qwen-ngram-gather");
+#[cfg(all(
+    target_arch = "amdgpu",
+    feature = "ablation-stage-tile4",
+    not(feature = "kernel-stage-gradient-shard")
+))]
+compile_error!("ablation-stage-tile4 requires kernel-stage-gradient-shard");
+#[cfg(all(
+    target_arch = "amdgpu",
+    feature = "ablation-muon-broadcast16",
+    not(feature = "kernel-muon-update")
+))]
+compile_error!("ablation-muon-broadcast16 requires kernel-muon-update");
+
 pub mod kernel;
 #[cfg(not(target_arch = "amdgpu"))]
 pub mod reference;

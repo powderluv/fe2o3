@@ -23,6 +23,12 @@ use fe2o3_hsa_runtime::{
 };
 #[cfg(feature = "hardware-test-hooks")]
 use fe2o3_hsaco::{CodeObjectVersion, ExplicitValueKind};
+#[cfg(feature = "hardware-test-hooks")]
+use serde_json::json;
+#[cfg(feature = "hardware-test-hooks")]
+use sha2::{Digest, Sha256};
+#[cfg(feature = "hardware-test-hooks")]
+use std::io::Write;
 
 #[cfg(feature = "hardware-test-hooks")]
 const CHANNELS_V1: usize = 16;
@@ -86,6 +92,9 @@ const MUON_LEARNING_RATE: f32 = 0.05;
 #[path = "../../../examples/gfx950_advanced_attention/src/reference.rs"]
 mod attention_reference;
 #[cfg(feature = "hardware-test-hooks")]
+#[path = "../../../examples/gfx950_gpt_oss_decode/src/reference.rs"]
+mod gpt_oss_reference;
+#[cfg(feature = "hardware-test-hooks")]
 #[path = "../../../examples/gfx950_advanced_systems/src/reference.rs"]
 mod systems_reference;
 
@@ -97,6 +106,42 @@ const HSACO_ENV: &str = "FE2O3_GFX950_ADVANCED_HSACO";
 const SHA256_ENV: &str = "FE2O3_GFX950_ADVANCED_SHA256";
 #[cfg(feature = "hardware-test-hooks")]
 const HSA_KERNARG_ALIGNMENT: u64 = 16;
+#[cfg(feature = "hardware-test-hooks")]
+const PERF_OUTPUT_ENV: &str = "FE2O3_GFX950_ADVANCED_PERF_OUTPUT";
+#[cfg(feature = "hardware-test-hooks")]
+const PERF_WARMUPS_ENV: &str = "FE2O3_GFX950_ADVANCED_PERF_WARMUPS";
+#[cfg(feature = "hardware-test-hooks")]
+const PERF_BLOCKS_ENV: &str = "FE2O3_GFX950_ADVANCED_PERF_BLOCKS";
+#[cfg(feature = "hardware-test-hooks")]
+const PERF_SAMPLES_ENV: &str = "FE2O3_GFX950_ADVANCED_PERF_SAMPLES_PER_BLOCK";
+#[cfg(feature = "hardware-test-hooks")]
+const PERF_REWARM_ENV: &str = "FE2O3_GFX950_ADVANCED_PERF_BLOCK_REWARM";
+#[cfg(feature = "hardware-test-hooks")]
+const PERF_CAMPAIGN_ENV: &str = "FE2O3_GFX950_ADVANCED_PERF_CAMPAIGN_ID";
+#[cfg(feature = "hardware-test-hooks")]
+const PERF_IMPLEMENTATION_ENV: &str = "FE2O3_GFX950_ADVANCED_PERF_IMPLEMENTATION_ID";
+#[cfg(feature = "hardware-test-hooks")]
+const PERF_VARIANT_ENV: &str = "FE2O3_GFX950_ADVANCED_PERF_VARIANT_ID";
+#[cfg(feature = "hardware-test-hooks")]
+const PERF_PROCESS_ENV: &str = "FE2O3_GFX950_ADVANCED_PERF_PROCESS";
+#[cfg(feature = "hardware-test-hooks")]
+const PERF_LLVM_SHA256_ENV: &str = "FE2O3_GFX950_ADVANCED_LLVM_SHA256";
+#[cfg(feature = "hardware-test-hooks")]
+const PERF_ISA_SHA256_ENV: &str = "FE2O3_GFX950_ADVANCED_ISA_SHA256";
+#[cfg(feature = "hardware-test-hooks")]
+const PERF_CRATE_BINDING_ENV: &str = "FE2O3_GFX950_ADVANCED_CRATE_BINDING";
+#[cfg(feature = "hardware-test-hooks")]
+const PERF_SOURCE_COMMIT_ENV: &str = "FE2O3_GFX950_ADVANCED_SOURCE_COMMIT";
+#[cfg(feature = "hardware-test-hooks")]
+const PERF_SOURCE_TREE_ENV: &str = "FE2O3_GFX950_ADVANCED_SOURCE_TREE";
+#[cfg(feature = "hardware-test-hooks")]
+const DEFAULT_PERF_WARMUPS: usize = 1_000;
+#[cfg(feature = "hardware-test-hooks")]
+const DEFAULT_PERF_BLOCKS: usize = 30;
+#[cfg(feature = "hardware-test-hooks")]
+const DEFAULT_PERF_SAMPLES_PER_BLOCK: usize = 100;
+#[cfg(feature = "hardware-test-hooks")]
+const DEFAULT_PERF_BLOCK_REWARM: usize = 20;
 #[cfg(feature = "hardware-test-hooks")]
 const METADATA_KERNARG_ALIGNMENT: u64 = 8;
 #[cfg(feature = "hardware-test-hooks")]
@@ -112,14 +157,144 @@ const F32_POISON_BITS: u32 = 0x7fc0_00a5;
 type BoxError = Box<dyn std::error::Error>;
 
 #[cfg(feature = "hardware-test-hooks")]
+#[derive(Clone, Debug)]
+struct PerformanceConfig {
+    output: std::path::PathBuf,
+    warmups: usize,
+    blocks: usize,
+    samples_per_block: usize,
+    block_rewarm: usize,
+    campaign_id: String,
+    implementation_id: String,
+    variant_id: String,
+    process: usize,
+    llvm_sha256: String,
+    isa_sha256: String,
+    crate_binding: String,
+    source_commit: String,
+    source_tree: String,
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+impl PerformanceConfig {
+    fn from_environment() -> Result<Option<Self>, BoxError> {
+        let Some(output) = std::env::var_os(PERF_OUTPUT_ENV) else {
+            return Ok(None);
+        };
+        let output = std::path::PathBuf::from(output);
+        require(
+            output.is_absolute(),
+            format!("{PERF_OUTPUT_ENV} must be absolute"),
+        )?;
+        let parent = output
+            .parent()
+            .ok_or_else(|| format!("{PERF_OUTPUT_ENV} has no parent"))?;
+        require(
+            parent.is_dir() && std::fs::canonicalize(parent)? == parent,
+            format!("{PERF_OUTPUT_ENV} parent must be an existing canonical directory"),
+        )?;
+        if output.exists() {
+            let metadata = std::fs::symlink_metadata(&output)?;
+            require(
+                metadata.file_type().is_file() && !metadata.file_type().is_symlink(),
+                format!("{PERF_OUTPUT_ENV} must be a regular non-symlink file"),
+            )?;
+        }
+        Ok(Some(Self {
+            output,
+            warmups: parse_performance_count(PERF_WARMUPS_ENV, DEFAULT_PERF_WARMUPS, true)?,
+            blocks: parse_performance_count(PERF_BLOCKS_ENV, DEFAULT_PERF_BLOCKS, false)?,
+            samples_per_block: parse_performance_count(
+                PERF_SAMPLES_ENV,
+                DEFAULT_PERF_SAMPLES_PER_BLOCK,
+                false,
+            )?,
+            block_rewarm: parse_performance_count(
+                PERF_REWARM_ENV,
+                DEFAULT_PERF_BLOCK_REWARM,
+                true,
+            )?,
+            campaign_id: performance_text(PERF_CAMPAIGN_ENV, None)?,
+            implementation_id: performance_text(
+                PERF_IMPLEMENTATION_ENV,
+                Some("fe2o3-production-rust"),
+            )?,
+            variant_id: performance_text(PERF_VARIANT_ENV, Some("candidate"))?,
+            process: parse_performance_count(PERF_PROCESS_ENV, 0, true)?,
+            llvm_sha256: performance_hex(PERF_LLVM_SHA256_ENV, 64)?,
+            isa_sha256: performance_hex(PERF_ISA_SHA256_ENV, 64)?,
+            crate_binding: performance_hex(PERF_CRATE_BINDING_ENV, 64)?,
+            source_commit: performance_hex(PERF_SOURCE_COMMIT_ENV, 40)?,
+            source_tree: performance_hex(PERF_SOURCE_TREE_ENV, 40)?,
+        }))
+    }
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn parse_performance_count(
+    name: &'static str,
+    default: usize,
+    allow_zero: bool,
+) -> Result<usize, BoxError> {
+    let value = match std::env::var(name) {
+        Ok(text) => text
+            .parse::<usize>()
+            .map_err(|_| format!("{name} must be an unsigned decimal integer"))?,
+        Err(std::env::VarError::NotPresent) => default,
+        Err(error) => return Err(format!("{name} is not valid text: {error}").into()),
+    };
+    require(
+        value <= 1_000_000 && (allow_zero || value != 0),
+        format!("{name} is outside the admitted range"),
+    )?;
+    Ok(value)
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn performance_text(name: &'static str, default: Option<&str>) -> Result<String, BoxError> {
+    let value = match std::env::var(name) {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => default
+            .ok_or_else(|| format!("{name} is required when {PERF_OUTPUT_ENV} is set"))?
+            .to_owned(),
+        Err(error) => return Err(format!("{name} is not valid text: {error}").into()),
+    };
+    require(
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\'),
+        format!("{name} must be 1..=128 safe printable ASCII bytes"),
+    )?;
+    Ok(value)
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn performance_hex(name: &'static str, length: usize) -> Result<String, BoxError> {
+    let value = performance_text(name, None)?;
+    require(
+        value.len() == length
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        format!("{name} must be exactly {length} lowercase hex digits"),
+    )?;
+    Ok(value)
+}
+
+#[cfg(feature = "hardware-test-hooks")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AbiArg {
     Slice,
+    Pointer,
     U32,
 }
 
 #[cfg(feature = "hardware-test-hooks")]
 const SIX_SLICES: &[AbiArg] = &[AbiArg::Slice; 6];
+#[cfg(feature = "hardware-test-hooks")]
+const SEVEN_SLICES: &[AbiArg] = &[AbiArg::Slice; 7];
 #[cfg(feature = "hardware-test-hooks")]
 const FIVE_SLICES: &[AbiArg] = &[AbiArg::Slice; 5];
 #[cfg(feature = "hardware-test-hooks")]
@@ -140,6 +315,14 @@ const EXPERT_RANK_ARGS: &[AbiArg] = &[
 ];
 #[cfg(feature = "hardware-test-hooks")]
 const NINE_SLICES: &[AbiArg] = &[AbiArg::Slice; 9];
+#[cfg(feature = "hardware-test-hooks")]
+const THIRTEEN_SLICES: &[AbiArg] = &[AbiArg::Slice; 13];
+#[cfg(feature = "hardware-test-hooks")]
+const THREE_POINTERS: &[AbiArg] = &[AbiArg::Pointer; 3];
+#[cfg(feature = "hardware-test-hooks")]
+const FIVE_POINTERS: &[AbiArg] = &[AbiArg::Pointer; 5];
+#[cfg(feature = "hardware-test-hooks")]
+const SIX_POINTERS: &[AbiArg] = &[AbiArg::Pointer; 6];
 
 #[cfg(feature = "hardware-test-hooks")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -168,7 +351,7 @@ const KDA_PREFILL: AdvancedCase = AdvancedCase {
     descriptor: "gfx950_kda_gdn_prefill.kd",
     workgroup_x: 64,
     static_lds_bytes: 0,
-    args: SIX_SLICES,
+    args: SEVEN_SLICES,
 };
 #[cfg(feature = "hardware-test-hooks")]
 const SPARSE_ATTENTION: AdvancedCase = AdvancedCase {
@@ -216,6 +399,78 @@ const MHC: AdvancedCase = AdvancedCase {
     args: THREE_SLICES,
 };
 #[cfg(feature = "hardware-test-hooks")]
+const GPT_OSS: AdvancedCase = AdvancedCase {
+    label: "gfx950 GPT-OSS-120B batch-1 layer-tile megakernel",
+    export: "gfx950_gpt_oss_120b_decode_megakernel_v1",
+    descriptor: "gfx950_gpt_oss_120b_decode_megakernel_v1.kd",
+    workgroup_x: 64,
+    static_lds_bytes: 0,
+    args: THIRTEEN_SLICES,
+};
+#[cfg(feature = "hardware-test-hooks")]
+const GPT_OSS_PIPELINED: AdvancedCase = AdvancedCase {
+    label: "gfx950 GPT-OSS-120B batch-1 pipelined-attention megakernel",
+    export: "gfx950_gpt_oss_120b_decode_megakernel_v1",
+    descriptor: "gfx950_gpt_oss_120b_decode_megakernel_v1.kd",
+    workgroup_x: 64,
+    static_lds_bytes: 2048,
+    args: THIRTEEN_SLICES,
+};
+#[cfg(feature = "hardware-test-hooks")]
+const GPT_OSS_ROUTER_COMPONENT: AdvancedCase = AdvancedCase {
+    label: "gfx950 GPT-OSS-120B materialized Rust router",
+    export: "gfx950_gpt_oss_120b_router_v1",
+    descriptor: "gfx950_gpt_oss_120b_router_v1.kd",
+    workgroup_x: 64,
+    static_lds_bytes: 0,
+    args: THREE_SLICES,
+};
+#[cfg(feature = "hardware-test-hooks")]
+const GPT_OSS_ATTENTION_COMPONENT: AdvancedCase = AdvancedCase {
+    label: "gfx950 GPT-OSS-120B materialized Rust attention",
+    export: "gfx950_gpt_oss_120b_attention_v1",
+    descriptor: "gfx950_gpt_oss_120b_attention_v1.kd",
+    workgroup_x: 64,
+    static_lds_bytes: 0,
+    args: FIVE_SLICES,
+};
+#[cfg(feature = "hardware-test-hooks")]
+const GPT_OSS_EXPERT_COMPONENT: AdvancedCase = AdvancedCase {
+    label: "gfx950 GPT-OSS-120B materialized Rust expert",
+    export: "gfx950_gpt_oss_120b_expert_v1",
+    descriptor: "gfx950_gpt_oss_120b_expert_v1.kd",
+    workgroup_x: 64,
+    static_lds_bytes: 0,
+    args: SIX_SLICES,
+};
+#[cfg(feature = "hardware-test-hooks")]
+const GPT_OSS_UNFUSED_ROUTER: AdvancedCase = AdvancedCase {
+    label: "gfx950 GPT-OSS-120B unfused router comparator",
+    export: "gpt_oss_unfused_router",
+    descriptor: "gpt_oss_unfused_router.kd",
+    workgroup_x: 64,
+    static_lds_bytes: 0,
+    args: THREE_POINTERS,
+};
+#[cfg(feature = "hardware-test-hooks")]
+const GPT_OSS_UNFUSED_ATTENTION: AdvancedCase = AdvancedCase {
+    label: "gfx950 GPT-OSS-120B unfused attention comparator",
+    export: "gpt_oss_unfused_attention",
+    descriptor: "gpt_oss_unfused_attention.kd",
+    workgroup_x: 64,
+    static_lds_bytes: 0,
+    args: FIVE_POINTERS,
+};
+#[cfg(feature = "hardware-test-hooks")]
+const GPT_OSS_UNFUSED_EXPERT: AdvancedCase = AdvancedCase {
+    label: "gfx950 GPT-OSS-120B unfused expert comparator",
+    export: "gpt_oss_unfused_expert",
+    descriptor: "gpt_oss_unfused_expert.kd",
+    workgroup_x: 64,
+    static_lds_bytes: 0,
+    args: SIX_POINTERS,
+};
+#[cfg(feature = "hardware-test-hooks")]
 const MOE_ROUTE: AdvancedCase = AdvancedCase {
     label: "gfx950 MoE route",
     export: "gfx950_moe_route_fp4_t16_e4_k2_v1",
@@ -229,7 +484,7 @@ const MOE_EXPERT: AdvancedCase = AdvancedCase {
     label: "gfx950 MoE expert rank",
     export: "gfx950_moe_expert_rank_fp4_fp8_v1",
     descriptor: "gfx950_moe_expert_rank_fp4_fp8_v1.kd",
-    workgroup_x: 256,
+    workgroup_x: 64,
     static_lds_bytes: 0,
     args: EXPERT_RANK_ARGS,
 };
@@ -294,6 +549,7 @@ fn kernarg_size(args: &[AbiArg]) -> usize {
         .iter()
         .map(|arg| match arg {
             AbiArg::Slice => 16,
+            AbiArg::Pointer => 8,
             AbiArg::U32 => 4,
         })
         .sum::<usize>();
@@ -310,6 +566,10 @@ fn expected_metadata_arguments(args: &[AbiArg]) -> Vec<(u64, u64, ExplicitValueK
                 result.push((offset, 8, ExplicitValueKind::GlobalBuffer));
                 result.push((offset + 8, 8, ExplicitValueKind::ByValue));
                 offset += 16;
+            }
+            AbiArg::Pointer => {
+                result.push((offset, 8, ExplicitValueKind::GlobalBuffer));
+                offset += 8;
             }
             AbiArg::U32 => {
                 result.push((offset, 4, ExplicitValueKind::ByValue));
@@ -468,6 +728,7 @@ impl ExpectedOutput {
 }
 
 #[cfg(feature = "hardware-test-hooks")]
+#[derive(Clone)]
 struct PlannedBuffer {
     name: &'static str,
     initial: Vec<u8>,
@@ -480,6 +741,7 @@ struct PlannedBuffer {
 #[cfg(feature = "hardware-test-hooks")]
 enum PlannedArg {
     Slice { buffer: usize, elements: usize },
+    Pointer { buffer: usize },
     U32(u32),
 }
 
@@ -628,13 +890,16 @@ fn attention_plans(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxError> {
                 &values, &gates, &state, &weights,
             )
             .map_err(|error| format!("KDA prefill reference failed: {error:?}"))?;
+            let normalized_first = expected.normalized[..4 * CHANNELS_V1].to_vec();
+            let normalized_second = expected.normalized[4 * CHANNELS_V1..].to_vec();
             let lengths = [
                 values.len(),
                 gates.len(),
                 state.len(),
                 weights.len(),
                 CHANNELS_V1,
-                PREFILL_TOKENS_V1 * CHANNELS_V1,
+                4 * CHANNELS_V1,
+                4 * CHANNELS_V1,
             ];
             LaunchPlan {
                 label: case.label.into(),
@@ -644,9 +909,10 @@ fn attention_plans(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxError> {
                     input("initial_state", &state),
                     input("convolution_weights", &weights),
                     f32_output("final_state", expected.final_state, 3.0e-3),
-                    f32_output("normalized_output", expected.normalized, 3.0e-3),
+                    f32_output("normalized_output_first", normalized_first, 3.0e-3),
+                    f32_output("normalized_output_second", normalized_second, 3.0e-3),
                 ],
-                args: (0..6)
+                args: (0..7)
                     .map(|buffer| PlannedArg::Slice {
                         buffer,
                         elements: lengths[buffer],
@@ -1174,7 +1440,139 @@ fn systems_plans(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxError> {
 }
 
 #[cfg(feature = "hardware-test-hooks")]
+fn pack_mfma_blocked_output(logical_row_major: &[f32]) -> Result<Vec<f32>, BoxError> {
+    require(
+        logical_row_major.len() == 16 * 16,
+        "MFMA blocked output requires one 16x16 tile",
+    )?;
+    let mut physical = vec![0.0_f32; 16 * 16];
+    for component in 0..4 {
+        for lane in 0..64 {
+            let row = (lane / 16) * 4 + component;
+            let column = lane % 16;
+            physical[component * 64 + lane] = logical_row_major[row * 16 + column];
+        }
+    }
+    Ok(physical)
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn gpt_oss_plans(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxError> {
+    let inputs = gpt_oss_reference::deterministic_inputs();
+    let expected = gpt_oss_reference::reference(&inputs);
+    let expected_attention = pack_mfma_blocked_output(&expected.attention)?;
+    let expected_expert = pack_mfma_blocked_output(&expected.expert)?;
+    require(
+        expected.top4[0] == 127,
+        "deterministic GPT-OSS fixture did not select expert 127",
+    )?;
+    let lengths = [
+        inputs.hidden_f32.len(),
+        inputs.router_f32.len(),
+        inputs.query_bf16.len(),
+        inputs.key_transposed_bf16.len(),
+        inputs.value_f32.len(),
+        inputs.sinks_f32.len(),
+        inputs.expert_activation_blocks_fp4.len(),
+        inputs.expert_weight_blocks_fp4.len(),
+        inputs.activation_scales.len(),
+        inputs.expert_weight_scales.len(),
+        expected.attention.len(),
+        expected.expert.len(),
+        1,
+    ];
+    Ok(vec![LaunchPlan {
+        label: case.label.into(),
+        buffers: vec![
+            input("hidden_f32", &inputs.hidden_f32),
+            input("router_f32", &inputs.router_f32),
+            input("query_bf16", &inputs.query_bf16),
+            input("key_transposed_bf16", &inputs.key_transposed_bf16),
+            input("value_f32", &inputs.value_f32),
+            input("sinks_f32", &inputs.sinks_f32),
+            input(
+                "expert_activation_blocks_fp4",
+                &inputs.expert_activation_blocks_fp4,
+            ),
+            input("expert_weight_blocks_fp4", &inputs.expert_weight_blocks_fp4),
+            input("activation_scales", &inputs.activation_scales),
+            input("expert_weight_scales", &inputs.expert_weight_scales),
+            f32_output("attention_output", expected_attention, 8.0e-3),
+            f32_output("expert_output", expected_expert, 8.0e-3),
+            output(
+                "packed_top4",
+                ExpectedOutput::U32(vec![expected.packed_top4]),
+            ),
+        ],
+        args: (0..13)
+            .map(|buffer| PlannedArg::Slice {
+                buffer,
+                elements: lengths[buffer],
+            })
+            .collect(),
+    }])
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn gpt_oss_component_plans(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxError> {
+    let mut plans = gpt_oss_plans(GPT_OSS)?;
+    let full = plans.pop().ok_or("GPT-OSS launch plan is absent")?;
+    require(plans.is_empty(), "GPT-OSS launch plan was duplicated")?;
+    let indices: &[usize] = if case == GPT_OSS_ROUTER_COMPONENT {
+        &[0, 1, 12]
+    } else if case == GPT_OSS_ATTENTION_COMPONENT {
+        &[2, 3, 4, 5, 10]
+    } else if case == GPT_OSS_EXPERT_COMPONENT {
+        &[6, 7, 8, 9, 12, 11]
+    } else {
+        return Err(format!("unknown GPT-OSS component {}", case.export).into());
+    };
+    let mut buffers = indices
+        .iter()
+        .map(|index| full.buffers[*index].clone())
+        .collect::<Vec<_>>();
+    if case == GPT_OSS_EXPERT_COMPONENT {
+        let packed = buffers
+            .get_mut(4)
+            .ok_or("GPT-OSS packed route buffer is absent")?;
+        let packed_values = match packed.expected.take() {
+            Some(ExpectedOutput::U32(values)) => values,
+            _ => return Err("GPT-OSS packed route reference changed kind".into()),
+        };
+        let packed_bytes = value_bytes(&packed_values);
+        let start = packed.body_offset;
+        packed.initial[start..start + packed_bytes.len()].copy_from_slice(&packed_bytes);
+        packed.immutable = true;
+    }
+    let lengths = buffers
+        .iter()
+        .map(|buffer| buffer.elements)
+        .collect::<Vec<_>>();
+    Ok(vec![LaunchPlan {
+        label: case.label.into(),
+        buffers,
+        args: lengths
+            .into_iter()
+            .enumerate()
+            .map(|(buffer, elements)| PlannedArg::Slice { buffer, elements })
+            .collect(),
+    }])
+}
+
+#[cfg(feature = "hardware-test-hooks")]
 fn plans_for(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxError> {
+    if [GPT_OSS, GPT_OSS_PIPELINED].contains(&case) {
+        return gpt_oss_plans(case);
+    }
+    if [
+        GPT_OSS_ROUTER_COMPONENT,
+        GPT_OSS_ATTENTION_COMPONENT,
+        GPT_OSS_EXPERT_COMPONENT,
+    ]
+    .contains(&case)
+    {
+        return gpt_oss_component_plans(case);
+    }
     if [
         KDA_DECODE,
         KDA_PREFILL,
@@ -1228,6 +1626,14 @@ fn explicit_kernarg(
                 );
                 put_u64(&mut bytes, offset + 8, *elements as u64);
                 offset += 16;
+            }
+            (AbiArg::Pointer, PlannedArg::Pointer { buffer }) => {
+                put_u64(
+                    &mut bytes,
+                    offset,
+                    buffers[*buffer].device_address(plan.buffers[*buffer].body_offset)?,
+                );
+                offset += 8;
             }
             (AbiArg::U32, PlannedArg::U32(value)) => {
                 put_u32(&mut bytes, offset, *value);
@@ -1486,6 +1892,479 @@ fn execute_plan(
 }
 
 #[cfg(feature = "hardware-test-hooks")]
+#[cfg(feature = "hardware-test-hooks")]
+fn inspect_gpt_unfused_profile(bytes: &[u8]) -> Result<(), BoxError> {
+    let bound = fe2o3_hsaco::inspect_and_bind_kernel_descriptors(bytes)?;
+    let inspected = bound.inspection();
+    require(
+        inspected.code_object_version() == CodeObjectVersion::V6
+            && inspected.target().processor() == "gfx950"
+            && inspected.target().xnack() == Some(FeatureState::Disabled)
+            && !inspected.has_printf_metadata(),
+        "unfused GPT-OSS comparator must be printf-free gfx950:xnack- COV6",
+    )?;
+    let cases = [
+        GPT_OSS_UNFUSED_ROUTER,
+        GPT_OSS_UNFUSED_ATTENTION,
+        GPT_OSS_UNFUSED_EXPERT,
+    ];
+    require(
+        inspected.kernels().len() == cases.len(),
+        "unfused GPT-OSS comparator kernel count changed",
+    )?;
+    for case in cases {
+        let kernel = inspected
+            .kernels()
+            .iter()
+            .find(|kernel| kernel.name() == case.export)
+            .ok_or_else(|| format!("unfused comparator omitted {}", case.export))?;
+        require(
+            kernel.symbol() == case.descriptor
+                && kernel.kernarg_segment_size() == kernarg_size(case.args) as u64
+                && kernel.kernarg_segment_alignment() == METADATA_KERNARG_ALIGNMENT
+                && kernel.group_segment_fixed_size() == 0
+                && kernel.wavefront_size() == 64
+                && kernel.max_flat_workgroup_size() == 64
+                && !kernel.uses_dynamic_stack(),
+            format!("{} metadata changed", case.label),
+        )?;
+        let arguments = kernel
+            .explicit_arguments()
+            .iter()
+            .map(|argument| (argument.offset(), argument.size(), argument.value_kind()))
+            .collect::<Vec<_>>();
+        require(
+            arguments == expected_metadata_arguments(case.args),
+            format!("{} pointer ABI changed", case.label),
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn pointer_kernarg(
+    case: AdvancedCase,
+    plan: &LaunchPlan,
+    buffers: &[ReviewedHsaHardwareTestBufferV1],
+    indices: &[usize],
+) -> Result<Vec<u8>, BoxError> {
+    require(
+        indices.len() == case.args.len()
+            && case
+                .args
+                .iter()
+                .all(|argument| *argument == AbiArg::Pointer),
+        format!("{} pointer launch ABI changed", case.label),
+    )?;
+    let mut explicit = vec![0_u8; kernarg_size(case.args)];
+    for (slot, buffer) in indices.iter().enumerate() {
+        put_u64(
+            &mut explicit,
+            slot * 8,
+            buffers[*buffer].device_address(plan.buffers[*buffer].body_offset)?,
+        );
+    }
+    Ok(explicit)
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn gpt_unfused_profile_plans() -> Result<Vec<(AdvancedCase, LaunchPlan)>, BoxError> {
+    let mut plans = gpt_oss_plans(GPT_OSS)?;
+    let full = plans.pop().ok_or("GPT-OSS launch plan is absent")?;
+    require(plans.is_empty(), "GPT-OSS launch plan was duplicated")?;
+
+    let label = "gpt-oss-120b-batch1-layer-tile-exact-unfused";
+    let router = LaunchPlan {
+        label: label.to_owned(),
+        buffers: [0, 1, 12]
+            .into_iter()
+            .map(|index| full.buffers[index].clone())
+            .collect(),
+        args: (0..3)
+            .map(|buffer| PlannedArg::Pointer { buffer })
+            .collect(),
+    };
+    let attention = LaunchPlan {
+        label: label.to_owned(),
+        buffers: [2, 3, 4, 5, 10]
+            .into_iter()
+            .map(|index| full.buffers[index].clone())
+            .collect(),
+        args: (0..5)
+            .map(|buffer| PlannedArg::Pointer { buffer })
+            .collect(),
+    };
+
+    let mut packed = full.buffers[12].clone();
+    let packed_values = match packed.expected.clone() {
+        Some(ExpectedOutput::U32(values)) => values,
+        _ => return Err("GPT-OSS packed top-4 reference changed kind".into()),
+    };
+    let packed_bytes = value_bytes(&packed_values);
+    require(
+        packed_bytes.len() == packed.elements * std::mem::size_of::<u32>(),
+        "GPT-OSS packed top-4 reference changed size",
+    )?;
+    let packed_start = packed.body_offset;
+    packed.initial[packed_start..packed_start + packed_bytes.len()].copy_from_slice(&packed_bytes);
+    packed.immutable = true;
+    packed.expected = None;
+    let expert = LaunchPlan {
+        label: label.to_owned(),
+        buffers: vec![
+            full.buffers[6].clone(),
+            full.buffers[7].clone(),
+            full.buffers[8].clone(),
+            full.buffers[9].clone(),
+            packed,
+            full.buffers[11].clone(),
+        ],
+        args: (0..6)
+            .map(|buffer| PlannedArg::Pointer { buffer })
+            .collect(),
+    };
+
+    Ok(vec![
+        (GPT_OSS_UNFUSED_ROUTER, router),
+        (GPT_OSS_UNFUSED_ATTENTION, attention),
+        (GPT_OSS_UNFUSED_EXPERT, expert),
+    ])
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn run_gpt_unfused_comparator() -> Result<(), BoxError> {
+    let (bytes, digest) = read_pinned_hsaco()?;
+    inspect_gpt_unfused_profile(&bytes)?;
+    let mut plans = gpt_oss_plans(GPT_OSS)?;
+    let plan = plans.pop().ok_or("GPT-OSS launch plan is absent")?;
+    require(plans.is_empty(), "GPT-OSS launch plan was duplicated")?;
+
+    let context = GpuContext::new(0)?;
+    let mut adapter = ReviewedHsaRuntimeAdapterV1::new_gfx950(context)?;
+    require(
+        adapter.environment().physical_device().target().processor() == "gfx950"
+            && adapter.environment().physical_device().target().xnack()
+                == Some(FeatureState::Disabled),
+        "unfused GPT-OSS comparator requires gfx950:xnack-",
+    )?;
+    let buffers = plan
+        .buffers
+        .iter()
+        .map(|buffer| adapter.allocate_hardware_test_buffer(&buffer.initial))
+        .collect::<Result<Vec<_>, _>>()?;
+    let cases = [
+        GPT_OSS_UNFUSED_ROUTER,
+        GPT_OSS_UNFUSED_ATTENTION,
+        GPT_OSS_UNFUSED_EXPERT,
+    ];
+    let mappings: [&[usize]; 3] = [&[0, 1, 12], &[2, 3, 4, 5, 10], &[6, 7, 8, 9, 12, 11]];
+    let (executable, load) = unsafe { adapter.load_executable(&bytes, digest) }?;
+    let executable_identity = load.executable_object();
+    let execution = (|| -> Result<(), BoxError> {
+        require(
+            load.finalized_digest() == digest && load.byte_len() == bytes.len() as u64,
+            "unfused comparator load observation changed",
+        )?;
+        let exports = cases.map(|case| case.export);
+        let (kernels, resolutions) = unsafe { adapter.resolve_kernel_set(&executable, exports) }?;
+        require(
+            kernels.len() == cases.len()
+                && resolutions.len() == cases.len()
+                && resolutions
+                    .iter()
+                    .all(|resolution| resolution.executable_object() == executable_identity),
+            "unfused comparator resolved a substituted kernel set",
+        )?;
+        for index in 0..cases.len() {
+            let explicit = pointer_kernarg(cases[index], &plan, &buffers, mappings[index])?;
+            unsafe {
+                dispatch(
+                    cases[index],
+                    &mut adapter,
+                    &executable,
+                    kernels
+                        .get(index)
+                        .ok_or("unfused comparator runtime omitted a kernel")?,
+                    &resolutions[index],
+                    &explicit,
+                )?;
+            }
+        }
+        for (planned, actual) in plan.buffers.iter().zip(&buffers) {
+            verify_buffer(planned, &actual.read_after_synchronous_dispatch())?;
+        }
+        Ok(())
+    })();
+    let unload = unsafe { adapter.unload_executable(executable) }?;
+    require(
+        unload.released() && unload.executable_object() == executable_identity,
+        "unfused comparator executable was not released",
+    )?;
+    execution?;
+    if let Some(config) = PerformanceConfig::from_environment()? {
+        for (case, plan) in gpt_unfused_profile_plans()? {
+            profile_plan(case, &mut adapter, &bytes, digest, plan, &config)?;
+        }
+    }
+    println!("PASS gfx950 GPT-OSS exact unfused three-dispatch comparator");
+    Ok(())
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn lowercase_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn workload_identity(plan: &LaunchPlan) -> (String, serde_json::Value) {
+    let mut digest = Sha256::new();
+    let buffers = plan
+        .buffers
+        .iter()
+        .map(|buffer| {
+            digest.update(buffer.name.as_bytes());
+            digest.update((buffer.initial.len() as u64).to_le_bytes());
+            digest.update((buffer.body_offset as u64).to_le_bytes());
+            digest.update((buffer.elements as u64).to_le_bytes());
+            digest.update([u8::from(buffer.immutable)]);
+            digest.update(&buffer.initial);
+            let oracle = match buffer.expected.as_ref() {
+                None => json!({"kind": "immutable-input"}),
+                Some(ExpectedOutput::F32 {
+                    values,
+                    absolute_tolerance,
+                    relative_tolerance,
+                    exact_mask,
+                }) => json!({
+                    "kind": "cpu-reference-f32",
+                    "elements": values.len(),
+                    "absolute_tolerance": absolute_tolerance.to_string(),
+                    "relative_tolerance": relative_tolerance.to_string(),
+                    "bitwise_exact_elements": exact_mask
+                        .as_ref()
+                        .map(|mask| mask.iter().filter(|exact| **exact).count())
+                        .unwrap_or(0),
+                }),
+                Some(ExpectedOutput::U32(values)) => {
+                    json!({"kind": "cpu-reference-u32-exact", "elements": values.len()})
+                }
+                Some(ExpectedOutput::I32(values)) => {
+                    json!({"kind": "cpu-reference-i32-exact", "elements": values.len()})
+                }
+            };
+            json!({
+                "name": buffer.name,
+                "byte_len": buffer.initial.len(),
+                "body_offset": buffer.body_offset,
+                "elements": buffer.elements,
+                "immutable": buffer.immutable,
+                "initial_sha256": lowercase_hex(&Sha256::digest(&buffer.initial)),
+                "oracle": oracle,
+            })
+        })
+        .collect::<Vec<_>>();
+    (lowercase_hex(&digest.finalize()), json!(buffers))
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn profile_plan(
+    case: AdvancedCase,
+    adapter: &mut ReviewedHsaRuntimeAdapterV1,
+    bytes: &[u8],
+    digest: PayloadDigest,
+    plan: LaunchPlan,
+    config: &PerformanceConfig,
+) -> Result<(), BoxError> {
+    let buffers = plan
+        .buffers
+        .iter()
+        .map(|buffer| adapter.allocate_hardware_test_buffer(&buffer.initial))
+        .collect::<Result<Vec<_>, _>>()?;
+    let explicit = explicit_kernarg(case, &plan, &buffers)?;
+    let (workload_sha256, buffer_identity) = workload_identity(&plan);
+    let environment = {
+        let observed = adapter.environment();
+        json!({
+            "hostname": std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_owned()),
+            "process_id": std::process::id(),
+            "rocr_visible_devices": std::env::var("ROCR_VISIBLE_DEVICES").ok(),
+            "hip_visible_devices": std::env::var("HIP_VISIBLE_DEVICES").ok(),
+            "hsa_runtime": {
+                "implementation": observed.runtime().implementation(),
+                "version": observed.runtime().version(),
+                "image_sha256": lowercase_hex(
+                    observed.runtime().image_digest().bytes().as_bytes()
+                ),
+            },
+            "physical_device": {
+                "uuid": lowercase_hex(&observed.physical_device().uuid()),
+                "node_id": observed.physical_device().node_id(),
+                "hip_ordinal": observed.physical_device().hip_ordinal(),
+                "target": "gfx950:xnack-",
+                "hsa_agent_handle": observed.agent().agent_handle().to_string(),
+            },
+        })
+    };
+    let mut output = std::io::BufWriter::new(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&config.output)?,
+    );
+    // SAFETY: immutable digest-pinned bytes and allocations are retained until
+    // the profiled session and the sole consuming unload complete.
+    let (executable, load) = unsafe { adapter.load_executable(bytes, digest) }?;
+    let executable_identity = load.executable_object();
+    let execution = (|| -> Result<(), BoxError> {
+        require(
+            load.finalized_digest() == digest && load.byte_len() == bytes.len() as u64,
+            format!("{} profiled load observation changed", plan.label),
+        )?;
+        // SAFETY: profile inspection admitted exactly this export/descriptor.
+        let (kernels, resolutions) =
+            unsafe { adapter.resolve_kernel_set(&executable, [case.export]) }?;
+        let kernel = kernels
+            .get(0)
+            .ok_or_else(|| format!("profiled runtime omitted {}", plan.label))?;
+        let resolution = &resolutions[0];
+        let size = kernarg_size(case.args);
+        require(
+            kernels.len() == 1
+                && resolutions.len() == 1
+                && resolution.executable_object() == executable_identity
+                && resolution.export_symbol() == case.export
+                && resolution.kernarg_segment_size() == size as u64
+                && resolution.kernarg_segment_alignment() == HSA_KERNARG_ALIGNMENT
+                && resolution.group_segment_size() == case.static_lds_bytes,
+            format!(
+                "runtime resolved a substituted profiled {} kernel",
+                plan.label
+            ),
+        )?;
+        let geometry = HsaLaunchGeometryV1::new([1, 1, 1], [case.workgroup_x, 1, 1], 0);
+        let mut storage = RuntimeKernarg::new(size)?;
+        let kernarg = storage.bytes_mut();
+        kernarg.copy_from_slice(&explicit);
+        let original = explicit.clone();
+        // SAFETY: the same admitted ABI and live buffers used by the existing
+        // correctness dispatch remain live for the complete session.
+        let mut session = unsafe {
+            let initialization = adapter.initialize_implicit_kernarg(
+                &executable,
+                kernel,
+                geometry,
+                size,
+                size,
+                0,
+                kernarg,
+            )?;
+            require(
+                initialization.initialized()
+                    && initialization.explicit_byte_len() == size as u64
+                    && initialization.implicit_byte_offset() == size as u64
+                    && initialization.implicit_byte_len() == 0
+                    && kernarg == original,
+                format!("{} profiled initialization changed the ABI", case.label),
+            )?;
+            adapter.prepare_profiled_dispatch_session(&executable, kernel, geometry, kernarg)?
+        };
+
+        session.dispatch()?;
+        for (planned, actual) in plan.buffers.iter().zip(&buffers) {
+            verify_buffer(planned, &actual.read_after_synchronous_dispatch())?;
+        }
+        for _ in 0..config.warmups {
+            session.dispatch()?;
+        }
+
+        for block in 0..config.blocks {
+            for _ in 0..config.block_rewarm {
+                session.dispatch()?;
+            }
+            let observations = (0..config.samples_per_block)
+                .map(|_| session.dispatch())
+                .collect::<Result<Vec<_>, _>>()?;
+            for (planned, actual) in plan.buffers.iter().zip(&buffers) {
+                verify_buffer(planned, &actual.read_after_synchronous_dispatch())?;
+            }
+            for (sample, observation) in observations.iter().enumerate() {
+                let record = json!({
+                    "schema": "fe2o3.gfx950.advanced-dispatch-sample.v1",
+                    "campaign_id": config.campaign_id,
+                    "record_id": format!(
+                        "{}:{}:{}:{}:{}:{}:{}",
+                        config.campaign_id, config.variant_id, config.process,
+                        case.export, plan.label, block, sample
+                    ),
+                    "implementation": {
+                        "id": config.implementation_id,
+                        "variant": config.variant_id,
+                    },
+                    "artifact": {
+                        "source_commit": config.source_commit,
+                        "source_tree": config.source_tree,
+                        "crate_binding_sha256": config.crate_binding,
+                        "llvm_sha256": config.llvm_sha256,
+                        "hsaco_sha256": std::env::var(SHA256_ENV)?,
+                        "isa_sha256": config.isa_sha256,
+                        "kernel_export": case.export,
+                        "descriptor": case.descriptor,
+                    },
+                    "workload": {
+                        "id": plan.label,
+                        "input_sha256": workload_sha256,
+                        "buffers": buffer_identity,
+                        "cache_regime": "persistent-allocation-repeated-single-workgroup",
+                    },
+                    "launch": {
+                        "grid": [1, 1, 1],
+                        "workgroup": [case.workgroup_x, 1, 1],
+                        "dynamic_lds_bytes": 0,
+                        "static_lds_bytes": case.static_lds_bytes,
+                        "kernarg_bytes": size,
+                    },
+                    "trial": {
+                        "process": config.process,
+                        "block": block,
+                        "sample": sample,
+                        "initial_warmups": config.warmups,
+                        "block_rewarm": config.block_rewarm,
+                        "samples_per_block": config.samples_per_block,
+                    },
+                    "timer": {
+                        "source": "rocr-hsa-dispatch-timestamps",
+                        "start_tick": observation.start_tick().to_string(),
+                        "end_tick": observation.end_tick().to_string(),
+                        "duration_ticks": (observation.end_tick() - observation.start_tick()).to_string(),
+                        "frequency_hz": observation.timestamp_frequency_hz().to_string(),
+                        "duration_ns": observation.duration_ns().to_string(),
+                        "aql_packet_id": observation.packet_id().to_string(),
+                    },
+                    "correctness": {
+                        "passed": true,
+                        "preflight_dispatch_checked": true,
+                        "post_block_checked": true,
+                        "guard_canaries_checked": true,
+                        "oracle": "current-repository-cpu-reference",
+                    },
+                    "environment": environment,
+                });
+                serde_json::to_writer(&mut output, &record)?;
+                output.write_all(b"\n")?;
+            }
+        }
+        output.flush()?;
+        Ok(())
+    })();
+    let unload = unsafe { adapter.unload_executable(executable) }?;
+    require(
+        unload.released() && unload.executable_object() == executable_identity,
+        format!("{} profiled executable was not released", plan.label),
+    )?;
+    execution
+}
+
+#[cfg(feature = "hardware-test-hooks")]
 fn run_case(case: AdvancedCase) -> Result<(), BoxError> {
     let (bytes, digest) = read_pinned_hsaco()?;
     inspect_profile(case, &bytes)?;
@@ -1499,6 +2378,11 @@ fn run_case(case: AdvancedCase) -> Result<(), BoxError> {
     )?;
     for plan in plans_for(case)? {
         execute_plan(case, &mut adapter, &bytes, digest, plan)?;
+    }
+    if let Some(config) = PerformanceConfig::from_environment()? {
+        for plan in plans_for(case)? {
+            profile_plan(case, &mut adapter, &bytes, digest, plan, &config)?;
+        }
     }
     println!("PASS {} production HSA verification", case.label);
     Ok(())
@@ -1554,6 +2438,38 @@ hardware_case!(
     gfx950_moe_expert_rank_rust_cov6_matches_cpu_reference,
     MOE_EXPERT
 );
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_gpt_oss_layer_tile_rust_cov6_matches_cpu_reference,
+    GPT_OSS
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_gpt_oss_pipelined_attention_rust_cov6_matches_cpu_reference,
+    GPT_OSS_PIPELINED
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_gpt_oss_router_component_rust_cov6_matches_cpu_reference,
+    GPT_OSS_ROUTER_COMPONENT
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_gpt_oss_attention_component_rust_cov6_matches_cpu_reference,
+    GPT_OSS_ATTENTION_COMPONENT
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_gpt_oss_expert_component_rust_cov6_matches_cpu_reference,
+    GPT_OSS_EXPERT_COMPONENT
+);
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+#[ignore = "non-authoritative: requires the exact HIP gfx950:xnack- comparator HSACO and MI350"]
+fn gfx950_gpt_oss_unfused_hip_matches_cpu_reference() -> Result<(), BoxError> {
+    run_gpt_unfused_comparator()
+}
+
 #[cfg(feature = "hardware-test-hooks")]
 hardware_case!(
     gfx950_combine_expert_ranks_rust_cov6_matches_cpu_reference,

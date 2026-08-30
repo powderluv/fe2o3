@@ -20,7 +20,7 @@ use pliron::{
     common_traits::{Named, Verify},
     context::{Context, Ptr},
     linked_list::ContainsLinkedList,
-    op::Op,
+    op::{Op, OpBox},
     operation::{Operation, verify_operation},
     printable::Printable,
 };
@@ -304,6 +304,7 @@ fn run_pliron_progress_check_inner_v1(
             &block_indices,
             &inventory.root_operation_blocks,
             &graph.predecessors,
+            &graph.edges,
             &graph.incoming,
             &component,
             &component_members,
@@ -961,6 +962,7 @@ fn canonical_positive_induction_loop(
     block_indices: &HashMap<Ptr<BasicBlock>, usize>,
     operation_blocks: &HashMap<Ptr<Operation>, usize>,
     predecessors: &[Vec<usize>],
+    edges: &[Vec<usize>],
     incoming: &[Vec<IncomingEdgeV1>],
     component: &[usize],
     component_members: &HashSet<usize>,
@@ -1023,143 +1025,83 @@ fn canonical_positive_induction_loop(
                 "the loop bound depends on a value defined inside the cycle",
             );
         }
-        let mut visited = HashSet::new();
-        let mut previous_index = *header_index;
-        let mut current_index = body_index;
-        let (latch_index, latch_induction, next) = loop {
-            if !component_members.contains(&current_index) || !visited.insert(current_index) {
+        let latch_index = internal_header_predecessors[0];
+        if component.iter().copied().any(|block| {
+            block != *header_index
+                && predecessors[block]
+                    .iter()
+                    .any(|predecessor| !component_members.contains(predecessor))
+        }) {
+            return CanonicalLoopResultV1::Incomplete(
+                "a loop body block has an external predecessor that bypasses the guarded header",
+            );
+        }
+        if component
+            .iter()
+            .copied()
+            .any(|block| blocks[block].deref(context).get_num_arguments() != 1)
+        {
+            return CanonicalLoopResultV1::Incomplete(
+                "every block in the guarded recurrence must carry exactly one induction argument",
+            );
+        }
+        let removed_backedge = HashSet::from([(latch_index, *header_index)]);
+        if !is_acyclic_without_edges_v1(component_members, edges, &removed_backedge) {
+            return CanonicalLoopResultV1::Incomplete(
+                "the loop body retains a control-flow cycle that can bypass the induction update",
+            );
+        }
+
+        let mut next = None;
+        let mut latch_induction = None;
+        for source_index in component.iter().copied() {
+            let source_block = blocks[source_index].deref(context);
+            let source_induction = source_block.get_argument(0);
+            let Some(terminator) = source_block.get_terminator(context) else {
                 return CanonicalLoopResultV1::Incomplete(
-                    "the guarded loop body does not form one acyclic forwarding path to the latch",
-                );
-            }
-            if predecessors[current_index].as_slice() != [previous_index] {
-                return CanonicalLoopResultV1::Incomplete(
-                    "the loop body has a predecessor other than the preceding canonical loop block",
-                );
-            }
-            let current = blocks[current_index];
-            let current_block = current.deref(context);
-            if current_block.get_num_arguments() != 1 {
-                return CanonicalLoopResultV1::Incomplete(
-                    "every loop forwarding block must carry exactly one induction argument",
-                );
-            }
-            let current_induction = current_block.get_argument(0);
-            let Some(terminator) = current_block.get_terminator(context) else {
-                return CanonicalLoopResultV1::Incomplete(
-                    "a loop forwarding block has no terminator",
+                    "a loop recurrence block has no terminator",
                 );
             };
             let terminator = Operation::get_op_dyn(terminator, context);
-            let (successor_index, forwarded) = if let Some(forward) =
-                terminator.downcast_ref::<BranchArgsOp>()
-            {
-                let successors = forward
-                    .get_operation()
-                    .deref(context)
-                    .successors()
-                    .collect::<Vec<_>>();
-                let [successor] = successors.as_slice() else {
+            let successors = terminator
+                .get_operation()
+                .deref(context)
+                .successors()
+                .collect::<Vec<_>>();
+            for (ordinal, successor) in successors.iter().copied().enumerate() {
+                let Some(successor_index) = block_indices.get(&successor).copied() else {
                     return CanonicalLoopResultV1::Incomplete(
-                        "an unconditional loop forwarding block does not have exactly one successor",
+                        "a loop recurrence edge leaves the kernel function",
                     );
                 };
-                let Some(successor_index) = block_indices.get(successor).copied() else {
+                if !component_members.contains(&successor_index) {
+                    continue;
+                }
+                let Some(arguments) = successor_arguments(context, &terminator, ordinal) else {
                     return CanonicalLoopResultV1::Incomplete(
-                        "an intermediate loop edge leaves the kernel function",
+                        "an internal loop edge does not expose exact SSA successor arguments",
                     );
-                };
-                let arguments = forward.arguments(context);
-                let [forwarded] = arguments.as_slice() else {
-                    return CanonicalLoopResultV1::Incomplete(
-                        "an intermediate loop edge does not carry exactly one induction value",
-                    );
-                };
-                (successor_index, *forwarded)
-            } else {
-                let guarded = terminator
-                    .downcast_ref::<IndexLessThanBranchArgsOp>()
-                    .map(|branch| {
-                        (
-                            branch.true_arguments(context),
-                            branch.false_arguments(context),
-                        )
-                    })
-                    .or_else(|| {
-                        terminator
-                            .downcast_ref::<IndexEqualBranchArgsOp>()
-                            .map(|branch| {
-                                (
-                                    branch.true_arguments(context),
-                                    branch.false_arguments(context),
-                                )
-                            })
-                    });
-                let Some((true_arguments, false_arguments)) = guarded else {
-                    return CanonicalLoopResultV1::Incomplete(
-                        "an intermediate loop block has no supported SSA forwarding terminator",
-                    );
-                };
-                let successors = terminator
-                    .get_operation()
-                    .deref(context)
-                    .successors()
-                    .collect::<Vec<_>>();
-                let [true_successor, false_successor] = successors.as_slice() else {
-                    return CanonicalLoopResultV1::Incomplete(
-                        "a guarded loop forwarding block does not have exactly two successors",
-                    );
-                };
-                let (Some(true_index), Some(false_index)) = (
-                    block_indices.get(true_successor).copied(),
-                    block_indices.get(false_successor).copied(),
-                ) else {
-                    return CanonicalLoopResultV1::Incomplete(
-                        "a guarded loop forwarding edge leaves the kernel function",
-                    );
-                };
-                let (successor_index, arguments) = match (
-                    component_members.contains(&true_index),
-                    component_members.contains(&false_index),
-                ) {
-                    (true, false) => (true_index, true_arguments),
-                    (false, true) => (false_index, false_arguments),
-                    _ => {
-                        return CanonicalLoopResultV1::Incomplete(
-                            "a guarded loop forwarding block does not have exactly one successor inside the cycle",
-                        );
-                    }
                 };
                 let [forwarded] = arguments.as_slice() else {
                     return CanonicalLoopResultV1::Incomplete(
-                        "a guarded loop continuation does not carry exactly one induction value",
+                        "an internal loop edge does not carry exactly one induction value",
                     );
                 };
-                (successor_index, *forwarded)
-            };
-            if successor_index == *header_index {
-                break (current_index, current_induction, forwarded);
+                if source_index == latch_index && successor_index == *header_index {
+                    next = Some(*forwarded);
+                    latch_induction = Some(source_induction);
+                } else if *forwarded != source_induction {
+                    return CanonicalLoopResultV1::Incomplete(
+                        "an internal loop edge does not forward the induction value unchanged",
+                    );
+                }
             }
-            if !component_members.contains(&successor_index) {
-                return CanonicalLoopResultV1::Incomplete(
-                    "an intermediate loop block has an exit outside the guarded header",
-                );
-            }
-            if forwarded != current_induction {
-                return CanonicalLoopResultV1::Incomplete(
-                    "an intermediate loop edge does not forward the induction value unchanged",
-                );
-            }
-            previous_index = current_index;
-            current_index = successor_index;
-        };
-        if visited.len() != component.len().saturating_sub(1)
-            || internal_header_predecessors.as_slice() != [latch_index]
-        {
-            return CanonicalLoopResultV1::Incomplete(
-                "the cycle contains blocks outside the unique guarded induction path",
-            );
         }
+        let (Some(latch_induction), Some(next)) = (latch_induction, next) else {
+            return CanonicalLoopResultV1::Incomplete(
+                "the unique loop latch does not carry an authenticated induction update",
+            );
+        };
         if next == latch_induction {
             return zero_step_result(
                 context,
@@ -1231,6 +1173,38 @@ fn canonical_positive_induction_loop(
     CanonicalLoopResultV1::Incomplete(
         "the cycle has no supported `i < bound; i := i + positive_constant` header and backedge",
     )
+}
+
+fn successor_arguments(
+    context: &Context,
+    terminator: &OpBox,
+    ordinal: usize,
+) -> Option<Vec<pliron::value::Value>> {
+    if let Some(branch) = terminator.downcast_ref::<BranchArgsOp>() {
+        return (ordinal == 0).then(|| branch.arguments(context));
+    }
+    if let Some(branch) = terminator.downcast_ref::<IndexLessThanBranchArgsOp>() {
+        return match ordinal {
+            0 => Some(branch.true_arguments(context)),
+            1 => Some(branch.false_arguments(context)),
+            _ => None,
+        };
+    }
+    if let Some(branch) = terminator.downcast_ref::<IndexEqualBranchArgsOp>() {
+        return match ordinal {
+            0 => Some(branch.true_arguments(context)),
+            1 => Some(branch.false_arguments(context)),
+            _ => None,
+        };
+    }
+    if let Some(branch) = terminator.downcast_ref::<AnalysisSplitOp>() {
+        return match ordinal {
+            0 => Some(branch.first_arguments(context)),
+            1 => Some(branch.second_arguments(context)),
+            _ => None,
+        };
+    }
+    None
 }
 
 fn zero_step_result(

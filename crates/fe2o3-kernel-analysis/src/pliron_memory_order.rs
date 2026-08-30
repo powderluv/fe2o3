@@ -422,7 +422,8 @@ fn analyze_workgroup(
                     | PlironTraceEventV1::Fence { .. }
                     | PlironTraceEventV1::TensorInstruction { .. }
                     | PlironTraceEventV1::Trap { .. }
-                    | PlironTraceEventV1::Memory { .. } => {}
+                    | PlironTraceEventV1::Memory { .. }
+                    | PlironTraceEventV1::CollectiveAllocation { .. } => {}
                 }
             }
         }

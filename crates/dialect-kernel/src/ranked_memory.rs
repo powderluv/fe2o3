@@ -1737,12 +1737,14 @@ impl AllocationEffectOp {
         allocation_origin: u64,
         noalias_class: u64,
     ) -> Result<Self, RankedMemoryError> {
-        if kind != AccessKindAttr::Read
-            || memory_space != MemorySpaceAttr::Global
-            || (noalias_class != 0 && allocation_origin == 0)
-        {
+        if !is_supported_allocation_effect_contract_v1(
+            kind,
+            memory_space,
+            allocation_origin,
+            noalias_class,
+        ) {
             return Err(RankedMemoryError::MalformedPayload(
-                "kernel.allocation_effect requires a global read and a valid allocation contract",
+                "kernel.allocation_effect has an unsupported allocation contract",
             ));
         }
         let operation = Operation::new(
@@ -1793,14 +1795,25 @@ impl Verify for AllocationEffectOp {
         verify_no_regions_results_successors(self, context, 0, 0)?;
         let operation = self.get_operation();
         let operation = operation.deref(context);
+        let valid_contract = match (
+            self.kind(context),
+            self.memory_space(context),
+            self.allocation_origin(context),
+            self.noalias_class(context),
+        ) {
+            (Some(kind), Some(memory_space), Some(allocation_origin), Some(noalias_class)) => {
+                is_supported_allocation_effect_contract_v1(
+                    kind,
+                    memory_space,
+                    allocation_origin,
+                    noalias_class,
+                )
+            }
+            _ => false,
+        };
         if operation.get_num_operands() != 0
             || payload_attribute_count(&operation) != 4
-            || self.kind(context) != Some(AccessKindAttr::Read)
-            || self.memory_space(context) != Some(MemorySpaceAttr::Global)
-            || self.allocation_origin(context).is_none()
-            || self.noalias_class(context).is_none()
-            || (self.noalias_class(context) != Some(0)
-                && self.allocation_origin(context) == Some(0))
+            || !valid_contract
         {
             return verify_err!(
                 self.loc(context),
@@ -2722,4 +2735,33 @@ fn payload_attribute_count(operation: &Operation) -> usize {
         .keys()
         .filter(|key| *key != &*ATTR_KEY_DEBUG_INFO)
         .count()
+}
+
+pub const GFX950_TRANSPOSE_FP4_WORKGROUP_ALLOCATION_ORIGIN_V1: u64 = 0x5452_4e53_0000_0001;
+pub const GFX950_TRANSPOSE_FP4_WORKGROUP_NOALIAS_CLASS_V1: u64 = 0x5452_4e53_8000_0001;
+pub const GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1: u64 = 0x5452_4e53_0000_0002;
+pub const GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1: u64 = 0x5452_4e53_8000_0002;
+
+pub const fn is_supported_allocation_effect_contract_v1(
+    kind: AccessKindAttr,
+    memory_space: MemorySpaceAttr,
+    allocation_origin: u64,
+    noalias_class: u64,
+) -> bool {
+    match (kind, memory_space, allocation_origin, noalias_class) {
+        (AccessKindAttr::Read, MemorySpaceAttr::Global, origin, class) => class == 0 || origin != 0,
+        (
+            AccessKindAttr::Read | AccessKindAttr::Write,
+            MemorySpaceAttr::Workgroup,
+            GFX950_TRANSPOSE_FP4_WORKGROUP_ALLOCATION_ORIGIN_V1,
+            GFX950_TRANSPOSE_FP4_WORKGROUP_NOALIAS_CLASS_V1,
+        )
+        | (
+            AccessKindAttr::Read | AccessKindAttr::Write,
+            MemorySpaceAttr::Workgroup,
+            GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+            GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1,
+        ) => true,
+        _ => false,
+    }
 }

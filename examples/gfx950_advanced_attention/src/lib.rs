@@ -93,6 +93,19 @@ compile_error!("an AMDGPU build must select exactly one advanced-attention kerne
 ))]
 compile_error!("an AMDGPU build must not select more than one advanced-attention kernel feature");
 
+#[cfg(all(
+    target_arch = "amdgpu",
+    any(
+        feature = "kernel-kda-decode-wave-tiled-v1",
+        feature = "kernel-content-sparse-attention-reciprocal-reuse-v1",
+        feature = "kernel-compressed-hybrid-attention-division-baseline-v1",
+        feature = "kernel-attnres-aggregate-explicit-reuse-v1",
+        feature = "kernel-four-branch-residual-explicit-v1",
+        feature = "kernel-mhc-sinkhorn-mix-scalar-v1",
+    )
+))]
+mod ablation;
+
 pub mod kernel;
 #[cfg(not(target_arch = "amdgpu"))]
 pub mod reference;

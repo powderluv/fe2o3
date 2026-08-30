@@ -11,7 +11,11 @@ use std::{
 
 use dialect_gpu::{AddressSpaceAttr, HierarchyAttr, MemoryOrderAttr, MemoryScopeAttr};
 use dialect_kernel::{
-    AccessKindAttr, AtomicOrderingAttr, AtomicScopeAttr, DYNAMIC_EXTENT, IndexBinaryKindAttr,
+    AccessKindAttr, AtomicOrderingAttr, AtomicScopeAttr, DYNAMIC_EXTENT,
+    GFX950_TRANSPOSE_FP4_WORKGROUP_ALLOCATION_ORIGIN_V1,
+    GFX950_TRANSPOSE_FP4_WORKGROUP_NOALIAS_CLASS_V1,
+    GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+    GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1, IndexBinaryKindAttr,
     MAX_DETERMINISTIC_JOIN_INPUTS_V1, MAX_RANKED_MEMORY_RANK, MemorySpaceAttr,
     PipelineEventKindAttr, SUPPORTED_ELEMENT_WIDTHS, TensorConvergenceAttr,
 };
@@ -38,9 +42,9 @@ use fe2o3_mir_model::semantic_mir_v1::{
     SemanticMfmaStorageLayoutV1, SemanticOperandV1, SemanticPlaceV1, SemanticProjectionKindV1,
     SemanticRvalueKindV1, SemanticRvalueV1, SemanticScalarTypeV1,
     SemanticSourceArgumentOwnershipV1, SemanticSourceProvenanceV1, SemanticStatementKindV1,
-    SemanticTargetArchitectureV1, SemanticTerminatorKindV1, SemanticTypeDeclV1, SemanticTypeIdV1,
-    SemanticTypeShapeV1, SemanticUnaryOpV1, SemanticUncheckedBinaryOpV1, SemanticUnwindActionV1,
-    SemanticWorkgroupPipelineEventV1,
+    SemanticSwitchTargetsV1, SemanticTargetArchitectureV1, SemanticTerminatorKindV1,
+    SemanticTypeDeclV1, SemanticTypeIdV1, SemanticTypeShapeV1, SemanticUnaryOpV1,
+    SemanticUncheckedBinaryOpV1, SemanticUnwindActionV1, SemanticWorkgroupPipelineEventV1,
 };
 use fe2o3_mir_model::{
     SemanticEnumPayloadAvailabilityV1, SemanticEnumPayloadDominanceV1,
@@ -173,6 +177,7 @@ enum CapabilityEdgeKindV1 {
     },
     CheckedBlock {
         mapping: SemanticDisjointIndexSpaceV1,
+        lanes_per_block: u64,
         elements_per_lane: u64,
         availability: SemanticOptionAvailabilityV1,
     },
@@ -239,6 +244,7 @@ struct IntrinsicProjectionV1 {
     uniform_inductions: Vec<ProjectedUniformInductionV1>,
     tensor_layouts: Vec<Option<ProductionRankedOperationV1>>,
     capability_read_effects: Vec<Option<ProjectedCapabilityReadEffectV1>>,
+    transpose_workgroup_effects: Vec<Option<ProjectedTransposeWorkgroupEffectV1>>,
     read_view_effects: Vec<Option<GuardedRankedAccessV1>>,
     pipeline_effects: Vec<Option<ProjectedPipelineEffectV1>>,
     extent_argument_count: usize,
@@ -411,16 +417,24 @@ struct ProjectedCapabilityReadEffectV1 {
     source: SemanticSourceProvenanceV1,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProjectedTransposeWorkgroupEffectV1 {
+    access: AccessKindAttr,
+    format: SemanticGfx950LdsTransposeFormatV1,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct ProjectedCapabilityTerminatorEffectsV1 {
     layout: Option<ProductionRankedOperationV1>,
     global_read: Option<AllocationContractV1>,
+    transpose_workgroup: Option<ProjectedTransposeWorkgroupEffectV1>,
     read_view: Option<ProjectedReadViewAccessV1>,
 }
 
 struct ProjectedCapabilityEffectsV1 {
     layouts: Vec<Option<ProductionRankedOperationV1>>,
     global_reads: Vec<Option<AllocationContractV1>>,
+    transpose_workgroups: Vec<Option<ProjectedTransposeWorkgroupEffectV1>>,
     read_views: Vec<Option<ProjectedReadViewAccessV1>>,
 }
 
@@ -1870,6 +1884,7 @@ fn project_and_verify_ranked_root_v1(
         semantic.callables(),
         semantic.types(),
         function,
+        bounded_linear_launch_extent_v1(source_launch),
         &constants,
         &mut entry_operations,
         &mut next_value,
@@ -1977,6 +1992,31 @@ fn project_and_verify_ranked_root_v1(
                 semantic_site: None,
             });
         }
+        if let Some(effect) = intrinsic
+            .transpose_workgroup_effects
+            .get(block_index)
+            .copied()
+            .flatten()
+        {
+            let (allocation_origin, noalias_class) =
+                gfx950_transpose_workgroup_identity_v1(effect.format);
+            let operation = operations.len();
+            reserve_operation(&mut operations)?;
+            operations.push(ProductionRankedOperationV1::AllocationEffect {
+                kind: effect.access,
+                memory_space: MemorySpaceAttr::Workgroup,
+                allocation_origin,
+                noalias_class,
+            });
+            local_sources.push(ProjectedAccessSourceV1 {
+                block: block_index,
+                operation,
+                access: effect.access,
+                memory_space: MemorySpaceAttr::Workgroup,
+                source: block.terminator().source(),
+                semantic_site: None,
+            });
+        }
         if let Some(access) = intrinsic
             .read_view_effects
             .get(block_index)
@@ -2068,6 +2108,7 @@ fn project_and_verify_ranked_root_v1(
     let (blocks, sources) = build_ranked_cfg(
         semantic.types(),
         function,
+        semantic.callables(),
         &switch_predicates,
         &intrinsic.deterministic_switches,
         &intrinsic.uniform_inductions,
@@ -2183,14 +2224,21 @@ fn projected_reference_gpu_writes_v2(
         .iter()
         .filter(|source| source.access.writes_memory())
     {
-        let Some(operation) = blocks
+        let operation = blocks
             .get(source.block)
             .and_then(|block| block.operations().get(source.operation))
-        else {
-            return Err(ProductionRankedProjectionErrorV1::Unsupported(
+            .ok_or(ProductionRankedProjectionErrorV1::Unsupported(
                 "a projected write correspondence does not identify one ranked write",
-            ));
-        };
+            ))?;
+        if matches!(
+            operation,
+            ProductionRankedOperationV1::AllocationEffect {
+                memory_space: MemorySpaceAttr::Workgroup,
+                ..
+            }
+        ) {
+            continue;
+        }
         let (view, indices) = match operation {
             ProductionRankedOperationV1::Access { view, indices, .. }
             | ProductionRankedOperationV1::AtomicAccess { view, indices, .. } => {
@@ -2853,6 +2901,8 @@ fn production_access_sources(
             ProductionRankedOperationV1::Access { .. }
                 | ProductionRankedOperationV1::PredicatedAccess { .. }
                 | ProductionRankedOperationV1::AtomicAccess { .. }
+                | ProductionRankedOperationV1::ValueAccess { .. }
+                | ProductionRankedOperationV1::AtomicValueAccess { .. }
                 | ProductionRankedOperationV1::AllocationEffect { .. }
         ) {
             continue;
@@ -3238,6 +3288,7 @@ fn project_authenticated_capabilities_v1(
 
     let mut layouts = vec![None; block_count];
     let mut global_reads = vec![None; block_count];
+    let mut transpose_workgroups = vec![None; block_count];
     let mut read_views = vec![None; block_count];
     for (block_index, entry_state) in entries.into_iter().enumerate() {
         let Some(mut state) = entry_state else {
@@ -3272,11 +3323,13 @@ fn project_authenticated_capabilities_v1(
         )?;
         layouts[block_index] = effects.layout;
         global_reads[block_index] = effects.global_read;
+        transpose_workgroups[block_index] = effects.transpose_workgroup;
         read_views[block_index] = effects.read_view;
     }
     Ok(ProjectedCapabilityEffectsV1 {
         layouts,
         global_reads,
+        transpose_workgroups,
         read_views,
     })
 }
@@ -4062,6 +4115,20 @@ fn authenticate_strided_read_v1(
     })
 }
 
+const fn gfx950_transpose_workgroup_identity_v1(
+    format: SemanticGfx950LdsTransposeFormatV1,
+) -> (u64, u64) {
+    match format {
+        SemanticGfx950LdsTransposeFormatV1::Fp4E2M1 => (
+            GFX950_TRANSPOSE_FP4_WORKGROUP_ALLOCATION_ORIGIN_V1,
+            GFX950_TRANSPOSE_FP4_WORKGROUP_NOALIAS_CLASS_V1,
+        ),
+        SemanticGfx950LdsTransposeFormatV1::Fp8E4M3 => (
+            GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+            GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1,
+        ),
+    }
+}
 fn gfx950_transpose_profile_v1(
     format: SemanticGfx950LdsTransposeFormatV1,
 ) -> SemanticMfmaProfileV1 {
@@ -4796,9 +4863,25 @@ fn transfer_capability_terminator_v1(
         (false, false, _) => None,
         (true, true, _) => unreachable!("transpose stage is not a direct fragment load"),
     };
+    let transpose_workgroup = match operation {
+        SemanticCompilerIntrinsicOperationV1::Gfx950LdsTransposeStage { format, .. } => {
+            Some(ProjectedTransposeWorkgroupEffectV1 {
+                access: AccessKindAttr::Write,
+                format: *format,
+            })
+        }
+        SemanticCompilerIntrinsicOperationV1::Gfx950LdsTransposeRead { format, .. } => {
+            Some(ProjectedTransposeWorkgroupEffectV1 {
+                access: AccessKindAttr::Read,
+                format: *format,
+            })
+        }
+        _ => None,
+    };
     Ok(ProjectedCapabilityTerminatorEffectsV1 {
         layout,
         global_read,
+        transpose_workgroup,
         read_view: None,
     })
 }
@@ -5155,10 +5238,44 @@ fn checked_capability_stored_entries_v1(
     Ok(total)
 }
 
+fn blocked_mapping_fits_launch_v1(
+    linear_launch_upper_bound: Option<u64>,
+    lanes_per_block: u64,
+    elements_per_lane: u64,
+) -> bool {
+    if lanes_per_block == 0 || elements_per_lane == 0 {
+        return false;
+    }
+    let Some(block_elements) = lanes_per_block.checked_mul(elements_per_lane) else {
+        return false;
+    };
+    if lanes_per_block == 1 {
+        return true;
+    }
+    let Some(upper_bound) = linear_launch_upper_bound else {
+        return false;
+    };
+    let Some(maximum_raw) = upper_bound.checked_sub(1) else {
+        return true;
+    };
+    let block = maximum_raw / lanes_per_block;
+    let lane = maximum_raw % lanes_per_block;
+    block
+        .checked_mul(block_elements)
+        .and_then(|base| {
+            (elements_per_lane - 1)
+                .checked_mul(lanes_per_block)
+                .and_then(|component| base.checked_add(component))
+        })
+        .and_then(|base| base.checked_add(lane))
+        .is_some()
+}
+
 fn project_intrinsic_contracts(
     callables: &[SemanticCallableDeclV1],
     types: &[fe2o3_mir_model::semantic_mir_v1::SemanticTypeDeclV1],
     function: &SemanticFunctionDeclV1,
+    linear_launch_upper_bound: Option<u64>,
     constants: &[Option<u64>],
     operations: &mut Vec<ProductionRankedOperationV1>,
     next_value: &mut u32,
@@ -5194,6 +5311,7 @@ fn project_intrinsic_contracts(
     let capability_read_effects =
         bind_capability_read_effects_to_call_blocks_v1(function, &capability_effects.global_reads)?;
     let tensor_layouts = capability_effects.layouts;
+    let transpose_workgroup_effects = capability_effects.transpose_workgroups;
     let read_view_sources = capability_effects.read_views;
     let mut edge_count = 0_usize;
     let mut borrowed_locals = Vec::new();
@@ -5355,21 +5473,26 @@ fn project_intrinsic_contracts(
                 elements_per_lane,
                 ..
             } => {
-                if *lanes_per_block != 1 {
-                    return Err(ProductionRankedProjectionErrorV1::Incomplete(
-                        "a blocked mapping with more than one lane before quotient facts are available",
-                    ));
-                }
                 let expected = SemanticDisjointIndexSpaceV1::BlockedIndex1d {
                     lanes_per_block: *lanes_per_block,
                     elements_per_lane: *elements_per_lane,
                 };
                 if *output_space != expected
+                    || *lanes_per_block == 0
                     || *elements_per_lane == 0
                     || lanes_per_block.checked_mul(*elements_per_lane).is_none()
                 {
                     return Err(ProductionRankedProjectionErrorV1::Unsupported(
                         "a malformed blocked mapping reached ranked projection",
+                    ));
+                }
+                if !blocked_mapping_fits_launch_v1(
+                    linear_launch_upper_bound,
+                    *lanes_per_block,
+                    *elements_per_lane,
+                ) {
+                    return Err(ProductionRankedProjectionErrorV1::Incomplete(
+                        "a multi-lane blocked mapping requires an authenticated finite rank-1 launch extent whose full blocked index range fits u64",
                     ));
                 }
                 let destination = simple_call_destination(call)?;
@@ -5380,6 +5503,7 @@ fn project_intrinsic_contracts(
                 )?;
                 CapabilityEdgeKindV1::CheckedBlock {
                     mapping: expected,
+                    lanes_per_block: *lanes_per_block,
                     elements_per_lane: *elements_per_lane,
                     availability,
                 }
@@ -5752,29 +5876,41 @@ fn project_intrinsic_contracts(
                 }
                 CapabilityEdgeKindV1::CheckedBlock {
                     mapping,
+                    lanes_per_block,
                     elements_per_lane,
                     availability,
                 } => {
-                    let maximum_raw = (u64::MAX - (elements_per_lane - 1)) / elements_per_lane;
-                    reserve_operation(operations)?;
-                    let upper = next_value_id(next_value)?;
-                    operations.push(ProductionRankedOperationV1::IndexConstant {
-                        result: upper,
-                        value: maximum_raw + 1,
-                    });
-                    push_ranked_ir(
-                        ranked_ir,
-                        &format!(
-                            "  %{} = kernel.index_constant {}\n",
-                            upper.get(),
-                            maximum_raw + 1,
-                        ),
-                    )?;
-                    ProjectedDisjointIndexV1 {
-                        mapping,
-                        precondition: Some((input.value, ProductionRankedValueV1::Local(upper))),
-                        availability: Some(CapabilityAvailabilityV1::Option(availability)),
-                        ..input
+                    if lanes_per_block == 1 {
+                        let maximum_raw = (u64::MAX - (elements_per_lane - 1)) / elements_per_lane;
+                        reserve_operation(operations)?;
+                        let upper = next_value_id(next_value)?;
+                        operations.push(ProductionRankedOperationV1::IndexConstant {
+                            result: upper,
+                            value: maximum_raw + 1,
+                        });
+                        push_ranked_ir(
+                            ranked_ir,
+                            &format!(
+                                "  %{} = kernel.index_constant {}\n",
+                                upper.get(),
+                                maximum_raw + 1,
+                            ),
+                        )?;
+                        ProjectedDisjointIndexV1 {
+                            mapping,
+                            precondition: Some((
+                                input.value,
+                                ProductionRankedValueV1::Local(upper),
+                            )),
+                            availability: Some(CapabilityAvailabilityV1::Option(availability)),
+                            ..input
+                        }
+                    } else {
+                        ProjectedDisjointIndexV1 {
+                            mapping,
+                            availability: Some(CapabilityAvailabilityV1::Option(availability)),
+                            ..input
+                        }
                     }
                 }
                 CapabilityEdgeKindV1::CheckedTiled2d {
@@ -6042,9 +6178,18 @@ fn project_intrinsic_contracts(
                         "blocked accessor mapping identity changed",
                     ));
                 }
-                if *lanes_per_block != 1 {
+                if *lanes_per_block == 0 || *elements_per_lane == 0 {
+                    return Err(ProductionRankedProjectionErrorV1::Unsupported(
+                        "a malformed blocked mapping reached ranked projection",
+                    ));
+                }
+                if !blocked_mapping_fits_launch_v1(
+                    linear_launch_upper_bound,
+                    *lanes_per_block,
+                    *elements_per_lane,
+                ) {
                     return Err(ProductionRankedProjectionErrorV1::Incomplete(
-                        "a blocked mapping with more than one lane before quotient facts are available",
+                        "a multi-lane blocked accessor requires an authenticated finite rank-1 launch extent whose full blocked index range fits u64",
                     ));
                 }
                 let component = call
@@ -6059,47 +6204,134 @@ fn project_intrinsic_contracts(
                         "a blocked component is outside the authenticated elements-per-lane bound",
                     ));
                 }
-                reserve_operation(operations)?;
-                let elements = next_value_id(next_value)?;
-                operations.push(ProductionRankedOperationV1::IndexConstant {
-                    result: elements,
-                    value: *elements_per_lane,
-                });
-                reserve_operation(operations)?;
-                let block_base = next_value_id(next_value)?;
-                operations.push(ProductionRankedOperationV1::IndexBinary {
-                    result: block_base,
-                    kind: IndexBinaryKindAttr::Multiply,
-                    lhs: projected.value,
-                    rhs: ProductionRankedValueV1::Local(elements),
-                });
+                let (base, offset) = if *lanes_per_block == 1 {
+                    reserve_operation(operations)?;
+                    let elements = next_value_id(next_value)?;
+                    operations.push(ProductionRankedOperationV1::IndexConstant {
+                        result: elements,
+                        value: *elements_per_lane,
+                    });
+                    reserve_operation(operations)?;
+                    let block_base = next_value_id(next_value)?;
+                    operations.push(ProductionRankedOperationV1::IndexBinary {
+                        result: block_base,
+                        kind: IndexBinaryKindAttr::Multiply,
+                        lhs: projected.value,
+                        rhs: ProductionRankedValueV1::Local(elements),
+                    });
+                    push_ranked_ir(
+                        ranked_ir,
+                        &format!(
+                            "  %{} = kernel.index_constant {}\n  %{} = kernel.index_binary Multiply {}, %{}\n",
+                            elements.get(),
+                            elements_per_lane,
+                            block_base.get(),
+                            ranked_value_text_v1(projected.value),
+                            elements.get(),
+                        ),
+                    )?;
+                    (ProductionRankedValueV1::Local(block_base), component)
+                } else {
+                    let block_elements = lanes_per_block.checked_mul(*elements_per_lane).ok_or(
+                        ProductionRankedProjectionErrorV1::Unsupported(
+                            "blocked dimensions overflow u64",
+                        ),
+                    )?;
+                    let component_offset = component.checked_mul(*lanes_per_block).ok_or(
+                        ProductionRankedProjectionErrorV1::Unsupported(
+                            "a blocked component offset overflows u64",
+                        ),
+                    )?;
+                    reserve_operation(operations)?;
+                    let lanes = next_value_id(next_value)?;
+                    operations.push(ProductionRankedOperationV1::IndexConstant {
+                        result: lanes,
+                        value: *lanes_per_block,
+                    });
+                    reserve_operation(operations)?;
+                    let elements = next_value_id(next_value)?;
+                    operations.push(ProductionRankedOperationV1::IndexConstant {
+                        result: elements,
+                        value: block_elements,
+                    });
+                    reserve_operation(operations)?;
+                    let block = next_value_id(next_value)?;
+                    operations.push(ProductionRankedOperationV1::IndexBinary {
+                        result: block,
+                        kind: IndexBinaryKindAttr::Divide,
+                        lhs: projected.value,
+                        rhs: ProductionRankedValueV1::Local(lanes),
+                    });
+                    reserve_operation(operations)?;
+                    let lane = next_value_id(next_value)?;
+                    operations.push(ProductionRankedOperationV1::IndexBinary {
+                        result: lane,
+                        kind: IndexBinaryKindAttr::Remainder,
+                        lhs: projected.value,
+                        rhs: ProductionRankedValueV1::Local(lanes),
+                    });
+                    reserve_operation(operations)?;
+                    let block_base = next_value_id(next_value)?;
+                    operations.push(ProductionRankedOperationV1::IndexBinary {
+                        result: block_base,
+                        kind: IndexBinaryKindAttr::Multiply,
+                        lhs: ProductionRankedValueV1::Local(block),
+                        rhs: ProductionRankedValueV1::Local(elements),
+                    });
+                    reserve_operation(operations)?;
+                    let lane_base = next_value_id(next_value)?;
+                    operations.push(ProductionRankedOperationV1::IndexBinary {
+                        result: lane_base,
+                        kind: IndexBinaryKindAttr::Add,
+                        lhs: ProductionRankedValueV1::Local(block_base),
+                        rhs: ProductionRankedValueV1::Local(lane),
+                    });
+                    push_ranked_ir(
+                        ranked_ir,
+                        &format!(
+                            "  %{} = kernel.index_constant {}\n  %{} = kernel.index_constant {}\n  %{} = kernel.index_binary Divide {}, %{}\n  %{} = kernel.index_binary Remainder {}, %{}\n  %{} = kernel.index_binary Multiply %{}, %{}\n  %{} = kernel.index_binary Add %{}, %{}\n",
+                            lanes.get(),
+                            lanes_per_block,
+                            elements.get(),
+                            block_elements,
+                            block.get(),
+                            ranked_value_text_v1(projected.value),
+                            lanes.get(),
+                            lane.get(),
+                            ranked_value_text_v1(projected.value),
+                            lanes.get(),
+                            block_base.get(),
+                            block.get(),
+                            elements.get(),
+                            lane_base.get(),
+                            block_base.get(),
+                            lane.get(),
+                        ),
+                    )?;
+                    (ProductionRankedValueV1::Local(lane_base), component_offset)
+                };
                 reserve_operation(operations)?;
                 let component_value = next_value_id(next_value)?;
                 operations.push(ProductionRankedOperationV1::IndexConstant {
                     result: component_value,
-                    value: component,
+                    value: offset,
                 });
                 reserve_operation(operations)?;
                 let index = next_value_id(next_value)?;
                 operations.push(ProductionRankedOperationV1::IndexBinary {
                     result: index,
                     kind: IndexBinaryKindAttr::Add,
-                    lhs: ProductionRankedValueV1::Local(block_base),
+                    lhs: base,
                     rhs: ProductionRankedValueV1::Local(component_value),
                 });
                 push_ranked_ir(
                     ranked_ir,
                     &format!(
-                        "  %{} = kernel.index_constant {}\n  %{} = kernel.index_binary Multiply {}, %{}\n  %{} = kernel.index_constant {}\n  %{} = kernel.index_binary Add %{}, %{}\n",
-                        elements.get(),
-                        elements_per_lane,
-                        block_base.get(),
-                        ranked_value_text_v1(projected.value),
-                        elements.get(),
+                        "  %{} = kernel.index_constant {}\n  %{} = kernel.index_binary Add {}, %{}\n",
                         component_value.get(),
-                        component,
+                        offset,
                         index.get(),
-                        block_base.get(),
+                        ranked_value_text_v1(base),
                         component_value.get(),
                     ),
                 )?;
@@ -6489,6 +6721,7 @@ fn project_intrinsic_contracts(
     let projected_switch_predicates =
         switch_predicates(function, &option_predicates, &direct_switch_predicates)?;
     let deterministic_switches = project_deterministic_scalar_switches_v1(
+        types,
         callables,
         function,
         constants,
@@ -6547,6 +6780,7 @@ fn project_intrinsic_contracts(
         uniform_inductions,
         tensor_layouts,
         capability_read_effects,
+        transpose_workgroup_effects,
         read_view_effects,
         pipeline_effects,
     })
@@ -7963,8 +8197,84 @@ const fn deterministic_index_binary_kind_v1(
     }
 }
 
+fn authenticated_switch_targets_exhaust_domain_v1(
+    types: &[SemanticTypeDeclV1],
+    function: &SemanticFunctionDeclV1,
+    discriminant: &SemanticOperandV1,
+    targets: &SemanticSwitchTargetsV1,
+    local_definitions: &[u8],
+) -> bool {
+    let explicit_values = targets
+        .values()
+        .iter()
+        .map(|target| target.value())
+        .collect::<Vec<_>>();
+    let Some(discriminant_type) = types.get(discriminant.ty().index() as usize) else {
+        return false;
+    };
+    if matches!(
+        discriminant_type.shape(),
+        SemanticTypeShapeV1::Scalar(SemanticScalarTypeV1::Bool)
+    ) {
+        return explicit_values.len() == 2
+            && explicit_values.contains(&0)
+            && explicit_values.contains(&1);
+    }
+
+    let Some(discriminant_local) = simple_operand_local(discriminant) else {
+        return false;
+    };
+    if local_definitions
+        .get(discriminant_local.index() as usize)
+        .copied()
+        != Some(1)
+    {
+        return false;
+    }
+    let mut source_type = None;
+    for block in function.blocks() {
+        for statement in block.statements() {
+            let SemanticStatementKindV1::Assign(assignment) = statement.kind() else {
+                continue;
+            };
+            if !assignment.destination().projections().is_empty()
+                || assignment.destination().local() != discriminant_local
+                || assignment.destination().ty() != discriminant.ty()
+            {
+                continue;
+            }
+            let SemanticRvalueKindV1::Discriminant(source) = assignment.value().kind() else {
+                return false;
+            };
+            if !source.projections().is_empty() {
+                return false;
+            }
+            source_type = Some(source.ty());
+        }
+    }
+    let Some(source_type) = source_type.and_then(|source| types.get(source.index() as usize))
+    else {
+        return false;
+    };
+    let SemanticTypeShapeV1::Enum { variants, .. } = source_type.shape() else {
+        return false;
+    };
+    let inhabited = variants
+        .iter()
+        .filter(|variant| !variant.is_uninhabited())
+        .collect::<Vec<_>>();
+    inhabited.len() == explicit_values.len()
+        && !inhabited.is_empty()
+        && inhabited.iter().all(|variant| {
+            explicit_values
+                .iter()
+                .any(|value| *value == variant.discriminant())
+        })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn project_deterministic_scalar_switches_v1(
+    types: &[SemanticTypeDeclV1],
     callables: &[SemanticCallableDeclV1],
     function: &SemanticFunctionDeclV1,
     constants: &[Option<u64>],
@@ -8014,6 +8324,13 @@ fn project_deterministic_scalar_switches_v1(
         let Some(summary) = projector.resolve_operand(discriminant)? else {
             continue;
         };
+        let exhausts_valid_domain = authenticated_switch_targets_exhaust_domain_v1(
+            types,
+            function,
+            discriminant,
+            targets,
+            local_definitions,
+        );
         let discriminant = projector.materialize(summary)?;
         let mut projected_targets = Vec::new();
         projected_targets
@@ -8037,11 +8354,17 @@ fn project_deterministic_scalar_switches_v1(
             }
             projected_targets.push((projector.ranked_constant(value)?, target_block));
         }
-        let otherwise = targets.otherwise().target().index() as usize;
+        let mut otherwise = targets.otherwise().target().index() as usize;
         if otherwise >= function.blocks().len() {
             return Err(ProductionRankedProjectionErrorV1::Unsupported(
                 "a deterministic scalar switch fallback is outside the semantic CFG",
             ));
+        }
+        if switch_fallback_is_empty_unreachable_v1(function, otherwise) && exhausts_valid_domain {
+            let (_, exhaustive_target) = projected_targets
+                .pop()
+                .expect("an authenticated valid-value domain is nonempty");
+            otherwise = exhaustive_target;
         }
         switches[block_index] = Some(ProjectedDeterministicSwitchV1 {
             discriminant,
@@ -10961,6 +11284,20 @@ fn source_execution_layout_v1(
     })
 }
 
+fn bounded_linear_launch_extent_v1(source_launch: &LaunchContract) -> Option<u64> {
+    if source_launch.rank() != 1 {
+        return None;
+    }
+    let BlockSize::Exact(block) = source_launch.block_size() else {
+        return None;
+    };
+    let max_grid = source_launch.max_grid().x();
+    if max_grid == u32::MAX {
+        return None;
+    }
+    u64::from(block.x()).checked_mul(u64::from(max_grid))
+}
+
 fn checked_global_extent_v1(
     max_grid: u64,
     required_workgroup: u64,
@@ -11631,11 +11968,13 @@ enum ProjectedCfgTerminatorV1 {
     },
     ExactSwitch(ProjectedDeterministicSwitchV1),
     Return,
+    Trap,
 }
 
 fn projected_cfg_terminator(
     function: &SemanticFunctionDeclV1,
     block_index: usize,
+    callables: &[SemanticCallableDeclV1],
     non_bounds_assert_proved: bool,
     constants: &[Option<u64>],
     switch_predicates: &[Option<GuardPredicateV1>],
@@ -11744,6 +12083,16 @@ fn projected_cfg_terminator(
                 Some(destination) => Ok(ProjectedCfgTerminatorV1::Branch(target(
                     destination.edge().target(),
                 )?)),
+                None if matches!(
+                    callables.get(call.callee().index() as usize),
+                    Some(SemanticCallableDeclV1::CompilerIntrinsic {
+                        operation: SemanticCompilerIntrinsicOperationV1::Trap,
+                        ..
+                    })
+                ) =>
+                {
+                    Ok(ProjectedCfgTerminatorV1::Trap)
+                }
                 None => Ok(ProjectedCfgTerminatorV1::Return),
             }
         }
@@ -11892,6 +12241,7 @@ fn forward_live_inductions(
 fn build_ranked_cfg(
     types: &[SemanticTypeDeclV1],
     function: &SemanticFunctionDeclV1,
+    callables: &[SemanticCallableDeclV1],
     switch_predicates: &[Option<GuardPredicateV1>],
     deterministic_switches: &[Option<ProjectedDeterministicSwitchV1>],
     uniform_inductions: &[ProjectedUniformInductionV1],
@@ -11928,6 +12278,7 @@ fn build_ranked_cfg(
             projected_cfg_terminator(
                 function,
                 index,
+                callables,
                 proved_assertions[index],
                 &constants,
                 switch_predicates,
@@ -12349,7 +12700,7 @@ fn build_ranked_cfg(
                         "a uniform induction deterministic switch requires unrepresentable control expansion",
                     ));
                 }
-                ProjectedCfgTerminatorV1::Return => {
+                ProjectedCfgTerminatorV1::Return | ProjectedCfgTerminatorV1::Trap => {
                     return Err(ProductionRankedProjectionErrorV1::Incomplete(
                         "a uniform induction body returns before its unique latch",
                     ));
@@ -12428,6 +12779,12 @@ fn build_ranked_cfg(
                 current,
                 operations,
                 ProductionRankedTerminatorV1::Return,
+            )?,
+            ProjectedCfgTerminatorV1::Trap => push_block_at(
+                &mut blocks,
+                current,
+                operations,
+                ProductionRankedTerminatorV1::Trap,
             )?,
         }
     }
@@ -12694,7 +13051,7 @@ fn reachable_projected_blocks(
                 pending.extend(switch.targets.iter().map(|(_, target)| *target));
                 pending.push(switch.otherwise);
             }
-            ProjectedCfgTerminatorV1::Return => {}
+            ProjectedCfgTerminatorV1::Return | ProjectedCfgTerminatorV1::Trap => {}
         }
     }
     Ok(reachable)
@@ -15833,6 +16190,21 @@ mod tests {
     const CHECKED_U64_TYPE: SemanticTypeIdV1 = SemanticTypeIdV1::from_index(9);
 
     #[test]
+    fn blocked_launch_bound_checks_the_last_thread_and_component_without_wrapping() {
+        assert!(blocked_mapping_fits_launch_v1(Some(64), 16, 4));
+        assert!(!blocked_mapping_fits_launch_v1(None, 16, 4));
+        assert!(!blocked_mapping_fits_launch_v1(Some(64), 0, 4));
+        assert!(!blocked_mapping_fits_launch_v1(Some(64), 16, 0));
+        assert!(!blocked_mapping_fits_launch_v1(Some(64), u64::MAX, 2,));
+        assert!(blocked_mapping_fits_launch_v1(Some(1_u64 << 62), 16, 4));
+        assert!(!blocked_mapping_fits_launch_v1(
+            Some((1_u64 << 62) + 1),
+            16,
+            4,
+        ));
+    }
+
+    #[test]
     fn authenticated_ranked_projection_exposes_v5_and_inert_induction_evidence() {
         let middle_end_accessor: for<'a> fn(
             &'a AuthenticatedRankedVerificationV5,
@@ -15917,6 +16289,115 @@ mod tests {
                 "ranked roster receipt gained downstream {forbidden} custody",
             );
         }
+    }
+
+    #[test]
+    fn value_carrying_accesses_retain_exact_semantic_correspondence() {
+        let view = ProductionRankedValueV1::Argument(0);
+        let value = ProductionRankedValueV1::Argument(1);
+        let blocks = [ProductionRankedBlockV1::new(
+            vec![
+                ProductionRankedOperationV1::ValueAccess {
+                    kind: AccessKindAttr::Write,
+                    view,
+                    indices: vec![],
+                    value,
+                },
+                ProductionRankedOperationV1::AtomicValueAccess {
+                    kind: AccessKindAttr::AtomicReadModifyWrite,
+                    ordering: AtomicOrderingAttr::AcquireRelease,
+                    scope: AtomicScopeAttr::Device,
+                    view,
+                    indices: vec![],
+                    value,
+                },
+            ],
+            ProductionRankedTerminatorV1::Return,
+        )];
+        let sites = [
+            ProjectedAccessSourceV1 {
+                block: 0,
+                operation: 0,
+                access: AccessKindAttr::Write,
+                memory_space: MemorySpaceAttr::Global,
+                source: SemanticSourceProvenanceV1::unavailable(),
+                semantic_site: Some(ProjectedSemanticAccessSiteV1 {
+                    block: 7,
+                    statement: None,
+                }),
+            },
+            ProjectedAccessSourceV1 {
+                block: 0,
+                operation: 1,
+                access: AccessKindAttr::AtomicReadModifyWrite,
+                memory_space: MemorySpaceAttr::Global,
+                source: SemanticSourceProvenanceV1::unavailable(),
+                semantic_site: Some(ProjectedSemanticAccessSiteV1 {
+                    block: 7,
+                    statement: None,
+                }),
+            },
+        ];
+
+        let retained = production_access_sources(&blocks, &sites).unwrap();
+
+        assert_eq!(retained.len(), 2);
+        assert_eq!(
+            (
+                retained[0].semantic_block(),
+                retained[0].semantic_statement(),
+                retained[0].semantic_access_ordinal(),
+                retained[0].ranked_block(),
+                retained[0].ranked_operation(),
+            ),
+            (7, None, 0, 0, 0),
+        );
+        assert_eq!(
+            (
+                retained[1].semantic_block(),
+                retained[1].semantic_access_ordinal(),
+                retained[1].ranked_operation(),
+            ),
+            (7, 1, 1),
+        );
+    }
+
+    #[test]
+    fn conservative_allocation_effect_retains_exact_semantic_correspondence() {
+        let blocks = [ProductionRankedBlockV1::new(
+            vec![ProductionRankedOperationV1::AllocationEffect {
+                kind: AccessKindAttr::Read,
+                memory_space: MemorySpaceAttr::Global,
+                allocation_origin: 1,
+                noalias_class: 1,
+            }],
+            ProductionRankedTerminatorV1::Return,
+        )];
+        let sites = [ProjectedAccessSourceV1 {
+            block: 0,
+            operation: 0,
+            access: AccessKindAttr::Read,
+            memory_space: MemorySpaceAttr::Global,
+            source: SemanticSourceProvenanceV1::unavailable(),
+            semantic_site: Some(ProjectedSemanticAccessSiteV1 {
+                block: 9,
+                statement: None,
+            }),
+        }];
+
+        let retained = production_access_sources(&blocks, &sites).unwrap();
+
+        assert_eq!(retained.len(), 1);
+        assert_eq!(
+            (
+                retained[0].semantic_block(),
+                retained[0].semantic_statement(),
+                retained[0].semantic_access_ordinal(),
+                retained[0].ranked_block(),
+                retained[0].ranked_operation(),
+            ),
+            (9, None, 0, 0, 0),
+        );
     }
 
     fn bytes(tag: u8) -> [u8; 32] {
@@ -17085,6 +17566,7 @@ mod tests {
         let (blocks, sources) = build_ranked_cfg(
             &projection_types(),
             &function,
+            &[],
             &vec![None; function.locals().len()],
             &vec![None; function.blocks().len()],
             &[],
@@ -17590,6 +18072,7 @@ mod tests {
         let (after_blocks, _) = build_ranked_cfg(
             &projection_types(),
             &function,
+            &[],
             &vec![None; function.locals().len()],
             &vec![None; function.blocks().len()],
             &[],
@@ -17614,6 +18097,7 @@ mod tests {
         let (before_blocks, _) = build_ranked_cfg(
             &projection_types(),
             &function,
+            &[],
             &vec![None; function.locals().len()],
             &vec![None; function.blocks().len()],
             &[],
@@ -21452,12 +21936,96 @@ mod tests {
             SemanticTerminatorKindV1::Unreachable,
         );
         assert_eq!(
-            projected_cfg_terminator(&function, 0, false, &[], &[const { None }; 2], &[]).unwrap(),
+            projected_cfg_terminator(&function, 0, &[], false, &[], &[const { None }; 2], &[])
+                .unwrap(),
             ProjectedCfgTerminatorV1::AnalysisSplit {
                 first_block: 1,
                 second_block: 2,
             }
         );
+    }
+
+    fn boolean_domain_switch(values: &[u128]) -> SemanticFunctionDeclV1 {
+        let discriminant = SemanticOperandV1::Copy(
+            SemanticPlaceV1::new(SemanticLocalIdV1::from_index(1), vec![], BOOL_TYPE).unwrap(),
+        );
+        let explicit = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                SemanticSwitchTargetV1::new(
+                    *value,
+                    cfg_edge(SemanticEdgeRoleV1::SwitchValue, index as u32 + 1),
+                )
+            })
+            .collect();
+        projection_function_with_locals(
+            vec![
+                block(
+                    201,
+                    vec![],
+                    SemanticTerminatorKindV1::SwitchInt {
+                        discriminant,
+                        targets: SemanticSwitchTargetsV1::new(
+                            explicit,
+                            cfg_edge(SemanticEdgeRoleV1::SwitchOtherwise, 3),
+                        )
+                        .unwrap(),
+                    },
+                ),
+                block(202, vec![], SemanticTerminatorKindV1::Return),
+                block(203, vec![], SemanticTerminatorKindV1::Return),
+                block(204, vec![], SemanticTerminatorKindV1::Unreachable),
+            ],
+            vec![
+                local(201, SCALAR_TYPE, SemanticLocalRoleV1::Return),
+                local(202, BOOL_TYPE, SemanticLocalRoleV1::Argument(0)),
+            ],
+        )
+    }
+
+    #[test]
+    fn only_exact_boolean_domains_exhaust_an_empty_switch_fallback() {
+        for (values, expected) in [(&[0_u128, 1][..], true), (&[0_u128, 2][..], false)] {
+            let function = boolean_domain_switch(values);
+            let SemanticTerminatorKindV1::SwitchInt {
+                discriminant,
+                targets,
+            } = function.blocks()[0].terminator().kind()
+            else {
+                panic!("boolean fixture lost its switch");
+            };
+            assert_eq!(
+                authenticated_switch_targets_exhaust_domain_v1(
+                    &assertion_proof_types(),
+                    &function,
+                    discriminant,
+                    targets,
+                    &local_definition_counts(&function),
+                ),
+                expected,
+            );
+        }
+
+        let scalar = explicit_binary_switch_with_fallback(
+            [0, 1],
+            vec![],
+            SemanticTerminatorKindV1::Unreachable,
+        );
+        let SemanticTerminatorKindV1::SwitchInt {
+            discriminant,
+            targets,
+        } = scalar.blocks()[0].terminator().kind()
+        else {
+            panic!("scalar fixture lost its switch");
+        };
+        assert!(!authenticated_switch_targets_exhaust_domain_v1(
+            &projection_types(),
+            &scalar,
+            discriminant,
+            targets,
+            &local_definition_counts(&scalar),
+        ));
     }
 
     fn non_bounds_assert_function(condition: SemanticOperandV1) -> SemanticFunctionDeclV1 {
@@ -21488,7 +22056,7 @@ mod tests {
     fn non_bounds_asserts_are_elided_only_after_exact_constant_success() {
         let unresolved = non_bounds_assert_function(tensor_operand(1));
         assert!(matches!(
-            projected_cfg_terminator(&unresolved, 0, false, &[], &[const { None }; 3], &[]),
+            projected_cfg_terminator(&unresolved, 0, &[], false, &[], &[const { None }; 3], &[]),
             Err(ProductionRankedProjectionErrorV1::UnprovenAssert {
                 block: 0,
                 kind: "division-by-zero",
@@ -21498,7 +22066,8 @@ mod tests {
 
         let proven = non_bounds_assert_function(constant(1));
         assert_eq!(
-            projected_cfg_terminator(&proven, 0, false, &[], &[const { None }; 3], &[]).unwrap(),
+            projected_cfg_terminator(&proven, 0, &[], false, &[], &[const { None }; 3], &[])
+                .unwrap(),
             ProjectedCfgTerminatorV1::Branch(1)
         );
     }
@@ -22676,7 +23245,7 @@ mod tests {
             ),
         ] {
             assert!(matches!(
-                projected_cfg_terminator(&function, 0, false, &[], &[const { None }; 2], &[]),
+                projected_cfg_terminator(&function, 0, &[], false, &[], &[const { None }; 2], &[]),
                 Err(ProductionRankedProjectionErrorV1::Incomplete(
                     "a general switch whose only extra successor is not one empty unreachable fallback"
                 ))
@@ -22702,6 +23271,7 @@ mod tests {
             projected_cfg_terminator(
                 &function,
                 0,
+                &[],
                 false,
                 &[],
                 &[None, Some(predicate.clone())],
@@ -22792,6 +23362,7 @@ mod tests {
         let mut arguments = vec![None; function.locals().len()];
         let mut next_argument = 1;
         let switches = project_deterministic_scalar_switches_v1(
+            &projection_types(),
             callables,
             function,
             &constants,
@@ -22947,6 +23518,7 @@ mod tests {
         let (blocks, _) = build_ranked_cfg(
             &projection_types(),
             &function,
+            &[],
             &vec![None; function.locals().len()],
             &switches,
             &[],
@@ -23285,6 +23857,40 @@ mod tests {
         }
     }
 
+    fn destinationless_call(callee: u32) -> SemanticFunctionDeclV1 {
+        let call = SemanticDirectCallV1::new_callable(
+            SemanticCallableIdV1::from_index(callee),
+            vec![],
+            None,
+            SemanticUnwindActionV1::Unreachable,
+        )
+        .unwrap();
+        projection_function_with_locals(
+            vec![block(122, vec![], SemanticTerminatorKindV1::Call(call))],
+            vec![local(122, SCALAR_TYPE, SemanticLocalRoleV1::Return)],
+        )
+    }
+
+    #[test]
+    fn only_an_authenticated_destinationless_trap_projects_as_trap() {
+        let function = destinationless_call(0);
+        let trap = compiler_intrinsic_callable(SemanticCompilerIntrinsicOperationV1::Trap);
+        assert_eq!(
+            projected_cfg_terminator(&function, 0, &[trap], false, &[], &[None], &[]).unwrap(),
+            ProjectedCfgTerminatorV1::Trap,
+        );
+
+        let barrier =
+            compiler_intrinsic_callable(SemanticCompilerIntrinsicOperationV1::WorkgroupBarrier);
+        assert_eq!(
+            projected_cfg_terminator(&function, 0, &[barrier], false, &[], &[None], &[]).unwrap(),
+            ProjectedCfgTerminatorV1::Return,
+        );
+        assert_eq!(
+            projected_cfg_terminator(&function, 0, &[], false, &[], &[None], &[]).unwrap(),
+            ProjectedCfgTerminatorV1::Return,
+        );
+    }
     fn call_discriminant_switch(
         callee: u32,
         arguments: Vec<SemanticOperandV1>,
@@ -23598,6 +24204,7 @@ mod tests {
                 projected_cfg_terminator(
                     &function,
                     0,
+                    &[],
                     false,
                     &[],
                     &[None, Some(predicate.clone())],
@@ -23615,6 +24222,7 @@ mod tests {
             projected_cfg_terminator(
                 &single_explicit_boolean_switch(2, 1, 2),
                 0,
+                &[],
                 false,
                 &[],
                 &[None, Some(predicate)],
@@ -24558,6 +25166,7 @@ mod tests {
         let (blocks, _) = build_ranked_cfg(
             &projection_types(),
             &function,
+            &[],
             &vec![None; function.locals().len()],
             &vec![None; function.blocks().len()],
             &inductions,
@@ -24655,6 +25264,7 @@ mod tests {
         let (blocks, _) = build_ranked_cfg(
             &types,
             &function,
+            &[],
             &vec![None; function.locals().len()],
             &vec![None; function.blocks().len()],
             &inductions,
@@ -24931,6 +25541,7 @@ mod tests {
         let (blocks, _) = build_ranked_cfg(
             &projection_types(),
             &function,
+            &[],
             &vec![None; function.locals().len()],
             &vec![None; function.blocks().len()],
             &inductions,
@@ -24974,6 +25585,7 @@ mod tests {
         let (blocks, _) = build_ranked_cfg(
             &projection_types(),
             &function,
+            &[],
             &vec![None; function.locals().len()],
             &vec![None; function.blocks().len()],
             &inductions,
@@ -25006,6 +25618,7 @@ mod tests {
         let (blocks, _) = build_ranked_cfg(
             &projection_types(),
             &function,
+            &[],
             &predicates,
             &vec![None; function.blocks().len()],
             &inductions,
@@ -25053,6 +25666,7 @@ mod tests {
         let (blocks, _) = build_ranked_cfg(
             &projection_types(),
             &function,
+            &[],
             &vec![None; function.locals().len()],
             &deterministic_switches,
             &inductions,
@@ -25131,6 +25745,7 @@ mod tests {
         let (blocks, _) = build_ranked_cfg(
             &projection_types(),
             &function,
+            &callables,
             &vec![None; function.locals().len()],
             &vec![None; function.blocks().len()],
             &inductions,
@@ -25377,6 +25992,7 @@ mod tests {
         let (blocks, _) = build_ranked_cfg(
             &projection_types(),
             &function,
+            &[],
             &vec![None; function.locals().len()],
             &vec![None; function.blocks().len()],
             &inductions,
@@ -25425,6 +26041,7 @@ mod tests {
         let (blocks, _) = build_ranked_cfg(
             &projection_types(),
             &function,
+            &[],
             &vec![None; function.locals().len()],
             &vec![None; function.blocks().len()],
             &inductions,

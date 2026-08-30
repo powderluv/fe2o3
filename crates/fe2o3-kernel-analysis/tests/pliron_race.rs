@@ -1,8 +1,10 @@
 use dialect_gpu::{AddressSpaceAttr, ExecutionLayoutOp, FenceOp, MemoryOrderAttr, MemoryScopeAttr};
 use dialect_kernel::{
     AccessKindAttr, AllocationEffectOp, AtomicOrderingAttr, AtomicScopeAttr, BranchOp,
-    CheckedRowStripedIndex2DOp, CheckedTiledIndex2DOp, DIALECT_NAME, IndexBinaryKindAttr,
-    IndexBinaryOp, IndexConstantOp, IndexEqualBranchOp, IndexLessThanBranchOp, IndexType,
+    CheckedRowStripedIndex2DOp, CheckedTiledIndex2DOp, DIALECT_NAME,
+    GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+    GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1, IndexBinaryKindAttr, IndexBinaryOp,
+    IndexConstantOp, IndexEqualBranchOp, IndexLessThanBranchOp, IndexType, IndexUnknownOp,
     InvocationIndexOp, MemorySpaceAttr, RankedAccessOp, RankedViewOp, RankedViewType, ReturnOp,
     register_dialect,
 };
@@ -1890,6 +1892,61 @@ fn remainder_mapping_reports_wraparound_collision() {
 }
 
 #[test]
+fn guarded_quotient_mapping_uses_exact_fallback_and_reports_a_collision() {
+    let context = &mut setup();
+    let function = function(context, "quotient_output");
+    let entry = function.get_entry_block(context);
+    let access_block = block(context, &function, "access");
+    let exit = block(context, &function, "exit");
+    let output = view(context, vec![4], MemorySpaceAttr::Global);
+    let invocation = InvocationIndexOp::new(context, 0, 64);
+    let divisor = IndexConstantOp::new(context, 16);
+    let quotient = IndexBinaryOp::new(
+        context,
+        IndexBinaryKindAttr::Divide,
+        invocation.result(context),
+        divisor.result(context),
+    );
+    let extent = IndexConstantOp::new(context, 4);
+    let guard = IndexLessThanBranchOp::new(
+        context,
+        quotient.result(context),
+        extent.result(context),
+        access_block,
+        exit,
+    );
+    let write = access(
+        context,
+        AccessKindAttr::Write,
+        output.result(context),
+        quotient.result(context),
+    );
+    let to_exit = BranchOp::new(context, exit);
+    let ret = ReturnOp::new(context);
+    append(context, entry, &output);
+    append(context, entry, &invocation);
+    append(context, entry, &divisor);
+    append(context, entry, &quotient);
+    append(context, entry, &extent);
+    append(context, entry, &guard);
+    append(context, access_block, &write);
+    append(context, access_block, &to_exit);
+    append(context, exit, &ret);
+
+    let report = run_pliron_ranked_race_check_v1(context, &function);
+    let (first, second) = report
+        .findings()
+        .iter()
+        .find_map(|finding| match finding {
+            RankedRaceFindingV1::ConflictingEffects { first, second, .. } => Some((first, second)),
+            _ => None,
+        })
+        .expect("quotient collision");
+    assert_eq!(first.invocation(), &[0]);
+    assert_eq!(second.invocation(), &[1]);
+}
+
+#[test]
 fn multidimensional_identity_is_clean_and_dropped_dimension_collides() {
     for drop_y in [false, true] {
         let context = &mut setup();
@@ -2406,6 +2463,40 @@ fn whole_allocation_unknown_alias_read_fails_closed_against_an_output() {
 }
 
 #[test]
+fn reserved_gfx950_transpose_effect_is_not_a_global_race() {
+    let context = &mut setup();
+    let function = function(context, "reserved_gfx950_transpose_effect");
+    let entry = function.get_entry_block(context);
+    let layout = ExecutionLayoutOp::new(context, 59, [64, 1, 1], [64, 1, 1], 64);
+    let write = AllocationEffectOp::new(
+        context,
+        AccessKindAttr::Write,
+        MemorySpaceAttr::Workgroup,
+        GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+        GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1,
+    )
+    .expect("reserved transpose write");
+    let read = AllocationEffectOp::new(
+        context,
+        AccessKindAttr::Read,
+        MemorySpaceAttr::Workgroup,
+        GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+        GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1,
+    )
+    .expect("reserved transpose read");
+    let ret = ReturnOp::new(context);
+    append(context, entry, &layout);
+    append(context, entry, &write);
+    append(context, entry, &read);
+    append(context, entry, &ret);
+
+    assert_eq!(
+        run_pliron_ranked_race_check_v1(context, &function).status(),
+        KernelCheckStatusV1::Clean
+    );
+}
+
+#[test]
 fn malformed_non_global_allocation_effect_cannot_fail_open() {
     let context = &mut setup();
     let function = function(context, "malformed_non_global_allocation_effect");
@@ -2518,6 +2609,107 @@ fn heterogeneous_read_only_views_in_one_alias_class_are_clean() {
     append(context, entry, &ret);
 
     assert!(run_pliron_ranked_race_check_v1(context, &function).is_clean());
+}
+
+fn guarded_unknown_read_with_two_disjoint_writes(
+    context: &mut Context,
+    read_noalias_class: u64,
+) -> FuncOp {
+    let function = function(context, "guarded_unknown_read_with_two_disjoint_writes");
+    let entry = function.get_entry_block(context);
+    let read_block = block(context, &function, "read");
+    let exit = block(context, &function, "exit");
+    let input_type = RankedViewType::new(context, 32, true, vec![128]).expect("input type");
+    let input = RankedViewOp::new_in_space_with_allocation_contract(
+        context,
+        input_type,
+        vec![],
+        MemorySpaceAttr::Global,
+        read_noalias_class,
+        read_noalias_class,
+    )
+    .expect("input view");
+    let output = view_with_contract(context, vec![128], MemorySpaceAttr::Global, 702, 702);
+    let invocation = InvocationIndexOp::new(context, 0, 64);
+    let offset = IndexConstantOp::new(context, 64);
+    let input_extent = IndexConstantOp::new(context, 128);
+    let second_index = IndexBinaryOp::new(
+        context,
+        IndexBinaryKindAttr::Add,
+        invocation.result(context),
+        offset.result(context),
+    );
+    let unknown = IndexUnknownOp::new(context);
+    let guard = IndexLessThanBranchOp::new(
+        context,
+        unknown.result(context),
+        input_extent.result(context),
+        read_block,
+        exit,
+    );
+    let first_write = access(
+        context,
+        AccessKindAttr::Write,
+        output.result(context),
+        invocation.result(context),
+    );
+    let second_write = access(
+        context,
+        AccessKindAttr::Write,
+        output.result(context),
+        second_index.result(context),
+    );
+    let read = access(
+        context,
+        AccessKindAttr::Read,
+        input.result(context),
+        unknown.result(context),
+    );
+    let to_exit = BranchOp::new(context, exit);
+    let ret = ReturnOp::new(context);
+    for operation in [
+        input.get_operation(),
+        output.get_operation(),
+        invocation.get_operation(),
+        offset.get_operation(),
+        input_extent.get_operation(),
+        second_index.get_operation(),
+        unknown.get_operation(),
+        first_write.get_operation(),
+        second_write.get_operation(),
+        guard.get_operation(),
+    ] {
+        operation.insert_at_back(entry, context);
+    }
+    append(context, read_block, &read);
+    append(context, read_block, &to_exit);
+    append(context, exit, &ret);
+    function
+}
+
+#[test]
+fn unresolved_read_only_class_does_not_block_disjoint_write_proof() {
+    let context = &mut setup();
+    let function = guarded_unknown_read_with_two_disjoint_writes(context, 701);
+
+    assert!(run_pliron_ranked_race_check_v1(context, &function).is_clean());
+}
+
+#[test]
+fn unresolved_read_in_writable_alias_class_still_fails_closed() {
+    let context = &mut setup();
+    let function = guarded_unknown_read_with_two_disjoint_writes(context, 702);
+
+    let report = run_pliron_ranked_race_check_v1(context, &function);
+    assert_eq!(report.status(), KernelCheckStatusV1::Incomplete);
+    assert!(
+        matches!(
+            report.findings(),
+            [RankedRaceFindingV1::UnresolvedIndex { .. }]
+        ),
+        "{:#?}",
+        report.findings()
+    );
 }
 
 #[test]

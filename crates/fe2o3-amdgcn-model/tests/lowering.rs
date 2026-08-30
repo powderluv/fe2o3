@@ -409,6 +409,79 @@ fn exact_gfx950_xnack_minus(mut module: Module) -> Module {
     module
 }
 
+fn gfx950_bf16_mfma_module() -> Module {
+    let parameters = [
+        vec![global_pointer(AccessMode::ReadWrite)],
+        vec![Type::Scalar(ScalarType::Bf16); 8],
+        vec![Type::F32; 4],
+    ]
+    .concat();
+    let matrix = MatrixOperation::multiply_accumulate(
+        [ValueId(1), ValueId(2), ValueId(3), ValueId(4)],
+        [ValueId(5), ValueId(6), ValueId(7), ValueId(8)],
+        [ValueId(9), ValueId(10), ValueId(11), ValueId(12)],
+    )
+    .with_declared_tensor_layout(TensorLayoutContractV1::gfx942_mfma_bf16_f32_m16n16k16_wave64());
+    let operation = Operation::new(
+        (13..17)
+            .map(|id| ValueDef::new(ValueId(id), Type::F32))
+            .collect(),
+        OperationKind::Matrix(matrix),
+    );
+    let mut operations = vec![operation];
+    for index in 0..4_u32 {
+        let offset = ValueId(17 + index * 2);
+        let pointer = ValueId(18 + index * 2);
+        operations.push(op(
+            offset.0,
+            Type::INDEX,
+            OperationKind::Constant(Constant::Index(u64::from(index))),
+        ));
+        operations.push(op(
+            pointer.0,
+            global_pointer(AccessMode::ReadWrite),
+            OperationKind::GetElementPointer {
+                base: ValueId(0),
+                offset,
+            },
+        ));
+        operations.push(Operation::new(
+            vec![],
+            OperationKind::Store {
+                pointer,
+                value: ValueId(13 + index),
+                access: MemoryAccess::new(AddressSpace::Global, 4),
+            },
+        ));
+    }
+    let mut function = Function::kernel_entry(
+        "gfx950_bf16_mfma_impl",
+        Signature::new(parameters, vec![]),
+        (0..13).map(ValueId).collect(),
+        vec![BasicBlock {
+            id: BlockId(0),
+            parameters: vec![],
+            operations,
+            terminator: Some(Terminator::Return { values: vec![] }),
+        }],
+    );
+    function.required_capabilities = function.derived_capabilities();
+
+    let mut kernel = Kernel::new(
+        "gfx950_bf16_mfma",
+        "gfx950_bf16_mfma_impl",
+        LaunchDomain::D1 {
+            x: LaunchExtent::Dynamic,
+        },
+    );
+    kernel.workgroup_size = Some(WorkgroupSize::new(64, 1, 1));
+
+    let mut module = Module::new("tests::gfx950_bf16_mfma");
+    module.functions.push(function);
+    module.kernels.push(kernel);
+    exact_gfx950_xnack_minus(module)
+}
+
 fn gfx950_scaled_mfma_module() -> Module {
     let parameters = [vec![Type::Scalar(ScalarType::U32); 16], vec![Type::F32; 4]].concat();
     let matrix = MatrixOperation::scaled_multiply_accumulate_fp8_e4m3(
@@ -1382,6 +1455,53 @@ fn gfx950_sqrt_uses_the_native_llvm_intrinsic_accepted_by_rocm() {
         "call float @llvm.experimental.constrained.sqrt.f32(float %arg0, metadata !\"round.tonearest\", metadata !\"fpexcept.ignore\")",
         1,
     );
+}
+
+#[test]
+fn gfx950_full_module_lowers_exact_bf16_mfma_profile() {
+    let module = gfx950_bf16_mfma_module();
+    verify_module(&module).unwrap();
+    let llvm = lower_compiler_module_to_gfx950_xnack_minus_llvm_ir(&module).unwrap();
+
+    let intrinsic = "llvm.amdgcn.mfma.f32.16x16x16bf16.1k";
+    assert_eq!(llvm.matches(intrinsic).count(), 2, "{llvm}");
+    assert!(llvm.contains(
+        "<4 x i16> %matrix.0.0.lhs.3, <4 x i16> %matrix.0.0.rhs.3, <4 x float> %matrix.0.0.acc.3, i32 0, i32 0, i32 0"
+    ));
+    assert!(llvm.contains("\"target-cpu\"=\"gfx950\""));
+    assert!(llvm.contains("\"target-features\"=\"-wavefrontsize32,+wavefrontsize64,-xnack\""));
+    assert!(!llvm.contains("llvm.amdgcn.mfma.scale"));
+}
+
+#[test]
+fn gfx950_bf16_admission_does_not_open_other_matrix_capabilities() {
+    for capability_name in [
+        format!("{BF16_F32_M16N16K16_CAPABILITY}.lookalike"),
+        LDS_TILE_16X16_XOR4_CAPABILITY.to_owned(),
+    ] {
+        let mut module = gfx950_bf16_mfma_module();
+        let capability = TargetCapability::Extension {
+            namespace: MATRIX_CAPABILITY_NAMESPACE.to_owned(),
+            name: capability_name.clone(),
+        };
+        module.required_capabilities.insert(capability);
+        let error = lower_compiler_module_to_gfx950_xnack_minus_llvm_ir(&module)
+            .expect_err("gfx950 must reject every non-allowlisted matrix capability");
+        assert!(error.contains(LoweringDiagnosticCode::UnsupportedCapability));
+        assert!(error.to_string().contains(&capability_name), "{error}");
+    }
+}
+
+#[test]
+fn gfx950_bf16_mfma_rejects_non_wave64_activity() {
+    let mut module = gfx950_bf16_mfma_module();
+    let OperationKind::Matrix(matrix) =
+        &mut module.functions[0].body.as_mut().unwrap().blocks[0].operations[0].kind
+    else {
+        panic!("expected matrix operation")
+    };
+    matrix.active_lanes = 32;
+    assert!(lower_compiler_module_to_gfx950_xnack_minus_llvm_ir(&module).is_err());
 }
 
 #[test]
@@ -3020,6 +3140,54 @@ fn rocm_compiles_wave64_for_gfx942() {
     compile_wave_for_target("gfx942", WaveWidth::Wave64);
 }
 
+#[test]
+#[ignore = "requires a ROCm LLVM toolchain with gfx950 support"]
+fn rocm_compiles_exact_gfx950_bf16_mfma_to_code_object() {
+    let clang = std::env::var_os("FE2O3_ROCM_CLANG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/opt/rocm/llvm/bin/clang"));
+    let directory = TemporaryDirectory::new("gfx950-bf16-mfma");
+    let input = directory.join("gfx950_bf16_mfma.ll");
+    let output = directory.join("gfx950_bf16_mfma.hsaco");
+    let llvm =
+        lower_compiler_module_to_gfx950_xnack_minus_llvm_ir(&gfx950_bf16_mfma_module()).unwrap();
+    fs::write(&input, llvm).unwrap();
+
+    let result = Command::new(&clang)
+        .arg("--target=amdgcn-amd-amdhsa")
+        .arg("-mcpu=gfx950")
+        .arg("-nogpulib")
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "clang failed for gfx950 BF16 MFMA:\n{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(fs::metadata(&output).unwrap().len() > 64);
+
+    let objdump = std::env::var_os("FE2O3_ROCM_LLVM_OBJDUMP")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let mut tool = clang;
+            tool.set_file_name("llvm-objdump");
+            tool
+        });
+    let result = Command::new(objdump)
+        .arg("--disassemble")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(result.status.success());
+    let disassembly = String::from_utf8(result.stdout).unwrap();
+    assert!(
+        disassembly.contains("v_mfma_f32_16x16x16_bf16"),
+        "{disassembly}"
+    );
+}
 #[test]
 #[ignore = "requires a ROCm LLVM toolchain with gfx950 support"]
 fn rocm_compiles_wave64_for_gfx950() {

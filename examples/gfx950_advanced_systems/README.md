@@ -74,23 +74,117 @@ references. Set `FE2O3_REPO_ROOT`, `ROCM_PATH`, `RUSTUP`, `CARGO`, or the
 documented tool and target-directory environment variables when validating a
 copied checkout.
 
-## Production Rust validation evidence
+## Production Rust optimization evidence
 
-On 2026-08-27, all seven production Rust wrappers passed on SSH host `mi350`
-(`smci350-rck-g03-b19-03`) with ROCm 7.2.1 and eight visible MI350X devices.
-Routing metadata, dispatch entries, N-gram results, and gradient shards matched
-exactly. The largest observed absolute errors were `4.768371582e-7` for the
-two expert-rank launches, `2.980232239e-8` for speculative state, and
-`7.450580597e-9` for the Muon update; rank combine and the Muon norm had zero
-error. The corresponding float tolerances are `2e-6` for routing weights,
-`3e-3` for expert and rank combine, `1e-7` for committed speculative state,
-and `2e-6` for Muon.
+The 2026-08-29 optimization pass used only physical GPU 6 on SSH host `mi350`
+(`ROCR_VISIBLE_DEVICES=6`, with `HIP_VISIBLE_DEVICES` unset) and ROCm 7.2.1.
+Every timed kernel first passed the existing CPU oracle, immutable-input checks,
+and output canaries. Timings are ROCr HSA dispatch timestamps after 200 warmups,
+five blocks of 50 samples, and ten block rewarm dispatches. They are bounded,
+single-process ablations, not publishable fastest-kernel claims. Exact records,
+artifact digests, and the machine-readable values below are in
+[`optimization-evidence-v1.json`](optimization-evidence-v1.json).
 
-The expert-rank Rust HSACO contained exactly three
-`v_mfma_f32_16x16x128_f8f6f4` instructions with FP4-A/FP8-B selector
-`cbsz:4`. The per-kernel portable namespace and LLVM/HSACO SHA-256 values are
-printed by each wrapper and pinned by the corresponding advanced tutorial
-evidence record.
+The retained-candidate subset was collected with:
+
+```bash
+ROCR_VISIBLE_DEVICES=6 \
+FE2O3_GFX950_ADVANCED_PERF_WARMUPS=200 \
+FE2O3_GFX950_ADVANCED_PERF_BLOCKS=5 \
+FE2O3_GFX950_ADVANCED_PERF_SAMPLES_PER_BLOCK=50 \
+FE2O3_GFX950_ADVANCED_PERF_BLOCK_REWARM=10 \
+  ../../perf-evidence/run-gfx950-advanced-performance.sh \
+  /home/harmenon/perf-runs/systems-candidate-ablation-v2 \
+  ./run-combine-expert-ranks-gfx950.sh \
+  ./run-speculative-transaction-gfx950.sh \
+  ./run-qwen-ngram-gather-gfx950.sh \
+  ./run-stage-gradient-shard-gfx950.sh \
+  ./run-muon-update-gfx950.sh
+```
+
+The same four sampling variables were passed to
+`../../perf-evidence/run-published-baseline-artifact.sh` for each digest-pinned
+baseline. The final branchless N-gram source was rerun after commit as campaign
+`systems-ngram-retained-v4`, so its source identity does not point at a dirty
+worktree.
+
+| Kernel | Exact-semantics optimization | Baseline | Retained | Contribution |
+| --- | --- | ---: | ---: | ---: |
+| route | Compute each token route once per wave, broadcast choices, and reuse a packed route map for counts/dispatch | blocked | blocked | not measurable |
+| expert rank | One Wave64, blocked four-element ownership, three mixed FP4/FP8 MFMAs instead of three per wave across four waves | blocked | blocked | not measurable |
+| combine | Tested one-wave blocked ownership; retained the exact 256-thread mapping after proof rejection | 5.00 us | 5.00 us | 0 ns, 1.00x |
+| speculative | Compute the acceptance prefix once, broadcast it to the eight state elements, and remove the duplicate acceptance path | 8.00 us | 5.68 us | -2.32 us, 1.41x |
+| N-gram | Tested hash-first short-circuiting; retained the branchless full-key probe because the candidate regressed | 8.52 us | 8.52 us | 0 ns, 1.00x |
+| stage | Retained the existing one-Wave64 exact copy | 5.00 us | 5.00 us | 0 ns, 1.00x |
+| Muon | Distribute one matrix element per lane and exchange values with Wave64 reductions/broadcasts | 5.72 us | 5.04 us | -0.68 us, 1.13x |
+
+The rejected N-gram hash-first variant measured 10.68 us, 2.16 us slower than
+the 8.52 us branchless baseline. That result is why the final source deliberately
+does not contain the superficially attractive early branch. Combine and stage
+also remain unchanged: their approximately 5 us time is dispatch-latency
+dominated at this one-workgroup scale.
+
+The retained speculative artifact reduces static global instructions from 16
+to 10, VALU instructions from 77 to 62, VGPRs from 27 to 17, and SGPRs from 66
+to 62. Distributed Muon reduces total static instructions from 1,360 to 593,
+VALU instructions from 969 to 160, branches from 21 to 3, VGPRs from 62 to 19,
+and SGPRs from 58 to 22; its 86 `ds_bpermute` instructions replace redundant
+per-lane 4x4 matrix evaluation. Combine remains 291 instructions, N-gram 878,
+and stage 282. Neither retained measured kernel changes the floating-point
+accuracy contract or enables fast math.
+
+### Resource lower bound
+
+For each fixed fixture, the optimistic whole-device resource floor is
+
+```text
+max(logical_bytes / 8 TB/s,
+    FP32_ops / 144.2 TFLOP/s,
+    mixed_FP4_FP8_ops / 4.6 PFLOP/s)
+```
+
+The mixed rate uses the lower FP8 peak rather than the 9.2 PFLOP/s MXFP4 peak.
+Logical bytes count unique fixed-fixture reads and writes; the speculative
+fixture counts only the proposed deltas read by its two committed candidates.
+This is a cold logical-payload bound, not a prediction for a warm, persistent,
+single-workgroup dispatch. It intentionally excludes queue/signal latency,
+instruction dependencies, and cache effects.
+
+| Kernel | Logical bytes | Counted operations | Resource floor | Retained / floor |
+| --- | ---: | ---: | ---: | ---: |
+| route | 4,880 | 16,384 FP32 routing-dot ops | 0.610 ns | unavailable |
+| expert rank | 9,472 | 196,608 mixed MFMA ops | 1.184 ns | unavailable |
+| combine | 3,072 | 256 FP32 adds | 0.384 ns | 13,021x |
+| speculative | 896 | 64 committed-state FP32 adds | 0.112 ns | 50,714x |
+| N-gram | 576 | integer/hash work | 0.072 ns | 118,333x |
+| stage | 128 | copy only | 0.016 ns | 312,500x |
+| Muon | 196 | 1,649 FP32 ops | 0.0245 ns | 205,714x |
+
+The very large ratios are expected: these fixtures launch one tiny workgroup,
+so a whole-device bandwidth/compute roof is much lower than the practical HSA
+dispatch floor. The resource bound is useful for checking arithmetic and byte
+assumptions, not for claiming that this microbenchmark can occupy all 256 CUs.
+
+### Unresolved production lowering
+
+Host contracts pass for all seven sources. Five production wrappers (combine,
+speculative, N-gram, stage, and Muon) lower and run numerically on GPU 6. Route
+and expert rank remain blocked by compiler validation; verification was not
+weakened to admit them:
+
+- Route: `/tmp/systems-route-helper.log` reports `ConstantIndex projection on
+  a non-array place in block 596, statement 0` during semantic body construction.
+- Expert rank: `/tmp/systems-expert-rank-fixed.log` reports
+  `FE2O3-RACE-002` at block 27 op 0, with unresolved access dimension `v109`
+  because the checked structured-index marker lacks a validated value contract.
+  The pre-optimization source also has the independent current-main regression
+  retained in `/tmp/systems-expert-helper-gated.log`: semantic MIR effect
+  `<block=43, statement=None, ordinal=0>` has no ranked PLIRON counterpart.
+
+Because expert rank does not produce a verified HSACO yet, the three source MFMA
+calls are not presented as post-optimization ISA evidence. Once the structured
+effect projection is fixed, its wrapper still requires exactly three
+`v_mfma_f32_16x16x128_f8f6f4` instructions with `cbsz:4` before execution.
 
 Run the independent HIP compiler, target-rejection, ISA, and numerical suite:
 

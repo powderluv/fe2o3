@@ -1,0 +1,470 @@
+{
+  "schema": "fe2o3.gfx950.advanced-systems-ablation-variants.v1",
+  "architecture": "gfx950",
+  "rules": {
+    "workload_identity": "kernel export, shape, initialized inputs, CPU oracle, canaries, and numerical tolerance are identical across runnable variants",
+    "implementation_identity": "compile-time feature, namespace, launch, LLVM hash, and HSACO hash identify a variant",
+    "counted_work_scope": "algorithmic work at the fixed logical shape; address arithmetic, bounds checks, and compiler-generated instructions are reported separately from ISA",
+    "compulsory_bytes_scope": "unique bytes in all input and output buffers required by the fixed invocation"
+  },
+  "kernels": [
+    {
+      "feature": "kernel-moe-route",
+      "export": "gfx950_moe_route_fp4_t16_e4_k2_v1",
+      "shape": {
+        "tokens": 16,
+        "hidden": 128,
+        "experts": 4,
+        "top_k": 2,
+        "dispatch_capacity": 32
+      },
+      "launch": {
+        "workgroup": [
+          256,
+          1,
+          1
+        ],
+        "grid": [
+          1,
+          1,
+          1
+        ]
+      },
+      "compulsory_unique_global_bytes": 4880,
+      "counted_work": {
+        "fp32_flops": 16384,
+        "fp32_formula": "16 tokens * 4 experts * 128 hidden * (1 multiply + 1 add)",
+        "transcendental_ops": {
+          "exp_f32": 32
+        },
+        "integer_or_comparison_formula": "2048 FP4 nibble decodes; 16 stable top-2 selections; 32 route records scanned for each expert dispatch slot"
+      },
+      "serial_dependencies": "each of four logits has a 128-step accumulation recurrence; stable dispatch positions require the complete 32-record route order",
+      "lds": {
+        "bytes": 0,
+        "stages": 0,
+        "assessment": "route data fits in subgroup registers; LDS would add a workgroup barrier without producer-consumer reuse"
+      },
+      "pipeline": {
+        "software_pipeline": "rejected",
+        "multi_buffer": "rejected",
+        "reason": "the fixed single-wave token calculation is dominated by four dependent accumulators and the dispatch scan consumes the completed route map"
+      },
+      "tile_assessment": "16 tokens map four times over Wave64; 256 threads cover the 4 x 32 dispatch output exactly",
+      "variants": [
+        {
+          "id": "canonical",
+          "feature": null,
+          "namespace": "bb933fcd1e3f8124227991b6743de97b6fa108551cc44c617d9450933ad98170",
+          "isolated_change": "pack all 16 top-2 route pairs into one u64 before dispatch"
+        }
+      ],
+      "oracle": {
+        "test": "gfx950_moe_route_rust_cov6_matches_cpu_reference",
+        "tolerance": "exact experts/counts/dispatch and fixture-defined f32 route-weight tolerance",
+        "canaries": true
+      }
+    },
+    {
+      "feature": "kernel-moe-expert-rank",
+      "export": "gfx950_moe_expert_rank_fp4_fp8_v1",
+      "shape": {
+        "tokens": 16,
+        "hidden": 128,
+        "output": 16,
+        "routed_experts": 2,
+        "shared_experts": 1
+      },
+      "launch": {
+        "workgroup": [
+          64,
+          1,
+          1
+        ],
+        "grid": [
+          1,
+          1,
+          1
+        ]
+      },
+      "compulsory_unique_global_bytes": 9472,
+      "counted_work": {
+        "mixed_fp4_fp8_flops": 196608,
+        "mfma_formula": "3 matrices * 16 * 16 * 128 * (1 multiply + 1 add)",
+        "transcendental_ops": {
+          "exp_f32_max": 768
+        },
+        "integer_or_comparison_formula": "256 outputs resolve two route IDs and one shared-expert enable"
+      },
+      "serial_dependencies": "each MFMA has its own K=128 dot-product reduction; scalar SiLU/gating waits for its corresponding accumulator",
+      "lds": {
+        "bytes": 0,
+        "stages": 0,
+        "assessment": "typed gfx950 MFMA fragments are loaded from global-backed views; adding raw LDS address-space plumbing would change the compiler surface rather than isolate scheduling"
+      },
+      "pipeline": {
+        "software_pipeline": "applicable",
+        "multi_buffer": "rejected",
+        "reason": "three independent activation/weight/MFMA streams permit instruction scheduling, but this single K=128 tile has no next K tile to double-buffer"
+      },
+      "tile_assessment": "one Wave64 owns a 16x16 output through Blocked<Index1D,64,4>; changing ownership changes the typed output ABI",
+      "variants": [
+        {
+          "id": "canonical",
+          "feature": null,
+          "namespace": "dad4ffb4c5c270c853b36fbb21ecc1095dcf33cf74d9585029fdce96e90d38e2",
+          "isolated_change": "load all three independent operand pairs before issuing the three MFMAs"
+        },
+        {
+          "id": "expert-serial",
+          "feature": "ablation-expert-serial",
+          "namespace": "6de3151d7e205de375cd16a46b09c84211346b063664d0da16cd9f9b698efe2f",
+          "isolated_change": "interleave each operand load immediately with its MFMA"
+        }
+      ],
+      "oracle": {
+        "test": "gfx950_moe_expert_rank_rust_cov6_matches_cpu_reference",
+        "tolerance": "fixture-defined mixed FP4/FP8 accumulation and SiLU f32 tolerance",
+        "canaries": true
+      }
+    },
+    {
+      "feature": "kernel-combine-expert-ranks",
+      "export": "gfx950_combine_expert_ranks_v1",
+      "shape": {
+        "rank_partials": 2,
+        "tokens": 16,
+        "output": 16
+      },
+      "launch": {
+        "workgroup": [
+          256,
+          1,
+          1
+        ],
+        "grid": [
+          1,
+          1,
+          1
+        ]
+      },
+      "compulsory_unique_global_bytes": 3072,
+      "counted_work": {
+        "fp32_flops": 256,
+        "fp32_formula": "256 outputs * 1 add",
+        "transcendental_ops": {},
+        "integer_or_comparison_formula": "one exact element mapping per output"
+      },
+      "serial_dependencies": "one load-pair/add/store chain per output; no dependency between outputs",
+      "lds": {
+        "bytes": 0,
+        "stages": 0,
+        "assessment": "each input is consumed once and each output has one owner, so LDS has no reuse"
+      },
+      "pipeline": {
+        "software_pipeline": "rejected",
+        "multi_buffer": "rejected",
+        "reason": "one independent add per thread leaves no producer-consumer stage to overlap"
+      },
+      "tile_assessment": "256 threads exactly cover 16x16; the alternate reverses lane ownership inside each wave and restores destination order with subgroup broadcast",
+      "variants": [
+        {
+          "id": "canonical",
+          "feature": null,
+          "namespace": "75b93b89a635855d620e2974e64c7ad6299d75329410616cdceaaabe02db89ae",
+          "isolated_change": "direct element ownership"
+        }
+      ],
+      "oracle": {
+        "test": "gfx950_combine_expert_ranks_rust_cov6_matches_cpu_reference",
+        "tolerance": "exact fixture f32 addition",
+        "canaries": true
+      }
+    },
+    {
+      "feature": "kernel-speculative-transaction",
+      "export": "gfx950_speculative_transaction_v1",
+      "shape": {
+        "candidates": 8,
+        "draft_steps": 4,
+        "state_width": 8
+      },
+      "launch": {
+        "workgroup": [
+          64,
+          1,
+          1
+        ],
+        "grid": [
+          1,
+          1,
+          1
+        ]
+      },
+      "compulsory_unique_global_bytes": 1664,
+      "counted_work": {
+        "fp32_flops_max": 256,
+        "fp32_formula": "8 candidates * 8 state elements * up to 4 accepted delta adds",
+        "transcendental_ops": {},
+        "integer_or_comparison_formula": "8 candidates * 4 serial token equalities + 4 score comparisons; 64 state outputs consume the resulting accepted-prefix length"
+      },
+      "serial_dependencies": "acceptance is a four-step prefix recurrence; state commit is transactional and cannot begin until the prefix result is known",
+      "lds": {
+        "bytes": 0,
+        "stages": 0,
+        "assessment": "the accepted-prefix scalar is shared by subgroup broadcast and has no LDS-sized reuse set"
+      },
+      "pipeline": {
+        "software_pipeline": "rejected",
+        "multi_buffer": "rejected",
+        "reason": "the four acceptance decisions are a true prefix dependency and there is only one fixed transaction per lane"
+      },
+      "tile_assessment": "eight lanes compute one prefix per candidate; eight state lanes per candidate reuse it",
+      "variants": [
+        {
+          "id": "canonical",
+          "feature": null,
+          "namespace": "712bf821d681a74855c892c7f02fb02b2c64fe36617092999f673a1531777f8b",
+          "isolated_change": "compute each candidate prefix once and broadcast it to its eight state lanes"
+        },
+        {
+          "id": "speculative-recompute-prefix",
+          "feature": "ablation-speculative-recompute-prefix",
+          "namespace": "bdec264337e1f6c31dec20bfe6cabbebb62ad36d413a66e8876279753c46ee26",
+          "isolated_change": "recompute the identical four-step prefix independently in every state lane"
+        }
+      ],
+      "oracle": {
+        "test": "gfx950_speculative_transaction_rust_cov6_matches_cpu_reference",
+        "tolerance": "exact accepted steps, commit flags, rollback state, and committed f32 state",
+        "canaries": true
+      }
+    },
+    {
+      "feature": "kernel-qwen-ngram-gather",
+      "export": "gfx950_qwen_ngram_gather_v1",
+      "shape": {
+        "queries": 8,
+        "ngram": 3,
+        "table_slots": 16,
+        "probes": 16
+      },
+      "launch": {
+        "workgroup": [
+          64,
+          1,
+          1
+        ],
+        "grid": [
+          1,
+          1,
+          1
+        ]
+      },
+      "compulsory_unique_global_bytes": 576,
+      "counted_work": {
+        "fp32_flops": 0,
+        "transcendental_ops": {},
+        "integer_or_comparison_formula": "8 queries * (3 xor + 3 u64 multiply) for hashing; 8 * 16 probes * (1 add + 1 mask + 4 key comparisons), plus exact priority/slot tie resolution"
+      },
+      "serial_dependencies": "all 16 probes must participate because later duplicate keys may have higher priority or a lower-slot tie; best-priority state is a scan recurrence",
+      "lds": {
+        "bytes": 0,
+        "stages": 0,
+        "assessment": "eight queries do not provide enough cross-query table reuse to amortize a workgroup load and barrier"
+      },
+      "pipeline": {
+        "software_pipeline": "rejected",
+        "multi_buffer": "rejected",
+        "reason": "the fixed 16-slot priority scan is serial in best state; early exit changes duplicate resolution semantics"
+      },
+      "tile_assessment": "one active lane per query; inactive Wave64 lanes are required only by the fixed launch contract",
+      "variants": [
+        {
+          "id": "canonical",
+          "feature": null,
+          "namespace": "a9bf254981d5af7855538f611e59b2a273ed274201689cd16443b7279c327175",
+          "isolated_change": "probe slots in ascending offset order"
+        },
+        {
+          "id": "ngram-reverse-probe",
+          "feature": "ablation-ngram-reverse-probe",
+          "namespace": "a62bfd564c731058a0a6b9f3b1b710180c36b311241a8db5e3e4be664e5cf449",
+          "isolated_change": "probe the same 16 slots in descending offset order while retaining priority then slot tie-breaking"
+        }
+      ],
+      "oracle": {
+        "test": "gfx950_qwen_ngram_gather_rust_cov6_matches_cpu_reference",
+        "tolerance": "exact gathered token with collision, duplicate-priority, and lower-slot tie cases",
+        "canaries": true
+      }
+    },
+    {
+      "feature": "kernel-stage-gradient-shard",
+      "export": "gfx950_stage_gradient_shard_v1",
+      "shape": {
+        "shards_per_launch": 1,
+        "rows": 4,
+        "columns": 4,
+        "elements": 16
+      },
+      "launch": {
+        "workgroup": [
+          64,
+          1,
+          1
+        ],
+        "grid": [
+          1,
+          1,
+          1
+        ]
+      },
+      "compulsory_unique_global_bytes": 128,
+      "counted_work": {
+        "fp32_flops": 0,
+        "transcendental_ops": {},
+        "integer_or_comparison_formula": "16 exact load/store element mappings"
+      },
+      "serial_dependencies": "none between elements",
+      "lds": {
+        "bytes": 0,
+        "stages": 0,
+        "assessment": "the 64-byte shard is read once and written once; staging it in LDS adds traffic and a barrier"
+      },
+      "pipeline": {
+        "software_pipeline": "rejected",
+        "multi_buffer": "rejected",
+        "reason": "a single 16-element copy has no following tile or independent compute stage to overlap"
+      },
+      "tile_assessment": "canonical uses 16 lanes; tile4 uses four owner lanes loading four values each and subgroup broadcasts to restore the same 16 destinations",
+      "variants": [
+        {
+          "id": "canonical",
+          "feature": null,
+          "namespace": "487472b4b767bb11afc7a2d5bb85795b2b538c040432da4c0d5755900dd4867e",
+          "isolated_change": "one lane owns each element"
+        }
+      ],
+      "oracle": {
+        "test": "gfx950_stage_gradient_shard_rust_cov6_matches_cpu_reference",
+        "tolerance": "exact f32 copy",
+        "canaries": true
+      }
+    },
+    {
+      "feature": "kernel-muon-update",
+      "export": "gfx950_muon_update_4x4_v1",
+      "shape": {
+        "gradient_shards": 2,
+        "rows": 4,
+        "columns": 4,
+        "newton_schulz_iterations": 5
+      },
+      "launch": {
+        "workgroup": [
+          64,
+          1,
+          1
+        ],
+        "grid": [
+          1,
+          1,
+          1
+        ]
+      },
+      "compulsory_unique_global_bytes": 196,
+      "counted_work": {
+        "fp32_flops": 1649,
+        "fp32_formula": "fixed two-shard reduction, norm, normalization, five 4x4 Newton-Schulz matrix iterations, and scaled update",
+        "transcendental_ops": {
+          "sqrt_f32": 1
+        },
+        "integer_or_comparison_formula": "16 matrix-element ownership mappings per iteration"
+      },
+      "serial_dependencies": "each of five Newton-Schulz iterations consumes the complete matrix from the preceding iteration",
+      "lds": {
+        "bytes": 0,
+        "stages": 0,
+        "assessment": "the 4x4 matrix is exchanged through Wave64 shuffles; LDS would add barriers and duplicate subgroup communication"
+      },
+      "pipeline": {
+        "software_pipeline": "rejected",
+        "multi_buffer": "rejected",
+        "reason": "the five matrix updates form a true recurrence, and the fixed 4x4 matrix has no independent next tile"
+      },
+      "tile_assessment": "16 active lanes own the 4x4 matrix; remaining lanes participate in subgroup collectives but do not write",
+      "variants": [
+        {
+          "id": "canonical",
+          "feature": null,
+          "namespace": "9640ccf630920dc28c840f4d796dab11ddd9cebf804b0315b877e0c048eb7829",
+          "isolated_change": "Wave64 reduce_sum computes the squared norm"
+        },
+        {
+          "id": "muon-broadcast16",
+          "feature": "ablation-muon-broadcast16",
+          "namespace": "6de7921154ed6a9f640c8cb2ca93cfc312b36de60ead0f02bf1157c1765ee2a9",
+          "isolated_change": "sum the same 16 active-lane squares with explicit subgroup broadcasts"
+        }
+      ],
+      "oracle": {
+        "test": "gfx950_muon_update_rust_cov6_matches_cpu_reference",
+        "tolerance": "fixture-defined deterministic f32 norm and update tolerance",
+        "canaries": true
+      }
+    }
+  ],
+  "rejected_variants": [
+    {
+      "id": "route-owner-only",
+      "feature": "ablation-route-owner-only",
+      "export": "gfx950_moe_route_fp4_t16_e4_k2_v1",
+      "reason": "production semantic-to-ranked projection rejects lane-conditional induction as non-canonical control",
+      "retained_log": "logs/kernel-moe-route-route-owner-only.log"
+    },
+    {
+      "id": "route-broadcast-per-record",
+      "feature": "ablation-route-unpacked",
+      "export": "gfx950_moe_route_fp4_t16_e4_k2_v1",
+      "reason": "production convergence verification rejects subgroup broadcast inside the varying dispatch loop",
+      "retained_log": "logs/kernel-moe-route-route-unpacked.log"
+    },
+    {
+      "id": "route-u32-pack",
+      "feature": "ablation-route-unpacked",
+      "export": "gfx950_moe_route_fp4_t16_e4_k2_v1",
+      "reason": "target-neutral lowering rejects the u32 selection expression because semantic binary operand types differ",
+      "retained_log": "logs/kernel-moe-route-route-u32-pack.log"
+    },
+    {
+      "id": "combine-transposed",
+      "feature": "ablation-combine-transposed",
+      "export": "gfx950_combine_expert_ranks_v1",
+      "reason": "production lowering cannot prove the subgroup broadcast source lane is statically bounded",
+      "retained_log": "logs/kernel-combine-expert-ranks-combine-transposed.log"
+    },
+    {
+      "id": "stage-tile4",
+      "feature": "ablation-stage-tile4",
+      "export": "gfx950_stage_gradient_shard_v1",
+      "reason": "production lowering cannot prove the subgroup broadcast source lane is statically bounded",
+      "retained_log": "logs/kernel-stage-gradient-shard-stage-tile4.log"
+    },
+    {
+      "id": "expert-lds-double-buffer",
+      "export": "gfx950_moe_expert_rank_fp4_fp8_v1",
+      "reason": "the safe typed gfx950 MFMA operand views are global-backed and this shape has one K=128 tile, so LDS plumbing changes the compiler surface and cannot overlap a next tile"
+    },
+    {
+      "id": "expert-block16-owner",
+      "export": "gfx950_moe_expert_rank_fp4_fp8_v1",
+      "reason": "changing Blocked<Index1D,64,4> ownership changes the typed DisjointSlice ABI instead of isolating tile size"
+    },
+    {
+      "id": "ngram-early-exit",
+      "export": "gfx950_qwen_ngram_gather_v1",
+      "reason": "a later duplicate may have higher priority or win the lower-slot tie, so early exit changes exact semantics"
+    }
+  ]
+}

@@ -120,3 +120,55 @@ The validated code-object SHA-256 was
 `dcfb1e00354ac14dffae5e069138c5e212b0906133838195dd717686af26ce84`;
 the host executable SHA-256 was
 `d741786606e6a4d05ab2fd5f0a411bbc696a3dc6b12bce87c98eb624be39901e`.
+
+## mHC Sinkhorn performance ablation
+
+The production Rust mHC kernel keeps the exact 4x4 mixing matrix, four 16-channel
+streams, three Sinkhorn row/column normalization iterations, and 64-output ABI.
+The optimized mapping assigns one rotated matrix element to each lane in four
+contiguous wave16 groups. A width-four reduction computes each row sum, one
+reciprocal is reused by the four row elements, and four verifier-bounded
+broadcasts compute each column sum without divergent selection. The final row
+weights are broadcast once and reused for the four stream loads.
+
+The exact machine-readable accounting, artifact identities, protocol, and bound
+are in [`performance-mhc-sinkhorn-v1.json`](performance-mhc-sinkhorn-v1.json).
+The published pre-optimization Rust HSACO and the candidate both passed the same
+CPU oracle and guard canaries on physical GPU 6.
+
+| Artifact | Median ROCr time | Bootstrap 95% CI | ISA instructions | SGPR / VGPR |
+| --- | ---: | ---: | ---: | ---: |
+| Published baseline `0a42de9c...` | 7.160 us | [7.160, 7.160] us | 1,750 | 34 / 34 |
+| Distributed wave16 `f463b05e...` | 5.040 us | [5.000, 5.040] us | 457 | 22 / 12 |
+
+The default persistent-queue protocol used five fresh processes per variant in
+alternating AB/BA order. Each process used 1,000 initial warmups and 30 blocks
+of 100 samples, with 20 untimed rewarm dispatches per block. Across 15,000
+paired samples, the median paired speedup was **1.432x** with bootstrap 95% CI
+[1.4318568, 1.432], or a **30.1676%** median latency reduction.
+
+| Optimization | Exact static contribution |
+| --- | --- |
+| Distribute one matrix element per lane | `v_exp_f32` 16 to 1 (-93.75%); global dword loads 12 to 5 (-58.33%) |
+| Subgroup row reduction and reciprocal reuse | expanded divide sequences and `v_rcp_f32` both 96 to 6 (-93.75%) |
+| Branch-free bounded column broadcasts | scalar branches 8 to 2 (-75%), at the cost of 22 `ds_bpermute_b32` instructions |
+| Combined rewrite | instructions 1,750 to 457 (-73.89%), SGPR 34 to 22, VGPR 34 to 12; measured 1.432x |
+
+Only the combined rewrite was timed. The stage-level ISA deltas overlap, so
+they are not presented as additive marginal latency speedups.
+
+The strict whole-device resource floor uses 576 unique compulsory bytes: 64 B
+of logits, 256 B of streams, and 256 B of output. Counting 616 logical FP32
+algebraic operations, the MI350X inputs in
+[`mi350x-bound-inputs-v1.json`](../../perf-evidence/mi350x-bound-inputs-v1.json)
+give:
+
+```text
+max(576 / 8e12, 616 / 144.2e12) = 0.072 ns
+```
+
+The measured 5,040 ns median is 70,000 times that fully occupied global
+roofline. This is expected for a single-wave latency tutorial: the roofline
+excludes dispatch latency and does not provide a dependency-throughput bound
+for the 16 logical exponentials. It is a strict resource bound, not a claimed
+attainable single-wave latency.

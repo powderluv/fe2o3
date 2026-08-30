@@ -20,6 +20,9 @@ use fe2o3_device::sync::syncthreads;
 #[cfg(any(
     feature = "shifted",
     feature = "blocked",
+    feature = "blocked_multi_lane",
+    feature = "blocked_multi_block",
+    feature = "blocked_multi_lane_dynamic_grid",
     feature = "barrier_after_access",
     feature = "barrier_before_access",
     feature = "barrier_loop",
@@ -40,6 +43,9 @@ use fe2o3_device::{DisjointSlice, kernel, thread};
     feature = "shifted",
     feature = "grid_exclusive",
     feature = "blocked",
+    feature = "blocked_multi_lane",
+    feature = "blocked_multi_block",
+    feature = "blocked_multi_lane_dynamic_grid",
     feature = "barrier_after_access",
     feature = "barrier_before_access",
     feature = "barrier_divergent",
@@ -127,6 +133,45 @@ pub fn checked_shifted(mut output: DisjointSlice<f32, Shifted<Index1D, 4>>) {
 pub fn grid_exclusive(mut output: DisjointSlice<f32, GridExclusive>) {
     if let Some(leader) = thread::grid_leader() {
         if let Some(element) = output.get_mut_exclusive(&leader, 7) {
+            *element = 1.0;
+        }
+    }
+}
+
+#[kernel(
+    typed,
+    launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1]),
+)]
+#[cfg(feature = "blocked_multi_lane")]
+pub fn blocked_multi_lane(mut output: DisjointSlice<f32, Blocked<Index1D, 64, 4>>) {
+    if let Some(block) = thread::index_1d().checked_block::<64, 4>() {
+        if let Some(element) = output.get_block_mut(&block, 3) {
+            *element = 1.0;
+        }
+    }
+}
+
+#[kernel(
+    typed,
+    launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1]),
+)]
+#[cfg(feature = "blocked_multi_block")]
+pub fn blocked_multi_block(mut output: DisjointSlice<f32, Blocked<Index1D, 16, 4>>) {
+    if let Some(block) = thread::index_1d().checked_block::<16, 4>() {
+        if let Some(element) = output.get_block_mut(&block, 3) {
+            *element = 1.0;
+        }
+    }
+}
+
+#[kernel(
+    typed,
+    launch(required = [64, 1, 1], max = [64, 1, 1]),
+)]
+#[cfg(feature = "blocked_multi_lane_dynamic_grid")]
+pub fn blocked_multi_lane_dynamic_grid(mut output: DisjointSlice<f32, Blocked<Index1D, 64, 4>>) {
+    if let Some(block) = thread::index_1d().checked_block::<64, 4>() {
+        if let Some(element) = output.get_block_mut(&block, 3) {
             *element = 1.0;
         }
     }

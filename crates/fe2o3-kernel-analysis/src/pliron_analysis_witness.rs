@@ -795,6 +795,23 @@ enum RawIndexEvaluationFailureV1 {
     Overflow(&'static str),
 }
 
+pub(crate) fn evaluate_raw_index_at_invocation_v1(
+    context: &Context,
+    value: Value,
+    invocation: &[u64],
+    evaluation_steps: &mut usize,
+) -> Option<u64> {
+    evaluate_raw_index(
+        context,
+        value,
+        invocation,
+        &mut HashMap::new(),
+        &mut HashSet::new(),
+        evaluation_steps,
+    )
+    .ok()
+}
+
 fn evaluate_raw_index(
     context: &Context,
     value: Value,

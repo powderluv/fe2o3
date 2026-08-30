@@ -4,9 +4,9 @@
 #![cfg_attr(target_arch = "amdgpu", allow(unused_imports))]
 
 use fe2o3_device::{
-    DeviceMath, DisjointSlice, Gfx950F32AccumulatorFragment, Gfx950Fp4E2M1, Gfx950Fp4MfmaAMatrix,
-    Gfx950Fp8MfmaBMatrix, Gfx950Matrix, Gfx950Subgroup, StridedReadView2D, Wave64, WaveLane,
-    kernel, thread,
+    Blocked, DeviceMath, DisjointSlice, Gfx950F32AccumulatorFragment, Gfx950Fp4E2M1,
+    Gfx950Fp4MfmaAMatrix, Gfx950Fp8MfmaBMatrix, Gfx950Matrix, Gfx950Subgroup, Index1D,
+    StridedReadView2D, Wave64, WaveLane, kernel, thread,
 };
 
 use crate::{
@@ -19,8 +19,9 @@ use crate::{
 #[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-moe-route"))]
 #[kernel(
     typed,
-    namespace = "5f88dd0eb7d763b42a77dce26f06a50c315730e6a77414e64480fd94f7e9e690",
-    launch(required = [256, 1, 1], max = [256, 1, 1], max_grid = [1, 1, 1])
+    namespace = "bb933fcd1e3f8124227991b6743de97b6fa108551cc44c617d9450933ad98170",
+    launch(required = [256, 1, 1], max = [256, 1, 1], max_grid = [1, 1, 1]),
+    control_flow(loop_bounds(128, 32))
 )]
 #[allow(clippy::too_many_arguments, unused_assignments)]
 pub fn gfx950_moe_route_fp4_t16_e4_k2_v1(
@@ -41,101 +42,103 @@ pub fn gfx950_moe_route_fp4_t16_e4_k2_v1(
     {
         return;
     }
-    if lane >= EXPERTS * DISPATCH_CAPACITY {
-        return;
-    }
-    let Ok(activation_view) =
-        StridedReadView2D::from_shared_slice(activations, 0, TOKENS, HIDDEN, HIDDEN)
-    else {
-        return;
-    };
-    let Ok(router_view) =
+    let Ok(router_weights) =
         StridedReadView2D::from_shared_slice(router_weights, 0, EXPERTS, HIDDEN, HIDDEN)
     else {
         return;
     };
-    macro_rules! select_route {
-        (
-            $token:expr,
-            $first:ident,
-            $second:ident,
-            $route_logit0:ident,
-            $route_logit1:ident,
-            $route_logit2:ident,
-            $route_logit3:ident
-        ) => {{
-            let mut depth = 0_usize;
-            while depth < HIDDEN {
-                let bits = activation_view.load_or($token, depth, 0);
-                let magnitude = ((0xc864_3210_u32 >> (((bits & 7) as u32) * 4)) & 15) as f32 * 0.5;
-                let sign = 1.0 - 2.0 * ((bits >> 3) & 1) as f32;
-                let activation = sign * magnitude;
-                $route_logit0 += activation * router_view.load_or(0, depth, 0.0);
-                $route_logit1 += activation * router_view.load_or(1, depth, 0.0);
-                $route_logit2 += activation * router_view.load_or(2, depth, 0.0);
-                $route_logit3 += activation * router_view.load_or(3, depth, 0.0);
-                depth += 1;
-            }
-            let precedes12 = ($route_logit1 >= $route_logit2) as u32;
-            let precedes13 = ($route_logit1 >= $route_logit3) as u32;
-            let precedes23 = ($route_logit2 >= $route_logit3) as u32;
-            let rank1 = ($route_logit0 >= $route_logit1) as u32 + 2 - precedes12 - precedes13;
-            let rank2 = ($route_logit0 >= $route_logit2) as u32 + precedes12 + 1 - precedes23;
-            let rank3 = ($route_logit0 >= $route_logit3) as u32 + precedes13 + precedes23;
-            $first = ((rank1 == 0) as u32) + 2 * ((rank2 == 0) as u32) + 3 * ((rank3 == 0) as u32);
-            $second = ((rank1 == 1) as u32) + 2 * ((rank2 == 1) as u32) + 3 * ((rank3 == 1) as u32);
-        }};
+    let wave_lane = lane & 63;
+    let token = wave_lane & (TOKENS - 1);
+    let Ok(activations) =
+        StridedReadView2D::from_shared_slice(activations, 0, TOKENS, HIDDEN, HIDDEN)
+    else {
+        return;
+    };
+    let mut route_logit0 = 0.0_f32;
+    let mut route_logit1 = 0.0_f32;
+    let mut route_logit2 = 0.0_f32;
+    let mut route_logit3 = 0.0_f32;
+    let mut depth = 0_usize;
+    while depth < HIDDEN {
+        let bits = activations.load_or(token, depth, 0);
+        let magnitude = ((0xc864_3210_u32 >> (((bits & 7) as u32) * 4)) & 15) as f32 * 0.5;
+        let sign = 1.0 - 2.0 * ((bits >> 3) & 1) as f32;
+        let activation = sign * magnitude;
+        route_logit0 += activation * router_weights.load_or(0, depth, 0.0);
+        route_logit1 += activation * router_weights.load_or(1, depth, 0.0);
+        route_logit2 += activation * router_weights.load_or(2, depth, 0.0);
+        route_logit3 += activation * router_weights.load_or(3, depth, 0.0);
+        depth += 1;
     }
+    let precedes12 = (route_logit1 >= route_logit2) as u32;
+    let precedes13 = (route_logit1 >= route_logit3) as u32;
+    let precedes23 = (route_logit2 >= route_logit3) as u32;
+    let rank1 = (route_logit0 >= route_logit1) as u32 + 2 - precedes12 - precedes13;
+    let rank2 = (route_logit0 >= route_logit2) as u32 + precedes12 + 1 - precedes23;
+    let rank3 = (route_logit0 >= route_logit3) as u32 + precedes13 + precedes23;
+    let first_local = ((rank1 == 0) as u32) + 2 * ((rank2 == 0) as u32) + 3 * ((rank3 == 0) as u32);
+    let second_local =
+        ((rank1 == 1) as u32) + 2 * ((rank2 == 1) as u32) + 3 * ((rank3 == 1) as u32);
+    let first_logit = if first_local == 0 {
+        route_logit0
+    } else if first_local == 1 {
+        route_logit1
+    } else if first_local == 2 {
+        route_logit2
+    } else {
+        route_logit3
+    };
+    let second_logit = if second_local == 0 {
+        route_logit0
+    } else if second_local == 1 {
+        route_logit1
+    } else if second_local == 2 {
+        route_logit2
+    } else {
+        route_logit3
+    };
+    let maximum = if first_logit > second_logit {
+        first_logit
+    } else {
+        second_logit
+    };
+    let math = DeviceMath::current();
+    let first_exp = math.exp_f32(first_logit - maximum);
+    let second_exp = math.exp_f32(second_logit - maximum);
+    let denominator = first_exp + second_exp;
+    let first_weight_local = first_exp / denominator;
+    let second_weight_local = second_exp / denominator;
+    let subgroup = Gfx950Subgroup::current();
+    let top_source = ((wave_lane / TOP_K) & (TOKENS - 1)) as u32 & 63;
+    let local_pair = first_local | (second_local << 2);
+    let top_pair = subgroup.broadcast_f32::<64>(local_pair as f32, top_source) as u32;
+    let top_first = top_pair & 3;
+    let top_second = top_pair >> 2;
+    let top_first_weight = subgroup.broadcast_f32::<64>(first_weight_local, top_source);
+    let top_second_weight = subgroup.broadcast_f32::<64>(second_weight_local, top_source);
+    let packed_routes = (subgroup.broadcast_f32::<64>(local_pair as f32, 0) as u64)
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 1) as u64) << 4
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 2) as u64) << 8
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 3) as u64) << 12
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 4) as u64) << 16
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 5) as u64) << 20
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 6) as u64) << 24
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 7) as u64) << 28
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 8) as u64) << 32
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 9) as u64) << 36
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 10) as u64) << 40
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 11) as u64) << 44
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 12) as u64) << 48
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 13) as u64) << 52
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 14) as u64) << 56
+        | (subgroup.broadcast_f32::<64>(local_pair as f32, 15) as u64) << 60;
     if lane < TOKENS * TOP_K {
-        let token = lane / TOP_K;
-        let choice = lane - token * TOP_K;
-        let mut first = 0_u32;
-        let mut second = 0_u32;
-        let mut route_logit0 = 0.0_f32;
-        let mut route_logit1 = 0.0_f32;
-        let mut route_logit2 = 0.0_f32;
-        let mut route_logit3 = 0.0_f32;
-        select_route!(
-            token,
-            first,
-            second,
-            route_logit0,
-            route_logit1,
-            route_logit2,
-            route_logit3
-        );
-        let first_logit = if first == 0 {
-            route_logit0
-        } else if first == 1 {
-            route_logit1
-        } else if first == 2 {
-            route_logit2
-        } else {
-            route_logit3
-        };
-        let second_logit = if second == 0 {
-            route_logit0
-        } else if second == 1 {
-            route_logit1
-        } else if second == 2 {
-            route_logit2
-        } else {
-            route_logit3
-        };
-        let selected = if choice == 0 { first } else { second };
-        let maximum = if first_logit > second_logit {
-            first_logit
-        } else {
-            second_logit
-        };
-        let math = DeviceMath::current();
-        let first_exp = math.exp_f32(first_logit - maximum);
-        let second_exp = math.exp_f32(second_logit - maximum);
-        let denominator = first_exp + second_exp;
+        let choice = lane & (TOP_K - 1);
+        let selected = if choice == 0 { top_first } else { top_second };
         let weight = if choice == 0 {
-            first_exp / denominator
+            top_first_weight
         } else {
-            second_exp / denominator
+            top_second_weight
         };
         if let Some(slot) = top_experts.get_mut(thread::index_1d()) {
             *slot = selected;
@@ -144,74 +147,27 @@ pub fn gfx950_moe_route_fp4_t16_e4_k2_v1(
             *slot = weight;
         }
     }
+    let dispatch_expert = (lane / DISPATCH_CAPACITY) as u32;
+    let count_expert = lane as u32;
+    let wanted = lane - dispatch_expert as usize * DISPATCH_CAPACITY;
+    let mut seen = 0_usize;
+    let mut dispatched = -1_i32;
+    let mut count = 0_u32;
+    let mut record = 0_usize;
+    while record < TOKENS * TOP_K {
+        let selected = ((packed_routes >> (2 * record)) & 3) as u32;
+        let dispatch_matches = (selected == dispatch_expert) as usize;
+        let choose = ((dispatch_matches != 0) & (seen == wanted)) as i32;
+        dispatched += (record as i32 - dispatched) * choose;
+        count += (selected == count_expert) as u32;
+        seen += dispatch_matches;
+        record += 1;
+    }
     if lane < EXPERTS {
-        let expert = lane as u32;
-        let mut count = 0_u32;
-        macro_rules! count_tokens {
-            () => {{
-                let mut token = 0_usize;
-                while token < TOKENS {
-                    let mut first = 0_u32;
-                    let mut second = 0_u32;
-                    let mut route_logit0 = 0.0_f32;
-                    let mut route_logit1 = 0.0_f32;
-                    let mut route_logit2 = 0.0_f32;
-                    let mut route_logit3 = 0.0_f32;
-                    select_route!(
-                        token,
-                        first,
-                        second,
-                        route_logit0,
-                        route_logit1,
-                        route_logit2,
-                        route_logit3
-                    );
-                    count += (first == expert) as u32 + (second == expert) as u32;
-                    token += 1;
-                }
-            }};
-        }
-        count_tokens!();
         if let Some(slot) = expert_counts.get_mut(thread::index_1d()) {
             *slot = count;
         }
     }
-    let expert = (lane / DISPATCH_CAPACITY) as u32;
-    let wanted = lane - expert as usize * DISPATCH_CAPACITY;
-    let mut seen = 0_usize;
-    let mut dispatched = -1_i32;
-    macro_rules! dispatch_tokens {
-        () => {{
-            let mut token = 0_usize;
-            while token < TOKENS {
-                let mut first = 0_u32;
-                let mut second = 0_u32;
-                let mut route_logit0 = 0.0_f32;
-                let mut route_logit1 = 0.0_f32;
-                let mut route_logit2 = 0.0_f32;
-                let mut route_logit3 = 0.0_f32;
-                select_route!(
-                    token,
-                    first,
-                    second,
-                    route_logit0,
-                    route_logit1,
-                    route_logit2,
-                    route_logit3
-                );
-                let take_first = (first == expert) as usize;
-                let choose_first = ((first == expert) & (seen == wanted)) as i32;
-                dispatched += (token as i32 * TOP_K as i32 - dispatched) * choose_first;
-                seen += take_first;
-                let take_second = (second == expert) as usize;
-                let choose_second = ((second == expert) & (seen == wanted)) as i32;
-                dispatched += (token as i32 * TOP_K as i32 + 1 - dispatched) * choose_second;
-                seen += take_second;
-                token += 1;
-            }
-        }};
-    }
-    dispatch_tokens!();
     if let Some(slot) = dispatch.get_mut(thread::index_1d()) {
         *slot = dispatched;
     }
@@ -219,10 +175,21 @@ pub fn gfx950_moe_route_fp4_t16_e4_k2_v1(
 
 /// Computes a routed expert partition and optional shared-expert contribution.
 #[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-moe-expert-rank"))]
-#[kernel(
-    typed,
-    namespace = "95964e6517ecad06b1b825cf64c29fb20fe9ec054dd551dfdc55f2e73c261dfc",
-    launch(required = [256, 1, 1], max = [256, 1, 1], max_grid = [1, 1, 1])
+#[cfg_attr(
+    not(feature = "ablation-expert-serial"),
+    kernel(
+        typed,
+        namespace = "dad4ffb4c5c270c853b36fbb21ecc1095dcf33cf74d9585029fdce96e90d38e2",
+        launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1])
+    )
+)]
+#[cfg_attr(
+    feature = "ablation-expert-serial",
+    kernel(
+        typed,
+        namespace = "6de3151d7e205de375cd16a46b09c84211346b063664d0da16cd9f9b698efe2f",
+        launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1])
+    )
 )]
 #[allow(clippy::too_many_arguments)]
 pub fn gfx950_moe_expert_rank_fp4_fp8_v1(
@@ -232,9 +199,10 @@ pub fn gfx950_moe_expert_rank_fp4_fp8_v1(
     top_weights: &[f32],
     first_expert: u32,
     include_shared_expert: u32,
-    mut output: DisjointSlice<f32>,
+    mut output: DisjointSlice<f32, Blocked<Index1D, 64, 4>>,
 ) {
-    let output_index = thread::index_1d().get();
+    let thread_index = thread::index_1d();
+    let lane_index = thread_index.get();
     if activations.len() < TOKENS * HIDDEN
         || expert_weights.len() < ALL_EXPERTS * HIDDEN * OUTPUT
         || top_experts.len() < TOKENS * TOP_K
@@ -245,145 +213,299 @@ pub fn gfx950_moe_expert_rank_fp4_fp8_v1(
         return;
     }
     let lane = WaveLane::<Wave64>::current();
-    let Ok(activations_first_view) =
-        Gfx950Fp4MfmaAMatrix::row_major(activations, 0, TOKENS, HIDDEN, HIDDEN)
-    else {
-        return;
-    };
-    let activations_first = activations_first_view.load_m16k128(&lane, 0, 0);
     let first_offset = first_expert as usize * HIDDEN * OUTPUT;
-    let Ok(first_weights_view) =
-        Gfx950Fp8MfmaBMatrix::row_major(expert_weights, first_offset, HIDDEN, OUTPUT, OUTPUT)
-    else {
-        return;
-    };
-    let first_weights = first_weights_view.load_k128n16(&lane, 0, 0);
-    let Ok(second_weights_view) = Gfx950Fp8MfmaBMatrix::row_major(
-        expert_weights,
-        first_offset + HIDDEN * OUTPUT,
-        HIDDEN,
-        OUTPUT,
-        OUTPUT,
-    ) else {
-        return;
-    };
-    let second_weights = second_weights_view.load_k128n16(&lane, 0, 0);
-    let Ok(shared_weights_view) = Gfx950Fp8MfmaBMatrix::row_major(
-        expert_weights,
-        (ALL_EXPERTS - 1) * HIDDEN * OUTPUT,
-        HIDDEN,
-        OUTPUT,
-        OUTPUT,
-    ) else {
-        return;
-    };
-    let shared_weights = shared_weights_view.load_k128n16(&lane, 0, 0);
-    let matrix = Gfx950Matrix::current();
-    let first_values = matrix
-        .multiply_accumulate_fp4_fp8(
-            activations_first,
-            first_weights,
-            Gfx950F32AccumulatorFragment::<Gfx950Fp4E2M1>::zero(&lane),
+    #[cfg(not(feature = "ablation-expert-serial"))]
+    let (first_values, second_values, shared_values) = {
+        let Ok(activations_view) =
+            Gfx950Fp4MfmaAMatrix::row_major(activations, 0, TOKENS, HIDDEN, HIDDEN)
+        else {
+            return;
+        };
+        let activations_first = activations_view.load_m16k128(&lane, 0, 0);
+        let activations_second = activations_view.load_m16k128(&lane, 0, 0);
+        let activations_shared = activations_view.load_m16k128(&lane, 0, 0);
+        let Ok(first_weights_view) =
+            Gfx950Fp8MfmaBMatrix::row_major(expert_weights, first_offset, HIDDEN, OUTPUT, OUTPUT)
+        else {
+            return;
+        };
+        let first_weights = first_weights_view.load_k128n16(&lane, 0, 0);
+        let Ok(second_weights_view) = Gfx950Fp8MfmaBMatrix::row_major(
+            expert_weights,
+            first_offset + HIDDEN * OUTPUT,
+            HIDDEN,
+            OUTPUT,
+            OUTPUT,
+        ) else {
+            return;
+        };
+        let second_weights = second_weights_view.load_k128n16(&lane, 0, 0);
+        let Ok(shared_weights_view) = Gfx950Fp8MfmaBMatrix::row_major(
+            expert_weights,
+            (ALL_EXPERTS - 1) * HIDDEN * OUTPUT,
+            HIDDEN,
+            OUTPUT,
+            OUTPUT,
+        ) else {
+            return;
+        };
+        let shared_weights = shared_weights_view.load_k128n16(&lane, 0, 0);
+        let matrix = Gfx950Matrix::current();
+        (
+            matrix
+                .multiply_accumulate_fp4_fp8(
+                    activations_first,
+                    first_weights,
+                    Gfx950F32AccumulatorFragment::<Gfx950Fp4E2M1>::zero(&lane),
+                )
+                .into_values(),
+            matrix
+                .multiply_accumulate_fp4_fp8(
+                    activations_second,
+                    second_weights,
+                    Gfx950F32AccumulatorFragment::<Gfx950Fp4E2M1>::zero(&lane),
+                )
+                .into_values(),
+            matrix
+                .multiply_accumulate_fp4_fp8(
+                    activations_shared,
+                    shared_weights,
+                    Gfx950F32AccumulatorFragment::<Gfx950Fp4E2M1>::zero(&lane),
+                )
+                .into_values(),
         )
-        .into_values();
-    let Ok(activations_second_view) =
-        Gfx950Fp4MfmaAMatrix::row_major(activations, 0, TOKENS, HIDDEN, HIDDEN)
-    else {
-        return;
     };
-    let activations_second = activations_second_view.load_m16k128(&lane, 0, 0);
-    let second_values = matrix
-        .multiply_accumulate_fp4_fp8(
-            activations_second,
-            second_weights,
-            Gfx950F32AccumulatorFragment::<Gfx950Fp4E2M1>::zero(&lane),
-        )
-        .into_values();
-    let Ok(activations_shared_view) =
-        Gfx950Fp4MfmaAMatrix::row_major(activations, 0, TOKENS, HIDDEN, HIDDEN)
-    else {
-        return;
+    #[cfg(feature = "ablation-expert-serial")]
+    let (first_values, second_values, shared_values) = {
+        let Ok(activations_view) =
+            Gfx950Fp4MfmaAMatrix::row_major(activations, 0, TOKENS, HIDDEN, HIDDEN)
+        else {
+            return;
+        };
+        let matrix = Gfx950Matrix::current();
+        let activations_first = activations_view.load_m16k128(&lane, 0, 0);
+        let Ok(first_weights_view) =
+            Gfx950Fp8MfmaBMatrix::row_major(expert_weights, first_offset, HIDDEN, OUTPUT, OUTPUT)
+        else {
+            return;
+        };
+        let first_weights = first_weights_view.load_k128n16(&lane, 0, 0);
+        let first_values = matrix
+            .multiply_accumulate_fp4_fp8(
+                activations_first,
+                first_weights,
+                Gfx950F32AccumulatorFragment::<Gfx950Fp4E2M1>::zero(&lane),
+            )
+            .into_values();
+        let activations_second = activations_view.load_m16k128(&lane, 0, 0);
+        let Ok(second_weights_view) = Gfx950Fp8MfmaBMatrix::row_major(
+            expert_weights,
+            first_offset + HIDDEN * OUTPUT,
+            HIDDEN,
+            OUTPUT,
+            OUTPUT,
+        ) else {
+            return;
+        };
+        let second_weights = second_weights_view.load_k128n16(&lane, 0, 0);
+        let second_values = matrix
+            .multiply_accumulate_fp4_fp8(
+                activations_second,
+                second_weights,
+                Gfx950F32AccumulatorFragment::<Gfx950Fp4E2M1>::zero(&lane),
+            )
+            .into_values();
+        let activations_shared = activations_view.load_m16k128(&lane, 0, 0);
+        let Ok(shared_weights_view) = Gfx950Fp8MfmaBMatrix::row_major(
+            expert_weights,
+            (ALL_EXPERTS - 1) * HIDDEN * OUTPUT,
+            HIDDEN,
+            OUTPUT,
+            OUTPUT,
+        ) else {
+            return;
+        };
+        let shared_weights = shared_weights_view.load_k128n16(&lane, 0, 0);
+        let shared_values = matrix
+            .multiply_accumulate_fp4_fp8(
+                activations_shared,
+                shared_weights,
+                Gfx950F32AccumulatorFragment::<Gfx950Fp4E2M1>::zero(&lane),
+            )
+            .into_values();
+        (first_values, second_values, shared_values)
     };
-    let activations_shared = activations_shared_view.load_m16k128(&lane, 0, 0);
-    let shared_values = matrix
-        .multiply_accumulate_fp4_fp8(
-            activations_shared,
-            shared_weights,
-            Gfx950F32AccumulatorFragment::<Gfx950Fp4E2M1>::zero(&lane),
-        )
-        .into_values();
-    let token = output_index / OUTPUT;
-    let component = token - (token / 4) * 4;
-    let column = output_index - token * OUTPUT;
-    let source_lane = (((token / 4) * OUTPUT + column) as u32) & 63;
     let subgroup = Gfx950Subgroup::current();
-    let first0 = subgroup.broadcast_f32::<64>(first_values[0], source_lane);
-    let first1 = subgroup.broadcast_f32::<64>(first_values[1], source_lane);
-    let first2 = subgroup.broadcast_f32::<64>(first_values[2], source_lane);
-    let first3 = subgroup.broadcast_f32::<64>(first_values[3], source_lane);
-    let second0 = subgroup.broadcast_f32::<64>(second_values[0], source_lane);
-    let second1 = subgroup.broadcast_f32::<64>(second_values[1], source_lane);
-    let second2 = subgroup.broadcast_f32::<64>(second_values[2], source_lane);
-    let second3 = subgroup.broadcast_f32::<64>(second_values[3], source_lane);
-    let shared0 = subgroup.broadcast_f32::<64>(shared_values[0], source_lane);
-    let shared1 = subgroup.broadcast_f32::<64>(shared_values[1], source_lane);
-    let shared2 = subgroup.broadcast_f32::<64>(shared_values[2], source_lane);
-    let shared3 = subgroup.broadcast_f32::<64>(shared_values[3], source_lane);
-    let first = if component == 0 {
-        first0
-    } else if component == 1 {
-        first1
-    } else if component == 2 {
-        first2
-    } else {
-        first3
-    };
-    let second = if component == 0 {
-        second0
-    } else if component == 1 {
-        second1
-    } else if component == 2 {
-        second2
-    } else {
-        second3
-    };
-    let shared = if component == 0 {
-        shared0
-    } else if component == 1 {
-        shared1
-    } else if component == 2 {
-        shared2
-    } else {
-        shared3
-    };
-    let selected0 = top_experts[token * TOP_K];
-    let selected1 = top_experts[token * TOP_K + 1];
     let math = DeviceMath::current();
-    let mut result = 0.0_f32;
-    if selected0 == first_expert {
-        result += top_weights[token * TOP_K] * (first / (1.0 + math.exp_f32(-first)));
-    } else if selected0 == first_expert + 1 {
-        result += top_weights[token * TOP_K] * (second / (1.0 + math.exp_f32(-second)));
+    macro_rules! broadcast_component {
+        (
+            $output_component:literal,
+            $first0:ident,
+            $first1:ident,
+            $first2:ident,
+            $first3:ident,
+            $second0:ident,
+            $second1:ident,
+            $second2:ident,
+            $second3:ident,
+            $shared0:ident,
+            $shared1:ident,
+            $shared2:ident,
+            $shared3:ident
+        ) => {
+            let element = lane_index + $output_component * 64;
+            let token = element / OUTPUT;
+            let column = element - token * OUTPUT;
+            let source_lane = (((token / 4) * OUTPUT + column) as u32) & 63;
+            let $first0 = subgroup.broadcast_f32::<64>(first_values[0], source_lane);
+            let $first1 = subgroup.broadcast_f32::<64>(first_values[1], source_lane);
+            let $first2 = subgroup.broadcast_f32::<64>(first_values[2], source_lane);
+            let $first3 = subgroup.broadcast_f32::<64>(first_values[3], source_lane);
+            let $second0 = subgroup.broadcast_f32::<64>(second_values[0], source_lane);
+            let $second1 = subgroup.broadcast_f32::<64>(second_values[1], source_lane);
+            let $second2 = subgroup.broadcast_f32::<64>(second_values[2], source_lane);
+            let $second3 = subgroup.broadcast_f32::<64>(second_values[3], source_lane);
+            let $shared0 = subgroup.broadcast_f32::<64>(shared_values[0], source_lane);
+            let $shared1 = subgroup.broadcast_f32::<64>(shared_values[1], source_lane);
+            let $shared2 = subgroup.broadcast_f32::<64>(shared_values[2], source_lane);
+            let $shared3 = subgroup.broadcast_f32::<64>(shared_values[3], source_lane);
+        };
     }
-    if selected1 == first_expert {
-        result += top_weights[token * TOP_K + 1] * (first / (1.0 + math.exp_f32(-first)));
-    } else if selected1 == first_expert + 1 {
-        result += top_weights[token * TOP_K + 1] * (second / (1.0 + math.exp_f32(-second)));
+    broadcast_component!(
+        0, first00, first01, first02, first03, second00, second01, second02, second03, shared00,
+        shared01, shared02, shared03
+    );
+    broadcast_component!(
+        1, first10, first11, first12, first13, second10, second11, second12, second13, shared10,
+        shared11, shared12, shared13
+    );
+    broadcast_component!(
+        2, first20, first21, first22, first23, second20, second21, second22, second23, shared20,
+        shared21, shared22, shared23
+    );
+    broadcast_component!(
+        3, first30, first31, first32, first33, second30, second31, second32, second33, shared30,
+        shared31, shared32, shared33
+    );
+
+    macro_rules! compute_component {
+        (
+            $output_component:literal,
+            $first0:ident,
+            $first1:ident,
+            $first2:ident,
+            $first3:ident,
+            $second0:ident,
+            $second1:ident,
+            $second2:ident,
+            $second3:ident,
+            $shared0:ident,
+            $shared1:ident,
+            $shared2:ident,
+            $shared3:ident
+        ) => {{
+            let element = lane_index + $output_component * 64;
+            let token = element / OUTPUT;
+            let accumulator_component = token - (token / 4) * 4;
+            let first = if accumulator_component == 0 {
+                $first0
+            } else if accumulator_component == 1 {
+                $first1
+            } else if accumulator_component == 2 {
+                $first2
+            } else {
+                $first3
+            };
+            let second = if accumulator_component == 0 {
+                $second0
+            } else if accumulator_component == 1 {
+                $second1
+            } else if accumulator_component == 2 {
+                $second2
+            } else {
+                $second3
+            };
+            let shared = if accumulator_component == 0 {
+                $shared0
+            } else if accumulator_component == 1 {
+                $shared1
+            } else if accumulator_component == 2 {
+                $shared2
+            } else {
+                $shared3
+            };
+            let route_base = token * TOP_K;
+            let selected0 = top_experts[route_base];
+            let selected1 = top_experts[route_base + 1];
+            let gate0 = top_weights[route_base];
+            let gate1 = top_weights[route_base + 1];
+            let mut result = 0.0_f32;
+            if selected0 == first_expert {
+                result += gate0 * (first / (1.0 + math.exp_f32(-first)));
+            } else if selected0 == first_expert + 1 {
+                result += gate0 * (second / (1.0 + math.exp_f32(-second)));
+            }
+            if selected1 == first_expert {
+                result += gate1 * (first / (1.0 + math.exp_f32(-first)));
+            } else if selected1 == first_expert + 1 {
+                result += gate1 * (second / (1.0 + math.exp_f32(-second)));
+            }
+            if include_shared_expert != 0 {
+                result += 0.25 * (shared / (1.0 + math.exp_f32(-shared)));
+            }
+            result
+        }};
     }
-    if include_shared_expert != 0 {
-        result += 0.25 * (shared / (1.0 + math.exp_f32(-shared)));
+    let result0 = compute_component!(
+        0, first00, first01, first02, first03, second00, second01, second02, second03, shared00,
+        shared01, shared02, shared03
+    );
+    let result1 = compute_component!(
+        1, first10, first11, first12, first13, second10, second11, second12, second13, shared10,
+        shared11, shared12, shared13
+    );
+    let result2 = compute_component!(
+        2, first20, first21, first22, first23, second20, second21, second22, second23, shared20,
+        shared21, shared22, shared23
+    );
+    let result3 = compute_component!(
+        3, first30, first31, first32, first33, second30, second31, second32, second33, shared30,
+        shared31, shared32, shared33
+    );
+    let Some(output_block) = thread_index.checked_block::<64, 4>() else {
+        return;
+    };
+    if let Some(slot) = output.get_block_mut(&output_block, 0) {
+        *slot = result0;
     }
-    if let Some(slot) = output.get_mut(thread::index_1d()) {
-        *slot = result;
+    if let Some(slot) = output.get_block_mut(&output_block, 1) {
+        *slot = result1;
+    }
+    if let Some(slot) = output.get_block_mut(&output_block, 2) {
+        *slot = result2;
+    }
+    if let Some(slot) = output.get_block_mut(&output_block, 3) {
+        *slot = result3;
     }
 }
 
 /// Adds two expert-rank partials in fixed rank order.
 #[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-combine-expert-ranks"))]
-#[kernel(
-    typed,
-    namespace = "a27beaf1c7c14d2129a2efc9bd9802fba895073515686b9a81495afe4b65047b",
-    launch(required = [256, 1, 1], max = [256, 1, 1])
+#[cfg_attr(
+    not(feature = "ablation-combine-transposed"),
+    kernel(
+        typed,
+        namespace = "75b93b89a635855d620e2974e64c7ad6299d75329410616cdceaaabe02db89ae",
+        launch(required = [256, 1, 1], max = [256, 1, 1])
+    )
+)]
+#[cfg_attr(
+    feature = "ablation-combine-transposed",
+    kernel(
+        typed,
+        namespace = "8f3e0270da0acba280e5bf515bd6a4b11b5c0f615947fcf5569bc1feab92f923",
+        launch(required = [256, 1, 1], max = [256, 1, 1])
+    )
 )]
 pub fn gfx950_combine_expert_ranks_v1(
     rank0: &[f32],
@@ -401,8 +523,18 @@ pub fn gfx950_combine_expert_ranks_v1(
     if element >= TOKENS * OUTPUT {
         return;
     }
+    #[cfg(not(feature = "ablation-combine-transposed"))]
+    let result = rank0[element] + rank1[element];
+    #[cfg(feature = "ablation-combine-transposed")]
+    let result = {
+        let wave_lane = element & 63;
+        let source_lane = 63 - wave_lane;
+        let source_element = (element & !63) + source_lane;
+        let source_result = rank0[source_element] + rank1[source_element];
+        Gfx950Subgroup::current().broadcast_f32::<64>(source_result, source_lane as u32)
+    };
     if let Some(slot) = output.get_mut(index) {
-        *slot = rank0[element] + rank1[element];
+        *slot = result;
     }
 }
 
@@ -411,10 +543,21 @@ pub fn gfx950_combine_expert_ranks_v1(
     not(target_arch = "amdgpu"),
     feature = "kernel-speculative-transaction"
 ))]
-#[kernel(
-    typed,
-    namespace = "56cb0ca1edf995cb22811650289af395e5932a3dcb3eaeadd64139781ad8e1fa",
-    launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1])
+#[cfg_attr(
+    not(feature = "ablation-speculative-recompute-prefix"),
+    kernel(
+        typed,
+        namespace = "712bf821d681a74855c892c7f02fb02b2c64fe36617092999f673a1531777f8b",
+        launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1])
+    )
+)]
+#[cfg_attr(
+    feature = "ablation-speculative-recompute-prefix",
+    kernel(
+        typed,
+        namespace = "bdec264337e1f6c31dec20bfe6cabbebb62ad36d413a66e8876279753c46ee26",
+        launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1])
+    )
 )]
 #[allow(clippy::too_many_arguments)]
 pub fn gfx950_speculative_transaction_v1(
@@ -451,47 +594,65 @@ pub fn gfx950_speculative_transaction_v1(
     else {
         return;
     };
-    if lane >= CANDIDATES * STATE_WIDTH {
+    let Ok(draft_tokens) =
+        StridedReadView2D::from_shared_slice(draft_tokens, 0, CANDIDATES, DRAFT_STEPS, DRAFT_STEPS)
+    else {
         return;
+    };
+    let Ok(draft_scores) =
+        StridedReadView2D::from_shared_slice(draft_scores, 0, CANDIDATES, DRAFT_STEPS, DRAFT_STEPS)
+    else {
+        return;
+    };
+    #[cfg(feature = "ablation-speculative-recompute-prefix")]
+    macro_rules! accepted_prefix {
+        ($candidate:expr) => {{
+            let accepts0 = (draft_tokens.load_or($candidate, 0, 0)
+                == target_tokens.load_or(0, 0, 0))
+                & (draft_scores.load_or($candidate, 0, 0.0) >= thresholds.load_or(0, 0, 0.0));
+            let accepts1 = accepts0
+                & (draft_tokens.load_or($candidate, 1, 0) == target_tokens.load_or(0, 1, 0))
+                & (draft_scores.load_or($candidate, 1, 0.0) >= thresholds.load_or(0, 1, 0.0));
+            let accepts2 = accepts1
+                & (draft_tokens.load_or($candidate, 2, 0) == target_tokens.load_or(0, 2, 0))
+                & (draft_scores.load_or($candidate, 2, 0.0) >= thresholds.load_or(0, 2, 0.0));
+            let accepts3 = accepts2
+                & (draft_tokens.load_or($candidate, 3, 0) == target_tokens.load_or(0, 3, 0))
+                & (draft_scores.load_or($candidate, 3, 0.0) >= thresholds.load_or(0, 3, 0.0));
+            accepts0 as usize + accepts1 as usize + accepts2 as usize + accepts3 as usize
+        }};
     }
-    if lane < CANDIDATES {
-        let candidate = lane;
-        let base = candidate * DRAFT_STEPS;
-        let accepts0 = (draft_tokens[base] == target_tokens.load_or(0, 0, 0))
-            & (draft_scores[base] >= thresholds.load_or(0, 0, 0.0));
-        let accepts1 = accepts0
-            & (draft_tokens[base + 1] == target_tokens.load_or(0, 1, 0))
-            & (draft_scores[base + 1] >= thresholds.load_or(0, 1, 0.0));
-        let accepts2 = accepts1
-            & (draft_tokens[base + 2] == target_tokens.load_or(0, 2, 0))
-            & (draft_scores[base + 2] >= thresholds.load_or(0, 2, 0.0));
-        let accepts3 = accepts2
-            & (draft_tokens[base + 3] == target_tokens.load_or(0, 3, 0))
-            & (draft_scores[base + 3] >= thresholds.load_or(0, 3, 0.0));
-        let accepted =
-            accepts0 as usize + accepts1 as usize + accepts2 as usize + accepts3 as usize;
-        if let Some(slot) = accepted_steps.get_mut(thread::index_1d()) {
-            *slot = accepted as u32;
-        }
-        if let Some(slot) = committed.get_mut(thread::index_1d()) {
-            *slot = if accepted == DRAFT_STEPS { 1 } else { 0 };
-        }
-    }
+    let acceptance_candidate = lane & (CANDIDATES - 1);
+    let accepts0 = (draft_tokens.load_or(acceptance_candidate, 0, 0)
+        == target_tokens.load_or(0, 0, 0))
+        & (draft_scores.load_or(acceptance_candidate, 0, 0.0) >= thresholds.load_or(0, 0, 0.0));
+    let accepts1 = accepts0
+        & (draft_tokens.load_or(acceptance_candidate, 1, 0) == target_tokens.load_or(0, 1, 0))
+        & (draft_scores.load_or(acceptance_candidate, 1, 0.0) >= thresholds.load_or(0, 1, 0.0));
+    let accepts2 = accepts1
+        & (draft_tokens.load_or(acceptance_candidate, 2, 0) == target_tokens.load_or(0, 2, 0))
+        & (draft_scores.load_or(acceptance_candidate, 2, 0.0) >= thresholds.load_or(0, 2, 0.0));
+    let accepts3 = accepts2
+        & (draft_tokens.load_or(acceptance_candidate, 3, 0) == target_tokens.load_or(0, 3, 0))
+        & (draft_scores.load_or(acceptance_candidate, 3, 0.0) >= thresholds.load_or(0, 3, 0.0));
+    let accepted_local =
+        accepts0 as usize + accepts1 as usize + accepts2 as usize + accepts3 as usize;
     let candidate = lane / STATE_WIDTH;
     let state_element = lane - candidate * STATE_WIDTH;
-    let base = candidate * DRAFT_STEPS;
-    let accepts0 = (draft_tokens[base] == target_tokens.load_or(0, 0, 0))
-        & (draft_scores[base] >= thresholds.load_or(0, 0, 0.0));
-    let accepts1 = accepts0
-        & (draft_tokens[base + 1] == target_tokens.load_or(0, 1, 0))
-        & (draft_scores[base + 1] >= thresholds.load_or(0, 1, 0.0));
-    let accepts2 = accepts1
-        & (draft_tokens[base + 2] == target_tokens.load_or(0, 2, 0))
-        & (draft_scores[base + 2] >= thresholds.load_or(0, 2, 0.0));
-    let accepts3 = accepts2
-        & (draft_tokens[base + 3] == target_tokens.load_or(0, 3, 0))
-        & (draft_scores[base + 3] >= thresholds.load_or(0, 3, 0.0));
-    let accepted = accepts0 as usize + accepts1 as usize + accepts2 as usize + accepts3 as usize;
+    #[cfg(not(feature = "ablation-speculative-recompute-prefix"))]
+    let accepted = Gfx950Subgroup::current()
+        .broadcast_f32::<64>(accepted_local as f32, candidate as u32 & 63)
+        as usize;
+    #[cfg(feature = "ablation-speculative-recompute-prefix")]
+    let accepted = accepted_prefix!(candidate);
+    if lane < CANDIDATES {
+        if let Some(slot) = accepted_steps.get_mut(thread::index_1d()) {
+            *slot = accepted_local as u32;
+        }
+        if let Some(slot) = committed.get_mut(thread::index_1d()) {
+            *slot = if accepted_local == DRAFT_STEPS { 1 } else { 0 };
+        }
+    }
     let mut value = base_state[state_element];
     if accepted == DRAFT_STEPS {
         value += proposed_deltas[candidate * DRAFT_STEPS * STATE_WIDTH + state_element];
@@ -506,10 +667,21 @@ pub fn gfx950_speculative_transaction_v1(
 
 /// Probes every slot, verifies the full 3-gram, and resolves duplicate keys.
 #[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-qwen-ngram-gather"))]
-#[kernel(
-    typed,
-    namespace = "759fc11ede4636245a173107a33f25014d4f8f0f29f1710bf9b9396aeda69ee9",
-    launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1])
+#[cfg_attr(
+    not(feature = "ablation-ngram-reverse-probe"),
+    kernel(
+        typed,
+        namespace = "a9bf254981d5af7855538f611e59b2a273ed274201689cd16443b7279c327175",
+        launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1])
+    )
+)]
+#[cfg_attr(
+    feature = "ablation-ngram-reverse-probe",
+    kernel(
+        typed,
+        namespace = "a62bfd564c731058a0a6b9f3b1b710180c36b311241a8db5e3e4be664e5cf449",
+        launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1])
+    )
 )]
 pub fn gfx950_qwen_ngram_gather_v1(
     queries: &[i32],
@@ -561,6 +733,7 @@ pub fn gfx950_qwen_ngram_gather_v1(
             }
         }};
     }
+    #[cfg(not(feature = "ablation-ngram-reverse-probe"))]
     macro_rules! final_probe {
         ($probe:literal) => {{
             let slot = hash.wrapping_add($probe) as usize & (TABLE_SIZE - 1);
@@ -576,22 +749,44 @@ pub fn gfx950_qwen_ngram_gather_v1(
             }
         }};
     }
-    probe!(0);
-    probe!(1);
-    probe!(2);
-    probe!(3);
-    probe!(4);
-    probe!(5);
-    probe!(6);
-    probe!(7);
-    probe!(8);
-    probe!(9);
-    probe!(10);
-    probe!(11);
-    probe!(12);
-    probe!(13);
-    probe!(14);
-    final_probe!(15);
+    #[cfg(not(feature = "ablation-ngram-reverse-probe"))]
+    {
+        probe!(0);
+        probe!(1);
+        probe!(2);
+        probe!(3);
+        probe!(4);
+        probe!(5);
+        probe!(6);
+        probe!(7);
+        probe!(8);
+        probe!(9);
+        probe!(10);
+        probe!(11);
+        probe!(12);
+        probe!(13);
+        probe!(14);
+        final_probe!(15);
+    }
+    #[cfg(feature = "ablation-ngram-reverse-probe")]
+    {
+        probe!(15);
+        probe!(14);
+        probe!(13);
+        probe!(12);
+        probe!(11);
+        probe!(10);
+        probe!(9);
+        probe!(8);
+        probe!(7);
+        probe!(6);
+        probe!(5);
+        probe!(4);
+        probe!(3);
+        probe!(2);
+        probe!(1);
+        probe!(0);
+    }
     if let Some(slot) = output.get_mut(index) {
         *slot = best_value;
     }
@@ -599,10 +794,21 @@ pub fn gfx950_qwen_ngram_gather_v1(
 
 /// Copies one gradient shard into deterministic transport staging.
 #[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-stage-gradient-shard"))]
-#[kernel(
-    typed,
-    namespace = "eecf6b35ad78d15ed59c50e42bb156b24bc9977508e57b67c71c449c6486a336",
-    launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1])
+#[cfg_attr(
+    not(feature = "ablation-stage-tile4"),
+    kernel(
+        typed,
+        namespace = "487472b4b767bb11afc7a2d5bb85795b2b538c040432da4c0d5755900dd4867e",
+        launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1])
+    )
+)]
+#[cfg_attr(
+    feature = "ablation-stage-tile4",
+    kernel(
+        typed,
+        namespace = "3acc801a14754fb8c218f9aba13cbeb53c41427b68ab12bc651da79d5574f410",
+        launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1])
+    )
 )]
 pub fn gfx950_stage_gradient_shard_v1(input: &[f32], mut output: DisjointSlice<f32>) {
     let index = thread::index_1d();
@@ -613,17 +819,59 @@ pub fn gfx950_stage_gradient_shard_v1(input: &[f32], mut output: DisjointSlice<f
     if element >= MUON_ELEMENTS {
         return;
     }
+    #[cfg(not(feature = "ablation-stage-tile4"))]
+    let value = input[element];
+    #[cfg(feature = "ablation-stage-tile4")]
+    let value = {
+        let mut tile0 = 0.0_f32;
+        let mut tile1 = 0.0_f32;
+        let mut tile2 = 0.0_f32;
+        let mut tile3 = 0.0_f32;
+        if element < 4 {
+            let tile_base = element * 4;
+            tile0 = input[tile_base];
+            tile1 = input[tile_base + 1];
+            tile2 = input[tile_base + 2];
+            tile3 = input[tile_base + 3];
+        }
+        let source = (element / 4) as u32;
+        let subgroup = Gfx950Subgroup::current();
+        let value0 = subgroup.broadcast_f32::<64>(tile0, source);
+        let value1 = subgroup.broadcast_f32::<64>(tile1, source);
+        let value2 = subgroup.broadcast_f32::<64>(tile2, source);
+        let value3 = subgroup.broadcast_f32::<64>(tile3, source);
+        if element & 3 == 0 {
+            value0
+        } else if element & 3 == 1 {
+            value1
+        } else if element & 3 == 2 {
+            value2
+        } else {
+            value3
+        }
+    };
     if let Some(slot) = output.get_mut(index) {
-        *slot = input[element];
+        *slot = value;
     }
 }
 
 /// Reduces two shards and computes five Newton-Schulz Muon iterations.
 #[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-muon-update"))]
-#[kernel(
-    typed,
-    namespace = "62b82262b6a906c5c4bc76bdf41008abdb45f2c4d9830734cd05ae65520150e2",
-    launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1])
+#[cfg_attr(
+    not(feature = "ablation-muon-broadcast16"),
+    kernel(
+        typed,
+        namespace = "9640ccf630920dc28c840f4d796dab11ddd9cebf804b0315b877e0c048eb7829",
+        launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1])
+    )
+)]
+#[cfg_attr(
+    feature = "ablation-muon-broadcast16",
+    kernel(
+        typed,
+        namespace = "6de7921154ed6a9f640c8cb2ca93cfc312b36de60ead0f02bf1157c1765ee2a9",
+        launch(required = [64, 1, 1], max = [64, 1, 1], max_grid = [1, 1, 1])
+    )
 )]
 pub fn gfx950_muon_update_4x4_v1(
     shards: &[f32],
@@ -646,111 +894,60 @@ pub fn gfx950_muon_update_4x4_v1(
     ) else {
         return;
     };
-    let mut m00 = shards.load_or(0, 0, 0.0) + shards.load_or(1, 0, 0.0);
-    let mut m01 = shards.load_or(0, 1, 0.0) + shards.load_or(1, 1, 0.0);
-    let mut m02 = shards.load_or(0, 2, 0.0) + shards.load_or(1, 2, 0.0);
-    let mut m03 = shards.load_or(0, 3, 0.0) + shards.load_or(1, 3, 0.0);
-    let mut m10 = shards.load_or(0, 4, 0.0) + shards.load_or(1, 4, 0.0);
-    let mut m11 = shards.load_or(0, 5, 0.0) + shards.load_or(1, 5, 0.0);
-    let mut m12 = shards.load_or(0, 6, 0.0) + shards.load_or(1, 6, 0.0);
-    let mut m13 = shards.load_or(0, 7, 0.0) + shards.load_or(1, 7, 0.0);
-    let mut m20 = shards.load_or(0, 8, 0.0) + shards.load_or(1, 8, 0.0);
-    let mut m21 = shards.load_or(0, 9, 0.0) + shards.load_or(1, 9, 0.0);
-    let mut m22 = shards.load_or(0, 10, 0.0) + shards.load_or(1, 10, 0.0);
-    let mut m23 = shards.load_or(0, 11, 0.0) + shards.load_or(1, 11, 0.0);
-    let mut m30 = shards.load_or(0, 12, 0.0) + shards.load_or(1, 12, 0.0);
-    let mut m31 = shards.load_or(0, 13, 0.0) + shards.load_or(1, 13, 0.0);
-    let mut m32 = shards.load_or(0, 14, 0.0) + shards.load_or(1, 14, 0.0);
-    let mut m33 = shards.load_or(0, 15, 0.0) + shards.load_or(1, 15, 0.0);
-    let squared_norm = m00 * m00
-        + m01 * m01
-        + m02 * m02
-        + m03 * m03
-        + m10 * m10
-        + m11 * m11
-        + m12 * m12
-        + m13 * m13
-        + m20 * m20
-        + m21 * m21
-        + m22 * m22
-        + m23 * m23
-        + m30 * m30
-        + m31 * m31
-        + m32 * m32
-        + m33 * m33;
+    let matrix_element = lane & (MUON_ELEMENTS - 1);
+    let active = (lane < MUON_ELEMENTS) as u32 as f32;
+    let mut matrix_value =
+        active * (shards.load_or(0, matrix_element, 0.0) + shards.load_or(1, matrix_element, 0.0));
+    let subgroup = Gfx950Subgroup::current();
+    #[cfg(not(feature = "ablation-muon-broadcast16"))]
+    let squared_norm = subgroup.reduce_sum_f32::<64>(matrix_value * matrix_value);
+    #[cfg(feature = "ablation-muon-broadcast16")]
+    let squared_norm = {
+        let local_square = matrix_value * matrix_value;
+        let mut sum = subgroup.broadcast_f32::<64>(local_square, 0);
+        sum += subgroup.broadcast_f32::<64>(local_square, 1);
+        sum += subgroup.broadcast_f32::<64>(local_square, 2);
+        sum += subgroup.broadcast_f32::<64>(local_square, 3);
+        sum += subgroup.broadcast_f32::<64>(local_square, 4);
+        sum += subgroup.broadcast_f32::<64>(local_square, 5);
+        sum += subgroup.broadcast_f32::<64>(local_square, 6);
+        sum += subgroup.broadcast_f32::<64>(local_square, 7);
+        sum += subgroup.broadcast_f32::<64>(local_square, 8);
+        sum += subgroup.broadcast_f32::<64>(local_square, 9);
+        sum += subgroup.broadcast_f32::<64>(local_square, 10);
+        sum += subgroup.broadcast_f32::<64>(local_square, 11);
+        sum += subgroup.broadcast_f32::<64>(local_square, 12);
+        sum += subgroup.broadcast_f32::<64>(local_square, 13);
+        sum += subgroup.broadcast_f32::<64>(local_square, 14);
+        sum += subgroup.broadcast_f32::<64>(local_square, 15);
+        sum
+    };
     let norm = DeviceMath::current().sqrt_f32(squared_norm);
-    if lane == 0 {
-        if let Some(slot) = output_norm.get_mut(thread::index_1d()) {
-            *slot = norm;
-        }
-    }
     let inverse_norm = 1.0 / (norm + 1.0e-6);
-    m00 *= inverse_norm;
-    m01 *= inverse_norm;
-    m02 *= inverse_norm;
-    m03 *= inverse_norm;
-    m10 *= inverse_norm;
-    m11 *= inverse_norm;
-    m12 *= inverse_norm;
-    m13 *= inverse_norm;
-    m20 *= inverse_norm;
-    m21 *= inverse_norm;
-    m22 *= inverse_norm;
-    m23 *= inverse_norm;
-    m30 *= inverse_norm;
-    m31 *= inverse_norm;
-    m32 *= inverse_norm;
-    m33 *= inverse_norm;
+    matrix_value *= inverse_norm;
+    let row = matrix_element / 4;
+    let column = matrix_element - row * 4;
     macro_rules! muon_iteration {
         () => {{
-            let g00 = m00 * m00 + m01 * m01 + m02 * m02 + m03 * m03;
-            let g01 = m00 * m10 + m01 * m11 + m02 * m12 + m03 * m13;
-            let g02 = m00 * m20 + m01 * m21 + m02 * m22 + m03 * m23;
-            let g03 = m00 * m30 + m01 * m31 + m02 * m32 + m03 * m33;
-            let g10 = m10 * m00 + m11 * m01 + m12 * m02 + m13 * m03;
-            let g11 = m10 * m10 + m11 * m11 + m12 * m12 + m13 * m13;
-            let g12 = m10 * m20 + m11 * m21 + m12 * m22 + m13 * m23;
-            let g13 = m10 * m30 + m11 * m31 + m12 * m32 + m13 * m33;
-            let g20 = m20 * m00 + m21 * m01 + m22 * m02 + m23 * m03;
-            let g21 = m20 * m10 + m21 * m11 + m22 * m12 + m23 * m13;
-            let g22 = m20 * m20 + m21 * m21 + m22 * m22 + m23 * m23;
-            let g23 = m20 * m30 + m21 * m31 + m22 * m32 + m23 * m33;
-            let g30 = m30 * m00 + m31 * m01 + m32 * m02 + m33 * m03;
-            let g31 = m30 * m10 + m31 * m11 + m32 * m12 + m33 * m13;
-            let g32 = m30 * m20 + m31 * m21 + m32 * m22 + m33 * m23;
-            let g33 = m30 * m30 + m31 * m31 + m32 * m32 + m33 * m33;
-            let c00 = g00 * m00 + g01 * m10 + g02 * m20 + g03 * m30;
-            let c01 = g00 * m01 + g01 * m11 + g02 * m21 + g03 * m31;
-            let c02 = g00 * m02 + g01 * m12 + g02 * m22 + g03 * m32;
-            let c03 = g00 * m03 + g01 * m13 + g02 * m23 + g03 * m33;
-            let c10 = g10 * m00 + g11 * m10 + g12 * m20 + g13 * m30;
-            let c11 = g10 * m01 + g11 * m11 + g12 * m21 + g13 * m31;
-            let c12 = g10 * m02 + g11 * m12 + g12 * m22 + g13 * m32;
-            let c13 = g10 * m03 + g11 * m13 + g12 * m23 + g13 * m33;
-            let c20 = g20 * m00 + g21 * m10 + g22 * m20 + g23 * m30;
-            let c21 = g20 * m01 + g21 * m11 + g22 * m21 + g23 * m31;
-            let c22 = g20 * m02 + g21 * m12 + g22 * m22 + g23 * m32;
-            let c23 = g20 * m03 + g21 * m13 + g22 * m23 + g23 * m33;
-            let c30 = g30 * m00 + g31 * m10 + g32 * m20 + g33 * m30;
-            let c31 = g30 * m01 + g31 * m11 + g32 * m21 + g33 * m31;
-            let c32 = g30 * m02 + g31 * m12 + g32 * m22 + g33 * m32;
-            let c33 = g30 * m03 + g31 * m13 + g32 * m23 + g33 * m33;
-            m00 = 1.5 * m00 - 0.5 * c00;
-            m01 = 1.5 * m01 - 0.5 * c01;
-            m02 = 1.5 * m02 - 0.5 * c02;
-            m03 = 1.5 * m03 - 0.5 * c03;
-            m10 = 1.5 * m10 - 0.5 * c10;
-            m11 = 1.5 * m11 - 0.5 * c11;
-            m12 = 1.5 * m12 - 0.5 * c12;
-            m13 = 1.5 * m13 - 0.5 * c13;
-            m20 = 1.5 * m20 - 0.5 * c20;
-            m21 = 1.5 * m21 - 0.5 * c21;
-            m22 = 1.5 * m22 - 0.5 * c22;
-            m23 = 1.5 * m23 - 0.5 * c23;
-            m30 = 1.5 * m30 - 0.5 * c30;
-            m31 = 1.5 * m31 - 0.5 * c31;
-            m32 = 1.5 * m32 - 0.5 * c32;
-            m33 = 1.5 * m33 - 0.5 * c33;
+            let mut gram = 0.0_f32;
+            gram += subgroup.broadcast_f32::<64>(matrix_value, (row * 4) as u32 & 63)
+                * subgroup.broadcast_f32::<64>(matrix_value, (column * 4) as u32 & 63);
+            gram += subgroup.broadcast_f32::<64>(matrix_value, (row * 4 + 1) as u32 & 63)
+                * subgroup.broadcast_f32::<64>(matrix_value, (column * 4 + 1) as u32 & 63);
+            gram += subgroup.broadcast_f32::<64>(matrix_value, (row * 4 + 2) as u32 & 63)
+                * subgroup.broadcast_f32::<64>(matrix_value, (column * 4 + 2) as u32 & 63);
+            gram += subgroup.broadcast_f32::<64>(matrix_value, (row * 4 + 3) as u32 & 63)
+                * subgroup.broadcast_f32::<64>(matrix_value, (column * 4 + 3) as u32 & 63);
+            let mut cubic = 0.0_f32;
+            cubic += subgroup.broadcast_f32::<64>(gram, (row * 4) as u32 & 63)
+                * subgroup.broadcast_f32::<64>(matrix_value, column as u32 & 63);
+            cubic += subgroup.broadcast_f32::<64>(gram, (row * 4 + 1) as u32 & 63)
+                * subgroup.broadcast_f32::<64>(matrix_value, (4 + column) as u32 & 63);
+            cubic += subgroup.broadcast_f32::<64>(gram, (row * 4 + 2) as u32 & 63)
+                * subgroup.broadcast_f32::<64>(matrix_value, (8 + column) as u32 & 63);
+            cubic += subgroup.broadcast_f32::<64>(gram, (row * 4 + 3) as u32 & 63)
+                * subgroup.broadcast_f32::<64>(matrix_value, (12 + column) as u32 & 63);
+            matrix_value = 1.5 * matrix_value - 0.5 * cubic;
         }};
     }
     muon_iteration!();
@@ -759,41 +956,13 @@ pub fn gfx950_muon_update_4x4_v1(
     muon_iteration!();
     muon_iteration!();
     if lane < MUON_ELEMENTS {
-        let value = if lane == 0 {
-            m00
-        } else if lane == 1 {
-            m01
-        } else if lane == 2 {
-            m02
-        } else if lane == 3 {
-            m03
-        } else if lane == 4 {
-            m10
-        } else if lane == 5 {
-            m11
-        } else if lane == 6 {
-            m12
-        } else if lane == 7 {
-            m13
-        } else if lane == 8 {
-            m20
-        } else if lane == 9 {
-            m21
-        } else if lane == 10 {
-            m22
-        } else if lane == 11 {
-            m23
-        } else if lane == 12 {
-            m30
-        } else if lane == 13 {
-            m31
-        } else if lane == 14 {
-            m32
-        } else {
-            m33
-        };
         if let Some(slot) = output.get_mut(thread::index_1d()) {
-            *slot = -MUON_LEARNING_RATE * value;
+            *slot = -MUON_LEARNING_RATE * matrix_value;
+        }
+    }
+    if lane == 0 {
+        if let Some(slot) = output_norm.get_mut(thread::index_1d()) {
+            *slot = norm;
         }
     }
 }

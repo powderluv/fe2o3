@@ -13,12 +13,20 @@ resolver = "3"
 
 [features]
 kernel-kda-decode = []
+kernel-kda-decode-wave-tiled-v1 = ["kernel-kda-decode"]
 kernel-kda-prefill = []
+kernel-kda-prefill-channel-mask-v1 = ["kernel-kda-prefill"]
 kernel-content-sparse-attention = []
+kernel-content-sparse-attention-reciprocal-reuse-v1 = ["kernel-content-sparse-attention"]
 kernel-compressed-hybrid-attention = []
+kernel-compressed-hybrid-attention-division-baseline-v1 = ["kernel-compressed-hybrid-attention"]
 kernel-attnres-aggregate = []
+kernel-attnres-aggregate-explicit-reuse-v1 = ["kernel-attnres-aggregate"]
 kernel-four-branch-residual = []
-kernel-mhc-sinkhorn-mix = []
+kernel-four-branch-residual-explicit-v1 = ["kernel-four-branch-residual"]
+kernel-mhc-sinkhorn-mix = ["kernel-mhc-sinkhorn-mix-distributed-wave16-v1"]
+kernel-mhc-sinkhorn-mix-distributed-wave16-v1 = []
+kernel-mhc-sinkhorn-mix-scalar-v1 = ["kernel-mhc-sinkhorn-mix"]
 
 [dependencies]
 fe2o3-device = { path = "../../crates/fe2o3-device" }

@@ -1,0 +1,341 @@
+{
+  "schema": "fe2o3.gfx950.advanced-performance-evidence.v1",
+  "claim_boundary": "fixed-shape MI350X candidate measurements; not a fastest or state-of-the-art claim unless an individual record names an admitted exact comparator",
+  "machine": {
+    "host": "smci350-rck-g03-b19-03",
+    "physical_gpu": 6,
+    "market_name": "AMD Instinct MI350X",
+    "target": "gfx950",
+    "rocr_visible_devices": "6",
+    "hip_visible_devices": "unset",
+    "clocks_locked": false
+  },
+  "protocol": {
+    "date_utc": "2026-08-29",
+    "processes_per_variant": 1,
+    "initial_warmups": 1000,
+    "blocks": 30,
+    "samples_per_block": 100,
+    "block_rewarm": 20,
+    "timer": "ROCr HSA dispatch timestamps",
+    "bootstrap": {
+      "method": "hierarchical process/block resampling with within-block resampling",
+      "repetitions": 10000,
+      "seed": 950
+    },
+    "campaign_id": "final-advanced-66f94673-20260829",
+    "campaign_source_commit": "66f9467353400d32ed045d00fabbacc6c5575496",
+    "kernel_source_commit": "c1383e97db732f9f1ff8105f10d5c2b5971143e1"
+  },
+  "artifacts": {
+    "raw_samples_sha256": "2dea4f56945202a1e9bea901200a25f4fd698e1bec591c6c14c8caea813c1433",
+    "summary_sha256": "a496b19f79479ddb68f08492e2eb7eb5e7cf456469a2147bd88550186c618a99",
+    "campaign_checksums_sha256": "19d0f91dcd0d655891c3b4003bc49ad7fe0a145b6c71a82ea6a40ceed75fb055"
+  },
+  "results": [
+    {
+      "blocks": 30,
+      "hsaco_sha256": "f3ab4ebd7b8f2310918eada0d8b90efd57c281914bbac91499040417f5c4a2e6",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "a92761cc7551b003a73588bc6a34767a5c20dbba32d5025928a322b3b4cdd36f",
+      "kernel_export": "gfx950_attnres_aggregate",
+      "mad_ns": 40.0,
+      "median_bootstrap_ci95_ns": [
+        5000.0,
+        5040.0
+      ],
+      "median_ns": 5040.0,
+      "p5_ns": 4480.0,
+      "p95_ns": 5201.999999999989,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 AttnRes aggregation"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "aa5aa7fa613ae8f439dcf8b626ce18b7560f9705453bd3b9f0ddbc936501166e",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "c1bdd37e43096dcdcf157e07793eea3c9a5e08336ec0dfdf71b6038611dfcad9",
+      "kernel_export": "gfx950_combine_expert_ranks_v1",
+      "mad_ns": 40.0,
+      "median_bootstrap_ci95_ns": [
+        5000.0,
+        5000.0
+      ],
+      "median_ns": 5000.0,
+      "p5_ns": 4398.0,
+      "p95_ns": 5122.94999999999,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 expert rank combine"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "6c6addf04c745ad6560e45d2896725adbb8d87952cd49c6f710fde6e5011d823",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "d7d2373d744328b5b5204abd092363fdfde1005ec45fe9c0f5b265f6efcd82d0",
+      "kernel_export": "gfx950_compressed_hybrid_attention",
+      "mad_ns": 120.0,
+      "median_bootstrap_ci95_ns": [
+        22800.0,
+        22801.0
+      ],
+      "median_ns": 22800.0,
+      "p5_ns": 22600.0,
+      "p95_ns": 23160.0,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 compressed hybrid attention"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "6ed1c00a4509c0ed7d277e78dcc81c1bfd831da7dfc09f3091d9363ce520cd54",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "4f9a7fdb27b3a8a8d9e43181a699f7a7e27174b5b8a6165f2fb0886245a97fa3",
+      "kernel_export": "gfx950_content_sparse_attention",
+      "mad_ns": 80.0,
+      "median_bootstrap_ci95_ns": [
+        22320.0,
+        22360.0
+      ],
+      "median_ns": 22320.0,
+      "p5_ns": 22160.0,
+      "p95_ns": 22640.0,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 content sparse attention"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "190ce48f1172f15b3827b1220ad6ee190087ad4be52892946eff26cfea168ec0",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "60f35f5337805b8aab5672f13b5fd05d5bcb6c5c96b4ec6f5e924964919d9a2f",
+      "kernel_export": "gfx950_four_branch_residual",
+      "mad_ns": 40.0,
+      "median_bootstrap_ci95_ns": [
+        5000.0,
+        5040.0
+      ],
+      "median_ns": 5040.0,
+      "p5_ns": 4640.0,
+      "p95_ns": 5160.0,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 four-branch residual"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "5a16d32486c6a424c680ec200a8fcc6941115f3a2953ec6a7fad0e383ce4a6d5",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "21db0b4adee7db415bc80d44147919c20b7de84fcb501cb1d8e4971334a86a2d",
+      "kernel_export": "gfx950_kda_gdn_decode",
+      "mad_ns": 40.0,
+      "median_bootstrap_ci95_ns": [
+        5000.0,
+        5000.0
+      ],
+      "median_ns": 5000.0,
+      "p5_ns": 4560.0,
+      "p95_ns": 5240.0,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 KDA/GDN decode"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "58536eb9abf290821b3d85d39c262ed5b49ac8d835ee959b2c36fa9446998bfa",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "28714e7a41d1fa13a6c2b57da7037df881ede851fcb6c2d1346c337d68a19b72",
+      "kernel_export": "gfx950_kda_gdn_prefill",
+      "mad_ns": 0.0,
+      "median_bootstrap_ci95_ns": [
+        6160.0,
+        6160.0
+      ],
+      "median_ns": 6160.0,
+      "p5_ns": 6120.0,
+      "p95_ns": 6200.0,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 KDA/GDN prefill"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "f463b05e53db65c4e9ea73a0d33ce1398c85bcc8b5aab64788fdeb7858c9fdcc",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "9d6ac8e4461131c3b04c66a8327ed6520e9f40aed164b752f73fd750480ff752",
+      "kernel_export": "gfx950_mhc_sinkhorn_mix",
+      "mad_ns": 40.0,
+      "median_bootstrap_ci95_ns": [
+        5000.0,
+        5000.0
+      ],
+      "median_ns": 5000.0,
+      "p5_ns": 4920.0,
+      "p95_ns": 5160.0,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 mHC Sinkhorn mix"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "7e8e1cb59473e52949ded2e6d5e737d3b7e4cc27a834052da01d4e41cddeb504",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "f3b7ddcfd667b7fc8e2b72b34aedb04d34e13b0583a98d621050003b964074c6",
+      "kernel_export": "gfx950_moe_expert_rank_fp4_fp8_v1",
+      "mad_ns": 200.0,
+      "median_bootstrap_ci95_ns": [
+        39520.0,
+        39560.0
+      ],
+      "median_ns": 39560.0,
+      "p5_ns": 39200.0,
+      "p95_ns": 39960.0,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 MoE expert rank rank 0"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "7e8e1cb59473e52949ded2e6d5e737d3b7e4cc27a834052da01d4e41cddeb504",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "f3b7ddcfd667b7fc8e2b72b34aedb04d34e13b0583a98d621050003b964074c6",
+      "kernel_export": "gfx950_moe_expert_rank_fp4_fp8_v1",
+      "mad_ns": 200.0,
+      "median_bootstrap_ci95_ns": [
+        39120.0,
+        39200.0
+      ],
+      "median_ns": 39160.0,
+      "p5_ns": 38800.0,
+      "p95_ns": 39560.0,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 MoE expert rank rank 1"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "31f1f76bda88c340bcb9dcbba4323a3ea5a996ceba27d5fe9e6f2f43da826deb",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "bd8b1b1b535b496f1343a0db9a8b27e605ea666b25241b8c740f5223e20187a0",
+      "kernel_export": "gfx950_moe_route_fp4_t16_e4_k2_v1",
+      "mad_ns": 40.0,
+      "median_bootstrap_ci95_ns": [
+        19640.0,
+        19640.0
+      ],
+      "median_ns": 19640.0,
+      "p5_ns": 19520.0,
+      "p95_ns": 19760.0,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 MoE route"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "bb6e61181e05244a71b6475bcc34a6a0c62d94147bbe27304287f71d8181fe5d",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "47dfc1c7fec17cc9cdc7d568f025178b179709839f8964284ae0c68b84937c68",
+      "kernel_export": "gfx950_muon_update_4x4_v1",
+      "mad_ns": 40.0,
+      "median_bootstrap_ci95_ns": [
+        5000.0,
+        5000.0
+      ],
+      "median_ns": 5000.0,
+      "p5_ns": 4680.0,
+      "p95_ns": 5360.0,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 Muon update"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "870afb85c86525288e1695d9764fd84180b62d20388c2678ef96ab318987699b",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "627eb492b903f06c34c72ef1ec36e706a2f103cd92201d7ea628ac3141219bce",
+      "kernel_export": "gfx950_qwen_ngram_gather_v1",
+      "mad_ns": 40.0,
+      "median_bootstrap_ci95_ns": [
+        8640.0,
+        8640.0
+      ],
+      "median_ns": 8640.0,
+      "p5_ns": 8560.0,
+      "p95_ns": 8800.0,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 Qwen N-gram gather"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "5074044f3b46e0b04d24b066cfc23877df312d093dec151c75e3d126d36bbfde",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "a639a0f770af082c7dd9e17fc2dc5008226f4a32357c8f9d55f8e94f49d3c95f",
+      "kernel_export": "gfx950_speculative_transaction_v1",
+      "mad_ns": 80.0,
+      "median_bootstrap_ci95_ns": [
+        5760.0,
+        5800.0
+      ],
+      "median_ns": 5800.0,
+      "p5_ns": 5680.0,
+      "p95_ns": 5880.0,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 speculative transaction"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "ac52b38973af23d63dbb05f6edd0ceea5caa92f1f331318d95fe7d62d5b251ce",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "19c0df6dd1ded2c0d2f78903d565b7bfa8c2e22a3e594a926029bd8919587360",
+      "kernel_export": "gfx950_stage_gradient_shard_v1",
+      "mad_ns": 0.0,
+      "median_bootstrap_ci95_ns": [
+        3320.0,
+        3320.0
+      ],
+      "median_ns": 3320.0,
+      "p5_ns": 3320.0,
+      "p95_ns": 4160.0,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 gradient shard stage 0"
+    },
+    {
+      "blocks": 30,
+      "hsaco_sha256": "ac52b38973af23d63dbb05f6edd0ceea5caa92f1f331318d95fe7d62d5b251ce",
+      "implementation_id": "fe2o3-production-rust",
+      "input_sha256": "992d71e2d0c05525466c21637ae0ec14deb77504afbd28c834db9a357a3a5aec",
+      "kernel_export": "gfx950_stage_gradient_shard_v1",
+      "mad_ns": 0.0,
+      "median_bootstrap_ci95_ns": [
+        3320.0,
+        3320.0
+      ],
+      "median_ns": 3320.0,
+      "p5_ns": 3320.0,
+      "p95_ns": 4280.0,
+      "processes": 1,
+      "samples": 3000,
+      "variant": "candidate",
+      "workload_id": "gfx950 gradient shard stage 1"
+    }
+  ]
+}

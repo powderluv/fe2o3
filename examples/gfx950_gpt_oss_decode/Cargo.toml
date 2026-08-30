@@ -1,0 +1,31 @@
+[package]
+name = "fe2o3-gfx950-gpt-oss-decode"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/powderluv/fe2o3"
+rust-version = "1.94"
+publish = false
+
+[features]
+kernel-gpt-oss-decode = []
+kernel-gpt-oss-decode-router-serial = []
+kernel-gpt-oss-decode-held-fragments = []
+kernel-gpt-oss-decode-scalar-attention = []
+kernel-gpt-oss-decode-pipelined-attention = []
+kernel-gpt-oss-decode-interleaved-stores = []
+kernel-gpt-oss-router-component = []
+kernel-gpt-oss-attention-component = []
+kernel-gpt-oss-expert-component = []
+
+[workspace]
+
+[dependencies]
+fe2o3-device = { path = "../../crates/fe2o3-device" }
+
+[target.'cfg(not(target_arch = "amdgpu"))'.dependencies]
+fe2o3-host = { path = "../../crates/fe2o3-host" }
+
+[lib]
+name = "fe2o3_gfx950_gpt_oss_decode"
+path = "src/lib.rs"

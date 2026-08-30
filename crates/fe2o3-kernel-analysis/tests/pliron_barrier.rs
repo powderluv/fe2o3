@@ -3,8 +3,8 @@ use dialect_gpu::{
     MemoryOrderAttr, MemoryScopeAttr,
 };
 use dialect_kernel::{
-    BranchOp, DIALECT_NAME, IndexConstantOp, IndexLessThanBranchOp, InvocationIndexOp, ReturnOp,
-    TensorConvergenceAttr, TensorLayoutOp, TrapOp, register_dialect,
+    AnalysisSplitOp, BranchOp, DIALECT_NAME, IndexConstantOp, IndexLessThanBranchOp,
+    InvocationIndexOp, ReturnOp, TensorConvergenceAttr, TensorLayoutOp, TrapOp, register_dialect,
 };
 use fe2o3_kernel_analysis::{
     KernelCheckPassKindV1, PlironBarrierFindingV1, PlironSimtProtocolIssueV1,
@@ -602,4 +602,62 @@ fn lanes_executing_different_tensor_sites_report_a_phase_counterexample() {
     assert!(diagnostic.contains("FE2O3-PROTOCOL-001"));
     assert!(diagnostic.contains("block 1 op 0"));
     assert!(diagnostic.contains("block 2 op 0"));
+}
+
+#[test]
+fn analysis_split_large_acyclic_chain_remains_bounded_and_convergent() {
+    let context = &mut setup();
+    let function = function(context, "large_fallback_barrier_cfg");
+    let entry = function.get_entry_block(context);
+    let mut chain = Vec::new();
+    for index in 0..318 {
+        chain.push(block(context, &function, &format!("chain_{index}")));
+    }
+    let right = block(context, &function, "right");
+    let split = AnalysisSplitOp::new(context, chain[0], right);
+    append(context, entry, &split);
+    let right_join = BranchOp::new(context, chain[0]);
+    append(context, right, &right_join);
+    for edge in chain.windows(2) {
+        let next = BranchOp::new(context, edge[1]);
+        append(context, edge[0], &next);
+    }
+    let sync = barrier(context);
+    let ret = ReturnOp::new(context);
+    append(context, *chain.last().unwrap(), &sync);
+    append(context, *chain.last().unwrap(), &ret);
+
+    let report = run_pliron_barrier_convergence_check_v1(context, &function);
+    assert!(report.is_clean(), "{:#?}", report.findings());
+}
+
+#[test]
+fn analysis_split_long_chain_fails_closed_before_recursive_fallback_exhaustion() {
+    let context = &mut setup();
+    let function = function(context, "bounded_fallback_barrier_cfg");
+    let entry = function.get_entry_block(context);
+    let mut chain = Vec::new();
+    for index in 0..513 {
+        chain.push(block(context, &function, &format!("chain_{index}")));
+    }
+    let right = block(context, &function, "right");
+    let split = AnalysisSplitOp::new(context, chain[0], right);
+    append(context, entry, &split);
+    let right_join = BranchOp::new(context, chain[0]);
+    append(context, right, &right_join);
+    for edge in chain.windows(2) {
+        let next = BranchOp::new(context, edge[1]);
+        append(context, edge[0], &next);
+    }
+    let sync = barrier(context);
+    let ret = ReturnOp::new(context);
+    append(context, *chain.last().unwrap(), &sync);
+    append(context, *chain.last().unwrap(), &ret);
+
+    let report = run_pliron_barrier_convergence_check_v1(context, &function);
+    assert!(matches!(
+        report.findings(),
+        [PlironBarrierFindingV1::AnalysisIncomplete { detail }]
+            if detail.contains("bounded limit of 512")
+    ));
 }

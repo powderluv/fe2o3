@@ -2,7 +2,11 @@
 
 use dialect_gpu::{AddressSpaceAttr, HierarchyAttr, MemoryOrderAttr, MemoryScopeAttr};
 use dialect_kernel::{
-    AccessKindAttr, AtomicOrderingAttr, AtomicScopeAttr, IndexBinaryKindAttr, MemorySpaceAttr,
+    AccessKindAttr, AtomicOrderingAttr, AtomicScopeAttr,
+    GFX950_TRANSPOSE_FP4_WORKGROUP_ALLOCATION_ORIGIN_V1,
+    GFX950_TRANSPOSE_FP4_WORKGROUP_NOALIAS_CLASS_V1,
+    GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+    GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1, IndexBinaryKindAttr, MemorySpaceAttr,
     OwnershipCoverageAttr, OwnershipPartitionAttr, SemanticBinaryKindAttr, TensorConvergenceAttr,
 };
 use ed25519_dalek::{Signer, SigningKey};
@@ -517,6 +521,260 @@ fn production_allocation_read_effect_reaches_the_full_pipeline() {
         ProductionSessionLimitsV1::default(),
     )
     .expect("allocation read effect reaches production lowering");
+}
+
+#[test]
+fn production_gfx950_transpose_allocation_effect_reaches_the_full_pipeline() {
+    let kernel = ProductionRankedKernelV1::new(
+        "gfx950_transpose_allocation",
+        0,
+        vec![ProductionRankedBlockV1::new(
+            vec![
+                ProductionRankedOperationV1::ExecutionLayout {
+                    grid_identity: 92,
+                    global_extents: [64, 1, 1],
+                    workgroup_extents: [64, 1, 1],
+                    subgroup_size: 64,
+                    full_physical_workgroups: true,
+                },
+                ProductionRankedOperationV1::AllocationEffect {
+                    kind: AccessKindAttr::Write,
+                    memory_space: MemorySpaceAttr::Workgroup,
+                    allocation_origin: GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+                    noalias_class: GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1,
+                },
+                ProductionRankedOperationV1::Barrier {
+                    execution_scope: HierarchyAttr::Workgroup,
+                    memory_scope: MemoryScopeAttr::Workgroup,
+                    address_space: AddressSpaceAttr::Workgroup,
+                    order: MemoryOrderAttr::AcquireRelease,
+                },
+                ProductionRankedOperationV1::AllocationEffect {
+                    kind: AccessKindAttr::Read,
+                    memory_space: MemorySpaceAttr::Workgroup,
+                    allocation_origin: GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+                    noalias_class: GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1,
+                },
+            ],
+            ProductionRankedTerminatorV1::Return,
+        )],
+    )
+    .expect("reserved gfx950 transpose allocation effects");
+    let _ = compile_ranked_kernel_for_lowering_v1(
+        construction(kernel),
+        ProductionSessionLimitsV1::default(),
+    )
+    .expect("reserved gfx950 transpose effects reach production lowering");
+}
+
+fn gfx950_transpose_effect(kind: AccessKindAttr, fp8: bool) -> ProductionRankedOperationV1 {
+    let (allocation_origin, noalias_class) = if fp8 {
+        (
+            GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+            GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1,
+        )
+    } else {
+        (
+            GFX950_TRANSPOSE_FP4_WORKGROUP_ALLOCATION_ORIGIN_V1,
+            GFX950_TRANSPOSE_FP4_WORKGROUP_NOALIAS_CLASS_V1,
+        )
+    };
+    ProductionRankedOperationV1::AllocationEffect {
+        kind,
+        memory_space: MemorySpaceAttr::Workgroup,
+        allocation_origin,
+        noalias_class,
+    }
+}
+
+fn gfx950_transpose_barrier(
+    execution_scope: HierarchyAttr,
+    order: MemoryOrderAttr,
+) -> ProductionRankedOperationV1 {
+    ProductionRankedOperationV1::Barrier {
+        execution_scope,
+        memory_scope: MemoryScopeAttr::Workgroup,
+        address_space: AddressSpaceAttr::Workgroup,
+        order,
+    }
+}
+
+fn assert_gfx950_transpose_lifecycle_rejected(
+    name: &str,
+    workgroup_extent: u64,
+    mut operations: Vec<ProductionRankedOperationV1>,
+) {
+    operations.insert(
+        0,
+        ProductionRankedOperationV1::ExecutionLayout {
+            grid_identity: 93,
+            global_extents: [workgroup_extent, 1, 1],
+            workgroup_extents: [workgroup_extent, 1, 1],
+            subgroup_size: 64,
+            full_physical_workgroups: true,
+        },
+    );
+    let kernel = ProductionRankedKernelV1::new(
+        name,
+        0,
+        vec![ProductionRankedBlockV1::new(
+            operations,
+            ProductionRankedTerminatorV1::Return,
+        )],
+    )
+    .expect("hostile lifecycle is structurally valid");
+    assert!(
+        compile_ranked_kernel_for_lowering_v1(
+            construction(kernel),
+            ProductionSessionLimitsV1::default(),
+        )
+        .is_err(),
+        "{name} must fail before lowering"
+    );
+}
+
+#[test]
+fn production_gfx950_transpose_lifecycle_rejects_hostile_traces() {
+    assert_gfx950_transpose_lifecycle_rejected(
+        "read_only",
+        64,
+        vec![gfx950_transpose_effect(AccessKindAttr::Read, true)],
+    );
+    assert_gfx950_transpose_lifecycle_rejected(
+        "missing_barrier",
+        64,
+        vec![
+            gfx950_transpose_effect(AccessKindAttr::Write, true),
+            gfx950_transpose_effect(AccessKindAttr::Read, true),
+        ],
+    );
+    assert_gfx950_transpose_lifecycle_rejected(
+        "wrong_barrier_scope",
+        64,
+        vec![
+            gfx950_transpose_effect(AccessKindAttr::Write, true),
+            gfx950_transpose_barrier(HierarchyAttr::Subgroup, MemoryOrderAttr::AcquireRelease),
+            gfx950_transpose_effect(AccessKindAttr::Read, true),
+        ],
+    );
+    assert_gfx950_transpose_lifecycle_rejected(
+        "wrong_barrier_order",
+        64,
+        vec![
+            gfx950_transpose_effect(AccessKindAttr::Write, true),
+            gfx950_transpose_barrier(HierarchyAttr::Workgroup, MemoryOrderAttr::Release),
+            gfx950_transpose_effect(AccessKindAttr::Read, true),
+        ],
+    );
+    assert_gfx950_transpose_lifecycle_rejected(
+        "duplicate_publication",
+        64,
+        vec![
+            gfx950_transpose_effect(AccessKindAttr::Write, true),
+            gfx950_transpose_barrier(HierarchyAttr::Workgroup, MemoryOrderAttr::AcquireRelease),
+            gfx950_transpose_barrier(HierarchyAttr::Workgroup, MemoryOrderAttr::AcquireRelease),
+            gfx950_transpose_effect(AccessKindAttr::Read, true),
+        ],
+    );
+    assert_gfx950_transpose_lifecycle_rejected(
+        "format_mismatch",
+        64,
+        vec![
+            gfx950_transpose_effect(AccessKindAttr::Write, true),
+            gfx950_transpose_barrier(HierarchyAttr::Workgroup, MemoryOrderAttr::AcquireRelease),
+            gfx950_transpose_effect(AccessKindAttr::Read, false),
+        ],
+    );
+    assert_gfx950_transpose_lifecycle_rejected(
+        "duplicate_stage",
+        64,
+        vec![
+            gfx950_transpose_effect(AccessKindAttr::Write, true),
+            gfx950_transpose_effect(AccessKindAttr::Write, true),
+            gfx950_transpose_barrier(HierarchyAttr::Workgroup, MemoryOrderAttr::AcquireRelease),
+            gfx950_transpose_effect(AccessKindAttr::Read, true),
+        ],
+    );
+    assert_gfx950_transpose_lifecycle_rejected(
+        "interleaved_formats",
+        64,
+        vec![
+            gfx950_transpose_effect(AccessKindAttr::Write, true),
+            gfx950_transpose_effect(AccessKindAttr::Write, false),
+            gfx950_transpose_barrier(HierarchyAttr::Workgroup, MemoryOrderAttr::AcquireRelease),
+            gfx950_transpose_effect(AccessKindAttr::Read, true),
+            gfx950_transpose_effect(AccessKindAttr::Read, false),
+        ],
+    );
+    assert_gfx950_transpose_lifecycle_rejected(
+        "two_wave_workgroup",
+        128,
+        vec![
+            gfx950_transpose_effect(AccessKindAttr::Write, true),
+            gfx950_transpose_barrier(HierarchyAttr::Workgroup, MemoryOrderAttr::AcquireRelease),
+            gfx950_transpose_effect(AccessKindAttr::Read, true),
+        ],
+    );
+}
+
+#[test]
+fn production_gfx950_transpose_lifecycle_rejects_lane_divergence() {
+    let invocation = ProductionRankedValueIdV1::new(0);
+    let half_wave = ProductionRankedValueIdV1::new(1);
+    let kernel = ProductionRankedKernelV1::new(
+        "divergent_transpose_stage",
+        0,
+        vec![
+            ProductionRankedBlockV1::new(
+                vec![
+                    ProductionRankedOperationV1::ExecutionLayout {
+                        grid_identity: 94,
+                        global_extents: [64, 1, 1],
+                        workgroup_extents: [64, 1, 1],
+                        subgroup_size: 64,
+                        full_physical_workgroups: true,
+                    },
+                    ProductionRankedOperationV1::InvocationIndex {
+                        result: invocation,
+                        dimension: 0,
+                        launch_extent: 64,
+                    },
+                    ProductionRankedOperationV1::IndexConstant {
+                        result: half_wave,
+                        value: 32,
+                    },
+                ],
+                ProductionRankedTerminatorV1::IndexLessThan {
+                    lhs: local(invocation),
+                    rhs: local(half_wave),
+                    true_block: 1,
+                    false_block: 2,
+                },
+            ),
+            ProductionRankedBlockV1::new(
+                vec![gfx950_transpose_effect(AccessKindAttr::Write, true)],
+                ProductionRankedTerminatorV1::Branch { target: 2 },
+            ),
+            ProductionRankedBlockV1::new(
+                vec![
+                    gfx950_transpose_barrier(
+                        HierarchyAttr::Workgroup,
+                        MemoryOrderAttr::AcquireRelease,
+                    ),
+                    gfx950_transpose_effect(AccessKindAttr::Read, true),
+                ],
+                ProductionRankedTerminatorV1::Return,
+            ),
+        ],
+    )
+    .expect("divergent lifecycle is structurally valid");
+    assert!(
+        compile_ranked_kernel_for_lowering_v1(
+            construction(kernel),
+            ProductionSessionLimitsV1::default(),
+        )
+        .is_err()
+    );
 }
 
 #[test]

@@ -1,0 +1,222 @@
+{
+  "schema": "fe2o3.gfx950.advanced-ablation-evidence.v1",
+  "claim_boundary": "Exact fixed-shape Rust artifacts on one MI350X GPU. Fastest statements are restricted to the admitted variants named here; this is not a universal state-of-the-art claim.",
+  "machine": {
+    "host": "smci350-rck-g03-b19-03",
+    "physical_gpu": 6,
+    "market_name": "AMD Instinct MI350X",
+    "target": "gfx950:xnack-",
+    "rocr_visible_devices": "6",
+    "hip_visible_devices": "unset",
+    "clocks_locked": false
+  },
+  "protocol": {
+    "campaign_id": "advanced-ablation-final-da6c108d-gpu6",
+    "source_commit": "da6c108d162bac8afd79e789ccf9b36ef8eb97a4",
+    "source_tree": "745526b462feb2fcc7a45716382c7db86480cb2d",
+    "processes_per_variant": 1,
+    "initial_warmups": 1000,
+    "blocks": 30,
+    "samples_per_block": 100,
+    "block_rewarm": 20,
+    "timer": "ROCr HSA dispatch timestamps",
+    "bootstrap_repetitions": 10000,
+    "bootstrap_seed": 950,
+    "correctness": "Every artifact passed its independent CPU reference, immutable-input checks, guard canaries, preflight dispatch, and post-block validation."
+  },
+  "artifacts": {
+    "raw_samples": 105000,
+    "series": 35,
+    "hsaco_files": 32,
+    "raw_samples_sha256": "1d0a27990262dd2bb006780dd0874418cb1e4be53dd2825f2a461063edfa139e",
+    "summary_sha256": "eb7b826f36c6b2db69098211b1f0dfc6036bb44f88276d57deab92bfd367bd86",
+    "campaign_checksums_sha256": "3e31d748d23d47fb37c1340cefa6f9e487727818d8945f030ebcdf13c96c3a61",
+    "leaked_amdgpu_target_directories": 0
+  },
+  "comparisons": [
+    {
+      "workload": "KDA/GDN decode",
+      "change": "canonical lane ownership -> four wave16 groups",
+      "baseline_median_ns": 3760,
+      "candidate_median_ns": 5040,
+      "candidate_over_baseline_paired_speedup": 0.752,
+      "paired_speedup_ci95": [0.752, 0.752],
+      "decision": "reject wave16 replication"
+    },
+    {
+      "workload": "KDA/GDN prefill",
+      "change": "channel modulo 16 -> channel mask 15",
+      "baseline_median_ns": 6200,
+      "candidate_median_ns": 6160,
+      "identical_hsaco_sha256": "58536eb9abf290821b3d85d39c262ed5b49ac8d835ee959b2c36fa9446998bfa",
+      "decision": "compiler-equivalent; machine-code contribution is zero"
+    },
+    {
+      "workload": "indexed sparse attention",
+      "change": "three normalized divisions -> one reciprocal after numerator accumulation",
+      "baseline_median_ns": 22320,
+      "candidate_median_ns": 22361,
+      "candidate_over_baseline_paired_speedup": 0.994661922,
+      "paired_speedup_ci95": [0.994642857, 0.996415771],
+      "decision": "reject reciprocal rewrite"
+    },
+    {
+      "workload": "compressed hybrid attention",
+      "change": "seven normalized divisions -> two reciprocal reuses",
+      "baseline_median_ns": 22800,
+      "candidate_median_ns": 22560,
+      "candidate_over_baseline_paired_speedup": 1.007104796,
+      "paired_speedup_ci95": [1.005377782, 1.008818342],
+      "candidate_latency_reduction_percent": 0.705467,
+      "decision": "promote reciprocal reuse into production",
+      "baseline_hsaco_sha256": "6c6addf04c745ad6560e45d2896725adbb8d87952cd49c6f710fde6e5011d823",
+      "candidate_hsaco_sha256": "3cf9a73d1c684fc1f9f93c556eaa4772be0c250bd4d6d1f1b3241adbd5c5ef03"
+    },
+    {
+      "workload": "AttnRes aggregation",
+      "change": "bounded loop -> explicit four-depth form",
+      "baseline_median_ns": 5000,
+      "candidate_median_ns": 5040,
+      "candidate_over_baseline_paired_speedup": 0.992125984,
+      "paired_speedup_ci95": [0.992063492, 1.0],
+      "decision": "indistinguishable at 95% CI; retain canonical"
+    },
+    {
+      "workload": "four-branch residual",
+      "change": "bounded loop -> explicit four-branch form",
+      "baseline_median_ns": 5000,
+      "candidate_median_ns": 5000,
+      "candidate_over_baseline_paired_speedup": 1.0,
+      "paired_speedup_ci95": [1.0, 1.0],
+      "decision": "tie; retain canonical"
+    },
+    {
+      "workload": "mHC Sinkhorn mix",
+      "change": "scalar per-lane matrix evaluation -> distributed wave16",
+      "baseline_median_ns": 7240,
+      "candidate_median_ns": 5000,
+      "candidate_over_baseline_speedup": 1.448,
+      "candidate_latency_reduction_percent": 30.939227,
+      "decision": "retain distributed wave16"
+    },
+    {
+      "workload": "MoE expert rank 0 / rank 1",
+      "change": "serial load/MFMA streams -> eager independent load scheduling",
+      "baseline_median_ns": [38520, 38160],
+      "candidate_median_ns": [38041, 37720],
+      "candidate_latency_reduction_percent": [1.24351, 1.15304],
+      "decision": "retain eager independent stream schedule"
+    },
+    {
+      "workload": "speculative transaction",
+      "change": "recompute accepted prefix -> compute once and broadcast",
+      "baseline_median_ns": 5800,
+      "candidate_median_ns": 5760,
+      "candidate_over_baseline_speedup": 1.006944,
+      "decision": "retain prefix broadcast"
+    },
+    {
+      "workload": "Qwen N-gram gather",
+      "change": "reverse probe order -> ascending probe order",
+      "baseline_median_ns": 9800,
+      "candidate_median_ns": 8480,
+      "candidate_over_baseline_speedup": 1.15566,
+      "decision": "retain ascending probe order"
+    },
+    {
+      "workload": "Muon 4x4 update",
+      "change": "wave16 broadcast alternative -> canonical reduction mapping",
+      "baseline_median_ns": 5000,
+      "candidate_median_ns": 5000,
+      "decision": "aggregate medians tie; retain canonical and do not attribute a sub-timer-quantum marginal gain"
+    },
+    {
+      "workload": "GPT-OSS-120B batch-1 layer tile",
+      "change": "serial 128-expert router -> two experts per Wave64 lane",
+      "baseline_median_ns": 58323675.5,
+      "candidate_median_ns": 1065004,
+      "candidate_over_baseline_speedup": 54.763809,
+      "decision": "retain parallel router"
+    },
+    {
+      "workload": "GPT-OSS-120B batch-1 layer tile",
+      "change": "hold four MXFP4 accumulators live -> construct and consume sequentially",
+      "baseline_median_ns": 1065404,
+      "candidate_median_ns": 1065004,
+      "candidate_over_baseline_speedup": 1.000376,
+      "resource_change": "352 -> 308 VGPRs; 96 -> 52 AGPRs",
+      "decision": "retain sequential fragments"
+    },
+    {
+      "workload": "GPT-OSS-120B batch-1 layer tile",
+      "change": "grouped disjoint stores -> interleaved stores",
+      "baseline_median_ns": 1065004,
+      "candidate_median_ns": 1065524,
+      "paired_speedup_ci95": [1.000751467, 1.001728602],
+      "decision": "unresolved because aggregate medians and the sequential paired statistic disagree; retain grouped stores"
+    }
+  ],
+  "gpt_oss_materialization": {
+    "optimized_fused_median_ns": 1065004,
+    "materialized_router_median_ns": 1188544,
+    "materialized_attention_median_ns": 11840,
+    "materialized_expert_median_ns": 51160,
+    "coindexed_three_dispatch_sum_median_ns": 1251324.5,
+    "sum_over_fused_median_ratio": 1.176482483,
+    "fused_latency_reduction_percent": 14.889863,
+    "scope": "Three exact Rust components summed at matching process/block/sample coordinates; not a framework or whole-model run."
+  },
+  "promotion_verification": {
+    "source_commit": "4f9b2bf09db41e6ef38db1bb926c2fa7989d8e1f",
+    "campaign_id": "compressed-hybrid-promotion-4f9b2bf0-gpu6",
+    "samples_per_variant": 500,
+    "production_median_ns": 22640,
+    "division_baseline_median_ns": 22760,
+    "production_over_baseline_paired_speedup": 1.005300353,
+    "paired_speedup_ci95": [1.003533569, 1.007079646],
+    "production_hsaco_sha256": "3cf9a73d1c684fc1f9f93c556eaa4772be0c250bd4d6d1f1b3241adbd5c5ef03",
+    "division_baseline_hsaco_sha256": "6c6addf04c745ad6560e45d2896725adbb8d87952cd49c6f710fde6e5011d823",
+    "raw_samples_sha256": "2f6b6176b49eaac22b864f70ea6be9e77abdc46c068caa4d833a978f4bf12f8f",
+    "summary_sha256": "9c5deb9749425f91329fd5ebd399b0086dbdd90602e7c59c219226eede492047"
+  },
+  "advanced_optimization_assessments": {
+    "software_pipeline": [
+      "MoE expert rank retains eager scheduling across three independent load/MFMA streams.",
+      "KDA prefill, speculative verification, N-gram probing, Muon polar iterations, and mixing reductions have loop-carried dependencies.",
+      "The GPT-OSS two-stage BF16 LDS prime/loop/drain implementation was compiler-rejected after constructing the exact 2048-byte lifecycle."
+    ],
+    "lds_multi_buffer": [
+      "Sparse and compressed hybrid attention have exactly one K=128 native MFMA tile; a second 2048-byte LDS stage duplicates the only tile.",
+      "Register-resident mixing and Muon kernels gain no producer-consumer reuse from LDS.",
+      "The GPT-OSS FP4 fragment type is not admitted by the sealed workgroup-pipeline element surface."
+    ],
+    "tile_tuning": [
+      "The admitted low-precision surfaces expose Wave64 m16n16k128 FP4/FP8 and m16n16k16 BF16 tiles.",
+      "KDA wave16 replication regressed; route owner-only, combine transpose, gradient tile4, and scalar attention alternatives were compiler-rejected or noncanonical.",
+      "No timing or contribution is fabricated for a variant that did not lower to an exact production artifact."
+    ]
+  },
+  "resource_floors": {
+    "derivation_rule": "max(compulsory bytes / 8 TB/s, counted FP32 ops / 144.2 TFLOP/s, admitted low-precision ops / the named peak)",
+    "moe_route": {"floor_ns": 0.61, "median_ns": 19600, "measured_over_floor": 32131.148},
+    "moe_expert_rank_0": {"floor_ns": 1.184, "median_ns": 38041, "measured_over_floor": 32129.223},
+    "expert_combine": {"floor_ns": 0.384, "median_ns": 5040, "measured_over_floor": 13125},
+    "kda_decode": {"floor_ns": 0.0575, "median_ns": 3760, "measured_over_floor": 65391.304},
+    "kda_prefill": {"floor_ns": 0.2095, "median_ns": 6160, "measured_over_floor": 29403.341},
+    "indexed_sparse_attention": {"floor_ns": 0.5615, "median_ns": 22320, "measured_over_floor": 39750.668},
+    "compressed_hybrid_attention": {"floor_ns": 0.56, "median_ns": 22560, "measured_over_floor": 40285.714},
+    "attnres": {"floor_ns": 0.072, "median_ns": 5000, "measured_over_floor": 69444.444},
+    "four_branch": {"floor_ns": 0.08, "median_ns": 5000, "measured_over_floor": 62500},
+    "mhc": {"floor_ns": 0.072, "median_ns": 5000, "measured_over_floor": 69444.444},
+    "speculative_transaction": {"floor_ns": 0.208, "median_ns": 5760, "measured_over_floor": 27692.308},
+    "ngram_gather": {"floor_ns": 0.072, "median_ns": 8480, "measured_over_floor": 117777.778},
+    "gradient_stage": {"floor_ns": 0.016, "median_ns": 5000, "measured_over_floor": 312500},
+    "muon": {"floor_ns": 0.0245, "median_ns": 5000, "measured_over_floor": 204081.633},
+    "gpt_oss_layer_tile": {"floor_ns": 188.7465, "median_ns": 1065004, "measured_over_floor": 5642.51}
+  },
+  "variant_registries": [
+    "examples/gfx950_advanced_attention/ablation-variants-v1.json",
+    "examples/gfx950_advanced_systems/ablation-variants-v1.json",
+    "examples/gfx950_gpt_oss_decode/ablation-variants-v1.json"
+  ]
+}

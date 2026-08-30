@@ -67,6 +67,13 @@ pub(crate) struct QueueRecord {
     pub async_error: usize,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DispatchTimeRecord {
+    pub start: u64,
+    pub end: u64,
+}
+
 const _: () = {
     assert!(core::mem::size_of::<AgentRecord>() == 264);
     assert!(core::mem::align_of::<AgentRecord>() == 8);
@@ -78,6 +85,8 @@ const _: () = {
     assert!(core::mem::align_of::<SymbolRecord>() == 8);
     assert!(core::mem::size_of::<QueueRecord>() == 32);
     assert!(core::mem::align_of::<QueueRecord>() == 8);
+    assert!(core::mem::size_of::<DispatchTimeRecord>() == 16);
+    assert!(core::mem::align_of::<DispatchTimeRecord>() == 8);
 };
 
 #[cfg(fe2o3_hsa_runtime)]
@@ -120,10 +129,18 @@ unsafe extern "C" {
     pub fn fe2o3_hsa_memory_free(address: *mut c_void) -> c_int;
     pub fn fe2o3_hsa_queue_create(agent: u64, size: u32, record: *mut QueueRecord) -> c_int;
     pub fn fe2o3_hsa_queue_async_error(record: *const QueueRecord) -> c_int;
+    pub fn fe2o3_hsa_queue_enable_profiling(record: *const QueueRecord) -> c_int;
     pub fn fe2o3_hsa_queue_destroy(record: *mut QueueRecord) -> c_int;
     pub fn fe2o3_hsa_signal_create(initial_value: i64, signal: *mut u64) -> c_int;
     pub fn fe2o3_hsa_signal_destroy(signal: u64) -> c_int;
     pub fn fe2o3_hsa_signal_load_acquire(signal: u64) -> i64;
+    pub fn fe2o3_hsa_signal_store_release(signal: u64, value: i64) -> c_int;
+    pub fn fe2o3_hsa_system_timestamp_frequency(frequency: *mut u64) -> c_int;
+    pub fn fe2o3_hsa_dispatch_time(
+        agent: u64,
+        signal: u64,
+        record: *mut DispatchTimeRecord,
+    ) -> c_int;
     #[cfg(test)]
     pub fn fe2o3_hsa_test_malformed_queue_destroy_failure(record: *mut QueueRecord) -> c_int;
     #[cfg(test)]

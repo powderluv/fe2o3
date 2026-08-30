@@ -374,6 +374,7 @@ fn gfx950_low_precision_and_transpose_capabilities_are_exact() {
         );
     }
     for family in [
+        MfmaFamily::F32FromBf16,
         MfmaFamily::F32FromFp8Ocp,
         MfmaFamily::F32FromBf8Ocp,
         MfmaFamily::F32FromFp4Ocp,

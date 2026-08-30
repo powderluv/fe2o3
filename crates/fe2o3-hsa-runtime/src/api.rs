@@ -66,6 +66,13 @@ pub(crate) struct SymbolFacts {
     pub name: String,
 }
 
+#[cfg(feature = "hardware-test-hooks")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DispatchTimeFacts {
+    pub start: u64,
+    pub end: u64,
+}
+
 pub(crate) struct QueueHandle {
     raw: sys::QueueRecord,
 }
@@ -154,6 +161,34 @@ pub(crate) trait DispatchApi: ExecutableApi {
     fn signal_create(&mut self, initial_value: i64) -> Result<u64, ApiError>;
     fn signal_destroy(&mut self, signal: u64) -> Result<(), ApiError>;
     fn signal_load_acquire(&mut self, signal: u64) -> i64;
+    #[cfg(feature = "hardware-test-hooks")]
+    fn queue_enable_profiling(&mut self, _queue: &QueueHandle) -> Result<(), ApiError> {
+        Err(ApiError {
+            operation: "HSA queue profiling unavailable",
+            status: -1,
+        })
+    }
+    #[cfg(feature = "hardware-test-hooks")]
+    fn signal_store_release(&mut self, _signal: u64, _value: i64) -> Result<(), ApiError> {
+        Err(ApiError {
+            operation: "HSA signal store unavailable",
+            status: -1,
+        })
+    }
+    #[cfg(feature = "hardware-test-hooks")]
+    fn timestamp_frequency(&mut self) -> Result<u64, ApiError> {
+        Err(ApiError {
+            operation: "HSA timestamp frequency unavailable",
+            status: -1,
+        })
+    }
+    #[cfg(feature = "hardware-test-hooks")]
+    fn dispatch_time(&mut self, _agent: u64, _signal: u64) -> Result<DispatchTimeFacts, ApiError> {
+        Err(ApiError {
+            operation: "HSA dispatch profiling unavailable",
+            status: -1,
+        })
+    }
     #[allow(clippy::too_many_arguments)]
     fn publish_dispatch(
         &mut self,
@@ -559,6 +594,54 @@ impl DispatchApi for DirectRuntimeApi {
         // SAFETY: the private completion signal remains live throughout this
         // nonblocking acquire load.
         unsafe { sys::fe2o3_hsa_signal_load_acquire(signal) }
+    }
+
+    #[cfg(feature = "hardware-test-hooks")]
+    fn queue_enable_profiling(&mut self, queue: &QueueHandle) -> Result<(), ApiError> {
+        ApiError::status("hsa_amd_profiling_set_profiler_enabled", unsafe {
+            sys::fe2o3_hsa_queue_enable_profiling(&queue.raw)
+        })
+    }
+
+    #[cfg(feature = "hardware-test-hooks")]
+    fn signal_store_release(&mut self, signal: u64, value: i64) -> Result<(), ApiError> {
+        ApiError::status("hsa_signal_store_screlease", unsafe {
+            sys::fe2o3_hsa_signal_store_release(signal, value)
+        })
+    }
+
+    #[cfg(feature = "hardware-test-hooks")]
+    fn timestamp_frequency(&mut self) -> Result<u64, ApiError> {
+        let mut frequency = 0;
+        ApiError::status("hsa_system_get_info(timestamp frequency)", unsafe {
+            sys::fe2o3_hsa_system_timestamp_frequency(&mut frequency)
+        })?;
+        if !(1..=10_000_000_000).contains(&frequency) {
+            return Err(ApiError {
+                operation: "validate HSA timestamp frequency",
+                status: -1,
+            });
+        }
+        Ok(frequency)
+    }
+
+    #[cfg(feature = "hardware-test-hooks")]
+    fn dispatch_time(&mut self, agent: u64, signal: u64) -> Result<DispatchTimeFacts, ApiError> {
+        let mut record = MaybeUninit::<sys::DispatchTimeRecord>::zeroed();
+        ApiError::status("hsa_amd_profiling_get_dispatch_time", unsafe {
+            sys::fe2o3_hsa_dispatch_time(agent, signal, record.as_mut_ptr())
+        })?;
+        let record = unsafe { record.assume_init() };
+        if record.end < record.start {
+            return Err(ApiError {
+                operation: "validate HSA dispatch timestamps",
+                status: -1,
+            });
+        }
+        Ok(DispatchTimeFacts {
+            start: record.start,
+            end: record.end,
+        })
     }
 
     fn publish_dispatch(

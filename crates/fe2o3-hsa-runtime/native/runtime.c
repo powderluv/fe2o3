@@ -370,6 +370,14 @@ int32_t fe2o3_hsa_queue_async_error(const Fe2o3HsaQueueRecord *record) {
   return atomic_load(async_error);
 }
 
+int32_t fe2o3_hsa_queue_enable_profiling(
+    const Fe2o3HsaQueueRecord *record) {
+  if (record == NULL || record->pointer == 0)
+    return (int32_t)HSA_STATUS_ERROR_INVALID_ARGUMENT;
+  return (int32_t)hsa_amd_profiling_set_profiler_enabled(
+      (hsa_queue_t *)record->pointer, 1);
+}
+
 int32_t fe2o3_hsa_queue_destroy(Fe2o3HsaQueueRecord *record) {
   if (record == NULL || record->pointer == 0 || record->async_error == 0)
     return (int32_t)HSA_STATUS_ERROR_INVALID_ARGUMENT;
@@ -397,6 +405,36 @@ int32_t fe2o3_hsa_signal_destroy(uint64_t signal) {
 
 int64_t fe2o3_hsa_signal_load_acquire(uint64_t signal) {
   return (int64_t)hsa_signal_load_scacquire((hsa_signal_t){.handle = signal});
+}
+
+int32_t fe2o3_hsa_signal_store_release(uint64_t signal, int64_t value) {
+  if (signal == 0)
+    return (int32_t)HSA_STATUS_ERROR_INVALID_SIGNAL;
+  hsa_signal_store_screlease((hsa_signal_t){.handle = signal},
+                             (hsa_signal_value_t)value);
+  return (int32_t)HSA_STATUS_SUCCESS;
+}
+
+int32_t fe2o3_hsa_system_timestamp_frequency(uint64_t *frequency) {
+  if (frequency == NULL)
+    return (int32_t)HSA_STATUS_ERROR_INVALID_ARGUMENT;
+  return (int32_t)hsa_system_get_info(HSA_SYSTEM_INFO_TIMESTAMP_FREQUENCY,
+                                      frequency);
+}
+
+int32_t fe2o3_hsa_dispatch_time(uint64_t agent, uint64_t signal,
+                                Fe2o3HsaDispatchTimeRecord *record) {
+  if (agent == 0 || signal == 0 || record == NULL)
+    return (int32_t)HSA_STATUS_ERROR_INVALID_ARGUMENT;
+  hsa_amd_profiling_dispatch_time_t observed = {0};
+  hsa_status_t status = hsa_amd_profiling_get_dispatch_time(
+      (hsa_agent_t){.handle = agent}, (hsa_signal_t){.handle = signal},
+      &observed);
+  if (status == HSA_STATUS_SUCCESS) {
+    record->start = observed.start;
+    record->end = observed.end;
+  }
+  return (int32_t)status;
 }
 
 static hsa_status_t fe2o3_test_queue_destroy_failure(hsa_queue_t *queue) {

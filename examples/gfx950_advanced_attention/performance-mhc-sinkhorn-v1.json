@@ -1,0 +1,147 @@
+{
+  "schema": "fe2o3.gfx950.advanced-attention-ablation.v1",
+  "kernel_export": "gfx950_mhc_sinkhorn_mix",
+  "optimization_commit": "da00b14db7b46be8d27d5ae2ef785a6ac22c99b6",
+  "workload": {
+    "mixing_matrix": [4, 4],
+    "streams": [4, 16],
+    "output": [4, 16],
+    "sinkhorn_iterations": 3,
+    "workgroup": [64, 1, 1],
+    "wavefront_size": 64,
+    "input_sha256": "9d6ac8e4461131c3b04c66a8327ed6520e9f40aed164b752f73fd750480ff752"
+  },
+  "artifacts": {
+    "baseline": {
+      "source_commit": "63c5a5988b00b02bef07bdddcfa79039b1b0554e",
+      "source_tree": "771c00636db1437809fd7e6dec0de2d88bf6e0ff",
+      "crate_binding": "0c00c566c0a9487644fd52739a8ffe3a447048d77114666223b99fa8cfd6a9cf",
+      "llvm_sha256": "8e71b76ad844df09f34bb89a800c5a3701f195132719a2742eea8491e89aa539",
+      "hsaco_sha256": "0a42de9c2304b3c5679486cf053a006614580d0372b269a82e481bd0755ce605",
+      "isa_sha256": "a3d410b6c96539413c745624e495bdd0f42555dc5c2508e93f1b9bd235f32de7"
+    },
+    "candidate": {
+      "source_commit": "da00b14db7b46be8d27d5ae2ef785a6ac22c99b6",
+      "source_tree": "b05e6c32f5752c894e023755fea7b4a1e3dcfefe",
+      "crate_binding": "f93558928ce6e41a2fe8d78cfb28aa199dae54059fc9b7599a4348f4ad73c966",
+      "llvm_sha256": "17dcdc08dca1508a16001caa32d56f0b956c14c9a9a280807ca86925263ca569",
+      "hsaco_sha256": "f463b05e53db65c4e9ea73a0d33ce1398c85bcc8b5aab64788fdeb7858c9fdcc",
+      "isa_sha256": "e79fed8886b01c6d649b6605af7f6a45e32f78424eb4290b2981ff758d07b3ff"
+    }
+  },
+  "correctness": {
+    "oracle": "independent CPU mHC/Sinkhorn reference and output guard canaries",
+    "baseline_max_absolute_error": 4.470348358e-8,
+    "candidate_max_absolute_error": 5.960464478e-8,
+    "tolerance": 3.0e-3
+  },
+  "measurement": {
+    "host": "smci350-rck-g03-b19-03",
+    "physical_gpu": 6,
+    "target": "gfx950:xnack-",
+    "rocm": "7.2.1",
+    "timer": "hsa_amd_profiling_get_dispatch_time",
+    "queue_model": "one persistent profiled queue and executable per process",
+    "processes_per_variant": 5,
+    "order": "alternating AB/BA",
+    "initial_warmups_per_process": 1000,
+    "blocks_per_process": 30,
+    "samples_per_block": 100,
+    "block_rewarm_dispatches": 20,
+    "paired_samples": 15000,
+    "baseline_median_ns": 7160.0,
+    "baseline_median_bootstrap_ci95_ns": [7160.0, 7160.0],
+    "candidate_median_ns": 5040.0,
+    "candidate_median_bootstrap_ci95_ns": [5000.0, 5040.0],
+    "median_paired_speedup": 1.432,
+    "paired_speedup_bootstrap_ci95": [1.431856828634273, 1.432],
+    "median_latency_reduction_percent": 30.16759776536313,
+    "analyzer": "perf-evidence/analyze.py",
+    "bootstrap_repetitions": 10000,
+    "bootstrap_seed": 950,
+    "retained_summary": "/home/harmenon/perf-runs/mhc-summary.out"
+  },
+  "isa_accounting": {
+    "baseline": {
+      "instructions": 1750,
+      "v_exp_f32": 16,
+      "expanded_divides": 96,
+      "v_rcp_f32": 96,
+      "global_load_dword": 12,
+      "ds_bpermute_b32": 0,
+      "scalar_branches": 8,
+      "sgpr_count": 34,
+      "vgpr_count": 34
+    },
+    "candidate": {
+      "instructions": 457,
+      "v_exp_f32": 1,
+      "expanded_divides": 6,
+      "v_rcp_f32": 6,
+      "global_load_dword": 5,
+      "ds_bpermute_b32": 22,
+      "scalar_branches": 2,
+      "sgpr_count": 22,
+      "vgpr_count": 12
+    }
+  },
+  "optimization_contributions": [
+    {
+      "name": "distributed_matrix_lanes",
+      "mechanism": "each lane owns one rotated 4x4 matrix element in a contiguous wave16 group",
+      "static_delta": "v_exp_f32 16 to 1 and global_load_dword 12 to 5",
+      "static_reduction_percent": {
+        "v_exp_f32": 93.75,
+        "global_load_dword": 58.333333333333336
+      }
+    },
+    {
+      "name": "subgroup_row_reduction_and_reciprocal_hoist",
+      "mechanism": "wave16 groups reduce each four-element row and multiply by one reciprocal",
+      "static_delta": "expanded divide sequences and v_rcp_f32 both 96 to 6",
+      "static_reduction_percent": {
+        "expanded_divides": 93.75,
+        "v_rcp_f32": 93.75
+      }
+    },
+    {
+      "name": "branch_free_bounded_column_broadcasts",
+      "mechanism": "four verifier-bounded lane broadcasts replace divergent column selection",
+      "static_delta": "scalar branches 8 to 2 while adding 22 ds_bpermute_b32 instructions",
+      "static_reduction_percent": {
+        "scalar_branches": 75.0
+      }
+    },
+    {
+      "name": "combined_rewrite",
+      "static_delta": "instructions 1750 to 457, SGPR 34 to 22, VGPR 34 to 12",
+      "static_reduction_percent": {
+        "instructions": 73.88571428571429,
+        "sgpr": 35.294117647058826,
+        "vgpr": 64.70588235294117
+      },
+      "measured_speedup": 1.432,
+      "measured_latency_reduction_percent": 30.16759776536313
+    }
+  ],
+  "attribution_limit": "Only the combined rewrite was timed. Static stage deltas overlap and are not additive marginal latency measurements.",
+  "theoretical_bound": {
+    "architecture_inputs": "perf-evidence/mi350x-bound-inputs-v1.json",
+    "unique_compulsory_bytes": 576,
+    "byte_breakdown": {
+      "mixing_logits_read": 64,
+      "streams_read": 256,
+      "output_write": 256
+    },
+    "logical_fp32_algebraic_operations": 616,
+    "logical_exp_operations": 16,
+    "peak_hbm_bytes_per_second": 8000000000000.0,
+    "peak_fp32_operations_per_second": 144200000000000.0,
+    "bandwidth_floor_ns": 0.072,
+    "fp32_algebraic_floor_ns": 0.004271844660194175,
+    "strict_global_resource_floor_ns": 0.072,
+    "candidate_over_resource_floor": 70000.0,
+    "derivation": "max(576 / 8e12, 616 / 144.2e12) seconds",
+    "scope": "whole-device fully occupied roofline only; it excludes dispatch latency and lacks a published exp dependency-throughput bound for this single-wave kernel"
+  }
+}

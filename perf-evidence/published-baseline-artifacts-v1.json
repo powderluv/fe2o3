@@ -1,0 +1,89 @@
+{
+  "schema": "fe2o3.gfx950.published-baseline-artifacts.v1",
+  "source_commit": "63c5a5988b00b02bef07bdddcfa79039b1b0554e",
+  "source_tree": "771c00636db1437809fd7e6dec0de2d88bf6e0ff",
+  "vault_layout": "<vault>/<suite>/<sha256>.<hsaco|ll|isa>",
+  "artifacts": [
+    {
+      "symbol": "gfx950_kda_gdn_decode",
+      "suite": "attention",
+      "test": "gfx950_kda_gdn_decode_rust_cov6_matches_cpu_reference",
+      "namespace": "e2036047357df97405feba4d64aa7e95868109636c92a6f6853119580fd72fe4",
+      "hsaco_sha256": "5a16d32486c6a424c680ec200a8fcc6941115f3a2953ec6a7fad0e383ce4a6d5",
+      "llvm_sha256": "8ebe8976e85fe9fbdcbdad770055b69934ed3eefd129291030e8bcfbf3138729",
+      "isa_sha256": "a27815cce4c7ebdc33341a95f2d3a2923b4f69e9b9c8066d25387b23972e94df"
+    },
+    {
+      "symbol": "gfx950_attnres_aggregate",
+      "suite": "attention",
+      "test": "gfx950_attnres_aggregate_rust_cov6_matches_cpu_reference",
+      "namespace": "a65038e3cb567081a97476ed759abecdcf789e1607626117c929491ce0edffe7",
+      "hsaco_sha256": "f3ab4ebd7b8f2310918eada0d8b90efd57c281914bbac91499040417f5c4a2e6",
+      "llvm_sha256": "bfe382071cd792904f3bc67edeb853803803041b596750c7de9d0c56e251baa7",
+      "isa_sha256": "26bc44b06e812269868f168ffb4b7c9e4ec8bc822f1042099f71300504ed6ccd"
+    },
+    {
+      "symbol": "gfx950_four_branch_residual",
+      "suite": "attention",
+      "test": "gfx950_four_branch_residual_rust_cov6_matches_cpu_reference",
+      "namespace": "632e4eb1a578d4a75b833c6bececaa239cb7f754e8999cb3513690a4b0badc12",
+      "hsaco_sha256": "190ce48f1172f15b3827b1220ad6ee190087ad4be52892946eff26cfea168ec0",
+      "llvm_sha256": "398e490130c512357af6cbc11c53a5e8af773b90009f067724fa01e8b5ca4145",
+      "isa_sha256": "065b3f683d3ed4dca145d80556517a44c7240f89958e2a1ba92a634376281a05"
+    },
+    {
+      "symbol": "gfx950_mhc_sinkhorn_mix",
+      "suite": "attention",
+      "test": "gfx950_mhc_sinkhorn_mix_rust_cov6_matches_cpu_reference",
+      "namespace": "0c00c566c0a9487644fd52739a8ffe3a447048d77114666223b99fa8cfd6a9cf",
+      "hsaco_sha256": "0a42de9c2304b3c5679486cf053a006614580d0372b269a82e481bd0755ce605",
+      "llvm_sha256": "8e71b76ad844df09f34bb89a800c5a3701f195132719a2742eea8491e89aa539",
+      "isa_sha256": "a3d410b6c96539413c745624e495bdd0f42555dc5c2508e93f1b9bd235f32de7"
+    },
+    {
+      "symbol": "gfx950_combine_expert_ranks_v1",
+      "suite": "systems",
+      "test": "gfx950_combine_expert_ranks_rust_cov6_matches_cpu_reference",
+      "namespace": "a27beaf1c7c14d2129a2efc9bd9802fba895073515686b9a81495afe4b65047b",
+      "hsaco_sha256": "aa5aa7fa613ae8f439dcf8b626ce18b7560f9705453bd3b9f0ddbc936501166e",
+      "llvm_sha256": "5a83acdec1c419c5549143a105e568d59fd29ca0e7b5adadf98847b39ad4f59e",
+      "isa_sha256": "209f88425dbda3609007bd6af25b5f72127411165774a3acbe1463ea1bbca93d"
+    },
+    {
+      "symbol": "gfx950_speculative_transaction_v1",
+      "suite": "systems",
+      "test": "gfx950_speculative_transaction_rust_cov6_matches_cpu_reference",
+      "namespace": "56cb0ca1edf995cb22811650289af395e5932a3dcb3eaeadd64139781ad8e1fa",
+      "hsaco_sha256": "b0ba51564d60b788a019266d6dcad78f404d30fde54684e4416829504795b34b",
+      "llvm_sha256": "32b1600efa54c9477b6a7597b217190b4eb3007ba72d735c87f1688c7cca5c1d",
+      "isa_sha256": "2df155fd137c4cb09c57c74ad4eefdb7f9226613e451f21e51bed9cf6b097e85"
+    },
+    {
+      "symbol": "gfx950_qwen_ngram_gather_v1",
+      "suite": "systems",
+      "test": "gfx950_qwen_ngram_gather_rust_cov6_matches_cpu_reference",
+      "namespace": "759fc11ede4636245a173107a33f25014d4f8f0f29f1710bf9b9396aeda69ee9",
+      "hsaco_sha256": "870afb85c86525288e1695d9764fd84180b62d20388c2678ef96ab318987699b",
+      "llvm_sha256": "edd1040c7ed4efe4ab353723045b9f2d8b276631a7656ec9b76d5af258d899bc",
+      "isa_sha256": "10351f1fad754ecff247765107be78cb1924206699bd111c7d2317d2ae06150e"
+    },
+    {
+      "symbol": "gfx950_stage_gradient_shard_v1",
+      "suite": "systems",
+      "test": "gfx950_stage_gradient_shard_rust_cov6_matches_cpu_reference",
+      "namespace": "eecf6b35ad78d15ed59c50e42bb156b24bc9977508e57b67c71c449c6486a336",
+      "hsaco_sha256": "ac52b38973af23d63dbb05f6edd0ceea5caa92f1f331318d95fe7d62d5b251ce",
+      "llvm_sha256": "ff18435cdd61fc198d349d845543cead81ba10a7ed68720de3e91c623d5bc7b9",
+      "isa_sha256": "7f8758fe56cab0ce302f34c00093240b188863dfda995bbfd53a763451e10a50"
+    },
+    {
+      "symbol": "gfx950_muon_update_4x4_v1",
+      "suite": "systems",
+      "test": "gfx950_muon_update_rust_cov6_matches_cpu_reference",
+      "namespace": "62b82262b6a906c5c4bc76bdf41008abdb45f2c4d9830734cd05ae65520150e2",
+      "hsaco_sha256": "e36673b4eeb8eea0563a3b7141eee99da52843e53f967c53db56a8987e6f1a31",
+      "llvm_sha256": "d9a33afaa59df7ec8cd50a566b5d1c79458c66a070bf78f091513b9d196e52e0",
+      "isa_sha256": "497e1b96ab821e1461f7eb86e4ac8e8227a0f28f9d465a64f51ab66265e3698d"
+    }
+  ]
+}

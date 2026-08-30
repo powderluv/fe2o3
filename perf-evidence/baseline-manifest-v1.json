@@ -1,0 +1,112 @@
+{
+  "schema": "fe2o3.gfx950.advanced-baseline-manifest.v1",
+  "recorded_on": "2026-08-28",
+  "hardware_scope": "AMD Instinct MI350X (gfx950), ROCm 7.2.1",
+  "claim_scope": "single-workgroup fixed teaching profiles",
+  "claim_rule": "A performance claim may say fastest only among admitted exact implementations in this manifest on the recorded setup. It is not a universal state-of-the-art claim.",
+  "kernel_ids": [
+    "gfx950_kda_gdn_decode",
+    "gfx950_kda_gdn_prefill",
+    "gfx950_content_sparse_attention",
+    "gfx950_compressed_hybrid_attention",
+    "gfx950_attnres_aggregate",
+    "gfx950_four_branch_residual",
+    "gfx950_mhc_sinkhorn_mix",
+    "gfx950_moe_route_fp4_t16_e4_k2_v1",
+    "gfx950_moe_expert_rank_fp4_fp8_v1",
+    "gfx950_combine_expert_ranks_v1",
+    "gfx950_speculative_transaction_v1",
+    "gfx950_qwen_ngram_gather_v1",
+    "gfx950_stage_gradient_shard_v1",
+    "gfx950_muon_update_4x4_v1"
+  ],
+  "candidates": [
+    {
+      "id": "published-fe2o3-rust",
+      "repository": "https://github.com/harsh-nod/fe2o3",
+      "commit": "63c5a5988b00b02bef07bdddcfa79039b1b0554e",
+      "tree": "771c00636db1437809fd7e6dec0de2d88bf6e0ff",
+      "license": "repository license",
+      "status": "admitted",
+      "kernels": "all",
+      "reason": "The pre-optimization production Rust kernels define the same symbols, ABI, fixed shapes, data types, operation order, outputs, and CPU-oracle contracts."
+    },
+    {
+      "id": "independent-hip-attention",
+      "repository": "https://github.com/harsh-nod/fe2o3",
+      "commit": "63c5a5988b00b02bef07bdddcfa79039b1b0554e",
+      "source": "examples/gfx950_advanced_attention/gfx950_advanced_attention.hip",
+      "source_sha256": "c44b4227c0ec525a367359bdc16aff69c3086676aa61def1b653266604d1ed1d",
+      "status": "admitted",
+      "kernels": [
+        "gfx950_kda_gdn_decode",
+        "gfx950_kda_gdn_prefill",
+        "gfx950_content_sparse_attention",
+        "gfx950_compressed_hybrid_attention",
+        "gfx950_attnres_aggregate",
+        "gfx950_four_branch_residual",
+        "gfx950_mhc_sinkhorn_mix"
+      ],
+      "reason": "The independently authored HIP kernels implement the same fixed attention contracts and pass the same deterministic CPU references."
+    },
+    {
+      "id": "independent-hip-systems",
+      "repository": "https://github.com/harsh-nod/fe2o3",
+      "commit": "63c5a5988b00b02bef07bdddcfa79039b1b0554e",
+      "source": "examples/gfx950_advanced_systems/gfx950_advanced_systems.hip",
+      "source_sha256": "c29a6bc2de55563abddfb50f43aaccf6077ef0b4706fbfb314266ecaa48054c5",
+      "status": "partially-admitted",
+      "kernels": [
+        "gfx950_moe_expert_rank_fp4_fp8_v1",
+        "gfx950_combine_expert_ranks_v1",
+        "gfx950_speculative_transaction_v1",
+        "gfx950_qwen_ngram_gather_v1",
+        "gfx950_stage_gradient_shard_v1",
+        "gfx950_muon_update_4x4_v1"
+      ],
+      "excluded_kernels": ["gfx950_moe_route_fp4_t16_e4_k2_v1"],
+      "reason": "The listed HIP kernels have matching fixed output contracts. The HIP route is fused with expert computation and is therefore not an exact timing baseline for the standalone Rust route."
+    },
+    {
+      "id": "rocm-aiter",
+      "repository": "https://github.com/ROCm/aiter",
+      "commit": "a3f5b628b42d25aec8899d31d0710d41c5119223",
+      "status": "excluded",
+      "kernels": "all",
+      "reason": "AITER supports gfx950 attention, GEMM, and fused MoE families, but no candidate was found with all of each tutorial kernel's fixed shape, fusion, data type, ordering, and output semantics."
+    },
+    {
+      "id": "rocm-composable-kernel",
+      "repository": "https://github.com/ROCm/composable_kernel",
+      "commit": "3df477638d05169dbe73f4d58e3a13ad3ca7b5da",
+      "status": "excluded",
+      "kernels": "all",
+      "reason": "Composable Kernel provides gfx950 low-precision matrix and attention primitives, but not the exact fused tutorial contracts."
+    },
+    {
+      "id": "vllm",
+      "repository": "https://github.com/vllm-project/vllm",
+      "commit": "96242aa50d196993735854f03bd717496e88b7c3",
+      "status": "excluded",
+      "kernels": ["gfx950_speculative_transaction_v1", "gfx950_qwen_ngram_gather_v1"],
+      "reason": "The serving paths use different batching, state ownership, cache layouts, and output contracts, so their timings are not comparable to these fixed standalone kernels."
+    },
+    {
+      "id": "sglang",
+      "repository": "https://github.com/sgl-project/sglang",
+      "commit": "60f6d77a9836561d289d56cd3306e0fb00c949b6",
+      "status": "excluded",
+      "kernels": ["gfx950_speculative_transaction_v1", "gfx950_qwen_ngram_gather_v1"],
+      "reason": "The serving paths do not expose the same eight-candidate transactional state and fixed three-token hash-table gather contracts."
+    }
+  ],
+  "admission_checks": [
+    "identical input and output meaning",
+    "identical fixed shape and layout",
+    "identical data type and quantization interpretation",
+    "identical fusion boundary and operation ordering where observable",
+    "same deterministic input corpus",
+    "same CPU oracle and acceptance tolerance",
+    "device dispatch time measured on the same isolated physical GPU"
+  ]
+}

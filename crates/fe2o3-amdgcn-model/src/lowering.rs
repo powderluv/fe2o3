@@ -65,7 +65,11 @@ impl LoweringTarget {
         !matches!(self, Self::Baseline | Self::Gfx950XnackMinusV1)
     }
 
-    const fn supports_gfx942_matrix(self) -> bool {
+    const fn supports_bf16_matrix_mfma(self) -> bool {
+        !matches!(self, Self::Baseline)
+    }
+
+    const fn supports_gfx942_matrix_lds(self) -> bool {
         !matches!(self, Self::Baseline | Self::Gfx950XnackMinusV1)
     }
 
@@ -2616,12 +2620,13 @@ fn validate_capabilities(
                     && namespace == AMDGPU_GFX942_INLINE_ASSEMBLY_CAPABILITY_NAMESPACE
                     && name == AMDGPU_GFX942_INLINE_ASSEMBLY_CAPABILITY_NAME => {}
             TargetCapability::Extension { namespace, name }
-                if target.supports_gfx942_matrix()
+                if target.supports_bf16_matrix_mfma()
                     && namespace == MATRIX_CAPABILITY_NAMESPACE
-                    && matches!(
-                        name.as_str(),
-                        BF16_F32_M16N16K16_CAPABILITY | LDS_TILE_16X16_XOR4_CAPABILITY
-                    ) => {}
+                    && name == BF16_F32_M16N16K16_CAPABILITY => {}
+            TargetCapability::Extension { namespace, name }
+                if target.supports_gfx942_matrix_lds()
+                    && namespace == MATRIX_CAPABILITY_NAMESPACE
+                    && name == LDS_TILE_16X16_XOR4_CAPABILITY => {}
             TargetCapability::Extension { namespace, name }
                 if target.supports_gfx950_scaled_matrix()
                     && namespace == MATRIX_CAPABILITY_NAMESPACE
@@ -4022,7 +4027,8 @@ impl<'a> FunctionLowerer<'a> {
         }
         let supported = match &matrix.kind {
             MatrixOperationKind::MultiplyAccumulate { profile, .. } => {
-                self.target.supports_gfx942_matrix() && profile.is_supported_v1()
+                self.target.supports_bf16_matrix_mfma()
+                    && *profile == MatrixMultiplyProfile::bf16_f32_m16n16k16_wave64()
             }
             MatrixOperationKind::ScaledMultiplyAccumulate { profile, .. } => {
                 self.target.supports_gfx950_scaled_matrix()
@@ -4036,7 +4042,7 @@ impl<'a> FunctionLowerer<'a> {
             }
             MatrixOperationKind::LdsLoad { profile, .. }
             | MatrixOperationKind::LdsStore { profile, .. } => {
-                self.target.supports_gfx942_matrix() && profile.is_supported_v1()
+                self.target.supports_gfx942_matrix_lds() && profile.is_supported_v1()
             }
         };
         if !supported || matrix.active_lanes != 64 {

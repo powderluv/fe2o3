@@ -12,8 +12,8 @@ use dialect_gpu::{
     MemoryOrderAttr, MemoryScopeAttr,
 };
 use dialect_kernel::{
-    AccessKindAttr, AtomicOrderingAttr, AtomicScopeAttr, BranchArgsOp, BranchOp,
-    IndexBinaryKindAttr, IndexBinaryOp, IndexEqualBranchArgsOp, IndexEqualBranchOp,
+    AccessKindAttr, AllocationEffectOp, AtomicOrderingAttr, AtomicScopeAttr, BranchArgsOp,
+    BranchOp, IndexBinaryKindAttr, IndexBinaryOp, IndexEqualBranchArgsOp, IndexEqualBranchOp,
     IndexLessThanBranchArgsOp, IndexLessThanBranchOp, MemorySpaceAttr, RankedAccessOp,
     RankedViewOp, ReturnOp, TensorLayoutOp, TrapOp,
 };
@@ -81,6 +81,13 @@ pub(crate) enum PlironTraceEventV1 {
         allocation_origin: u64,
         noalias_class: u64,
         view_signature: (u32, Vec<u64>),
+    },
+    CollectiveAllocation {
+        location: PlironTraceLocationV1,
+        access: AccessKindAttr,
+        memory_space: MemorySpaceAttr,
+        allocation_origin: u64,
+        noalias_class: u64,
     },
 }
 
@@ -234,6 +241,11 @@ pub(crate) fn trace_pliron_invocations_with_inputs_v1(
     let needs_scoped_layout = inventory.operations().iter().any(|site| {
         let operation = Operation::get_op_dyn(site.pointer(), context);
         operation.downcast_ref::<BarrierOp>().is_some()
+            || operation
+                .downcast_ref::<AllocationEffectOp>()
+                .is_some_and(|effect| {
+                    effect.memory_space(context) == Some(MemorySpaceAttr::Workgroup)
+                })
             || operation
                 .downcast_ref::<RankedViewOp>()
                 .is_some_and(|view| view.memory_space(context) == Some(MemorySpaceAttr::Workgroup))
@@ -410,6 +422,35 @@ pub(crate) fn trace_pliron_invocations_with_inputs_v1(
                         subgroup_width: contract.subgroup_width,
                         claimed_active_lanes,
                     });
+                } else if let Some(effect) = operation.downcast_ref::<AllocationEffectOp>() {
+                    let (
+                        Some(access),
+                        Some(memory_space),
+                        Some(allocation_origin),
+                        Some(noalias_class),
+                    ) = (
+                        effect.kind(context),
+                        effect.memory_space(context),
+                        effect.allocation_origin(context),
+                        effect.noalias_class(context),
+                    )
+                    else {
+                        return Err(PlironTraceFailureV1::UnsupportedTerminator {
+                            block: block_index,
+                        });
+                    };
+                    if memory_space == MemorySpaceAttr::Workgroup {
+                        events.push(PlironTraceEventV1::CollectiveAllocation {
+                            location: PlironTraceLocationV1 {
+                                block: block_index,
+                                operation: operation_index,
+                            },
+                            access,
+                            memory_space,
+                            allocation_origin,
+                            noalias_class,
+                        });
+                    }
                 } else if let Some(access) = operation.downcast_ref::<RankedAccessOp>() {
                     let view = access.view(context);
                     let definition =

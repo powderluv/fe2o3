@@ -37,7 +37,7 @@ use dialect_kernel::{
     SemanticTypedCompareKindAttr, SemanticTypedCompareOp, SemanticTypedConstantOp,
     SemanticTypedExpressionRootOp, SemanticTypedScalarV1, SemanticTypedSelectOp,
     SemanticTypedSymbolOp, SemanticTypedUnaryKindAttr, SemanticTypedUnaryOp, TensorConvergenceAttr,
-    TensorLayoutOp, TensorResultComponentOp, TrapOp,
+    TensorLayoutOp, TensorResultComponentOp, TrapOp, is_supported_allocation_effect_contract_v1,
 };
 use dialect_proof::{
     AbsoluteErrorF64BitsAttr, CoveredBoundaryAttr, EvidenceRefOp, EvidenceStatusAttr, ObligationOp,
@@ -3450,9 +3450,17 @@ fn validate_operation(
             Ok(None)
         }
         ProductionRankedOperationV1::AllocationEffect {
-            kind, memory_space, ..
+            kind,
+            memory_space,
+            allocation_origin,
+            noalias_class,
         } => {
-            if *kind != AccessKindAttr::Read || *memory_space != MemorySpaceAttr::Global {
+            if !is_supported_allocation_effect_contract_v1(
+                *kind,
+                *memory_space,
+                *allocation_origin,
+                *noalias_class,
+            ) {
                 return Err(ProductionRankedKernelErrorV1::InvalidAllocationContract);
             }
             Ok(None)

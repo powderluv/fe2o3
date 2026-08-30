@@ -1,3 +1,5 @@
+#[cfg(feature = "hardware-test-hooks")]
+use crate::api::DirectRuntimeApi;
 use crate::api::{ApiError, DispatchApi, QueueHandle};
 use crate::environment::{AdapterCore, HsaRuntimeAdapterError, ReviewedHsaRuntimeAdapterV1};
 use crate::lifecycle::{ReviewedHsaExecutableV1, ReviewedHsaKernelV1};
@@ -116,6 +118,140 @@ impl Drop for ReviewedHsaHardwareTestBufferV1 {
     }
 }
 
+/// Device timestamps for one quiesced dispatch on a profiled private queue.
+#[cfg(feature = "hardware-test-hooks")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReviewedHsaProfiledDispatchObservationV1 {
+    start_tick: u64,
+    end_tick: u64,
+    timestamp_frequency_hz: u64,
+    packet_id: u64,
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+impl ReviewedHsaProfiledDispatchObservationV1 {
+    pub const fn start_tick(self) -> u64 {
+        self.start_tick
+    }
+
+    pub const fn end_tick(self) -> u64 {
+        self.end_tick
+    }
+
+    pub const fn timestamp_frequency_hz(self) -> u64 {
+        self.timestamp_frequency_hz
+    }
+
+    pub const fn packet_id(self) -> u64 {
+        self.packet_id
+    }
+
+    pub fn duration_ns(self) -> u128 {
+        u128::from(self.end_tick - self.start_tick) * 1_000_000_000_u128
+            / u128::from(self.timestamp_frequency_hz)
+    }
+}
+
+/// Test-only persistent dispatch state used by reproducible hardware timing.
+#[cfg(feature = "hardware-test-hooks")]
+pub struct ReviewedHsaProfiledDispatchSessionV1<'a> {
+    core: &'a mut AdapterCore<DirectRuntimeApi>,
+    queue: Option<QueueHandle>,
+    kernarg_address: Option<usize>,
+    completion_signal: Option<u64>,
+    aql_grid: [u32; 3],
+    workgroup: [u32; 3],
+    private_segment_size: u32,
+    group_segment_size: u32,
+    kernel_object: u64,
+    timestamp_frequency_hz: u64,
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+impl ReviewedHsaProfiledDispatchSessionV1<'_> {
+    pub fn dispatch(
+        &mut self,
+    ) -> Result<ReviewedHsaProfiledDispatchObservationV1, HsaRuntimeAdapterError> {
+        let queue = self.queue.as_ref().expect("profiled queue remains live");
+        let completion_signal = self
+            .completion_signal
+            .expect("profiled completion signal remains live");
+        let kernarg_address = self
+            .kernarg_address
+            .expect("profiled kernarg allocation remains live");
+        self.core
+            .api
+            .signal_store_release(completion_signal, 1)
+            .map_err(HsaRuntimeAdapterError::api)?;
+        self.core
+            .api
+            .queue_async_error(queue)
+            .map_err(HsaRuntimeAdapterError::api)?;
+        let packet_id = self
+            .core
+            .api
+            .publish_dispatch(
+                queue,
+                self.aql_grid,
+                self.workgroup,
+                self.private_segment_size,
+                self.group_segment_size,
+                self.kernel_object,
+                kernarg_address,
+                completion_signal,
+            )
+            .map_err(HsaRuntimeAdapterError::api)?;
+        let started = Instant::now();
+        loop {
+            if self.core.api.signal_load_acquire(completion_signal) == 0 {
+                break;
+            }
+            if self.core.api.queue_async_error(queue).is_err()
+                || started.elapsed() >= self.core.completion_timeout
+            {
+                std::process::abort();
+            }
+            std::thread::yield_now();
+        }
+        self.core
+            .api
+            .queue_async_error(queue)
+            .map_err(HsaRuntimeAdapterError::api)?;
+        let time = self
+            .core
+            .api
+            .dispatch_time(self.core.agent, completion_signal)
+            .map_err(HsaRuntimeAdapterError::api)?;
+        Ok(ReviewedHsaProfiledDispatchObservationV1 {
+            start_tick: time.start,
+            end_tick: time.end,
+            timestamp_frequency_hz: self.timestamp_frequency_hz,
+            packet_id,
+        })
+    }
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+impl Drop for ReviewedHsaProfiledDispatchSessionV1<'_> {
+    fn drop(&mut self) {
+        if let Some(signal) = self.completion_signal.take()
+            && self.core.api.signal_destroy(signal).is_err()
+        {
+            std::process::abort();
+        }
+        if let Some(address) = self.kernarg_address.take()
+            && self.core.api.memory_free(address).is_err()
+        {
+            std::process::abort();
+        }
+        if let Some(mut queue) = self.queue.take()
+            && self.core.api.queue_destroy(&mut queue).is_err()
+        {
+            std::process::abort();
+        }
+    }
+}
+
 #[cfg(feature = "hardware-test-hooks")]
 impl ReviewedHsaRuntimeAdapterV1 {
     pub fn allocate_hardware_test_buffer(
@@ -142,6 +278,164 @@ impl ReviewedHsaRuntimeAdapterV1 {
         Ok(ReviewedHsaHardwareTestBufferV1 {
             address,
             byte_len: bytes.len(),
+        })
+    }
+
+    /// Consumes a previously initialized exact dispatch binding into a
+    /// persistent, profiled hardware-test session.
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain the loaded executable, resolved kernel, and all
+    /// allocations referenced by `kernarg` until the returned session drops.
+    pub unsafe fn prepare_profiled_dispatch_session(
+        &mut self,
+        executable: &ReviewedHsaExecutableV1,
+        kernel: &ReviewedHsaKernelV1,
+        geometry: HsaLaunchGeometryV1,
+        kernarg: &[u8],
+    ) -> Result<ReviewedHsaProfiledDispatchSessionV1<'_>, HsaRuntimeAdapterError> {
+        let mut prepared = self.pending_dispatch.take().ok_or(
+            HsaRuntimeAdapterError::InvalidExecutableObservation(
+                "missing reviewed profiled COV6 queue binding",
+            ),
+        )?;
+        let state = executable.state.as_ref().ok_or_else(|| {
+            reject_pending_dispatch(
+                &mut self.core.api,
+                &mut prepared,
+                HsaRuntimeAdapterError::InvalidExecutableObservation("consumed executable"),
+            )
+        })?;
+        let mut digest = Sha256::new();
+        digest.update(kernarg);
+        let kernarg_digest: [u8; 32] = digest.finalize().into();
+        if kernel.executable_identity != state.identity
+            || kernarg.len() != prepared.layout.total_byte_len
+            || usize::try_from(kernel.kernarg_segment_size).ok() != Some(kernarg.len())
+            || kernel.kernarg_segment_alignment == 0
+            || !kernel.kernarg_segment_alignment.is_power_of_two()
+            || kernel.kernel_object == 0
+            || prepared.executable_identity != state.identity
+            || prepared.kernel_identity != kernel.identity
+            || prepared.geometry != geometry
+            || prepared.kernarg_digest != kernarg_digest
+        {
+            return Err(reject_pending_dispatch(
+                &mut self.core.api,
+                &mut prepared,
+                HsaRuntimeAdapterError::InvalidExecutableObservation(
+                    "profiled dispatch handle, geometry, or kernarg binding",
+                ),
+            ));
+        }
+        let aql_grid = match checked_aql_grid(geometry) {
+            Ok(grid) => grid,
+            Err(error) => {
+                return Err(reject_pending_dispatch(
+                    &mut self.core.api,
+                    &mut prepared,
+                    error,
+                ));
+            }
+        };
+        let group_segment_size = match kernel
+            .group_segment_size
+            .checked_add(geometry.dynamic_shared_memory_bytes())
+        {
+            Some(size) => size,
+            None => {
+                return Err(reject_pending_dispatch(
+                    &mut self.core.api,
+                    &mut prepared,
+                    HsaRuntimeAdapterError::InvalidExecutableObservation(
+                        "profiled group segment size overflow",
+                    ),
+                ));
+            }
+        };
+        if let Err(primary) = self.core.api.queue_enable_profiling(&prepared.queue) {
+            return Err(cleanup_dispatch(
+                &mut self.core.api,
+                None,
+                Some(prepared.queue),
+                None,
+                primary,
+            ));
+        }
+        let address = match self
+            .core
+            .api
+            .memory_allocate(self.core.kernarg_pool, kernarg.len())
+        {
+            Ok(address) => address,
+            Err(primary) => {
+                return Err(cleanup_dispatch(
+                    &mut self.core.api,
+                    None,
+                    Some(prepared.queue),
+                    None,
+                    primary,
+                ));
+            }
+        };
+        if !address.is_multiple_of(kernel.kernarg_segment_alignment as usize) {
+            return Err(cleanup_dispatch(
+                &mut self.core.api,
+                Some(address),
+                Some(prepared.queue),
+                None,
+                ApiError {
+                    operation: "validate profiled HSA kernarg alignment",
+                    status: -1,
+                },
+            ));
+        }
+        if let Err(primary) = self.core.api.allow_access(self.core.agent, address) {
+            return Err(cleanup_dispatch(
+                &mut self.core.api,
+                Some(address),
+                Some(prepared.queue),
+                None,
+                primary,
+            ));
+        }
+        self.core.api.write_memory(address, kernarg);
+        let signal = match self.core.api.signal_create(1) {
+            Ok(signal) => signal,
+            Err(primary) => {
+                return Err(cleanup_dispatch(
+                    &mut self.core.api,
+                    Some(address),
+                    Some(prepared.queue),
+                    None,
+                    primary,
+                ));
+            }
+        };
+        let timestamp_frequency_hz = match self.core.api.timestamp_frequency() {
+            Ok(frequency) => frequency,
+            Err(primary) => {
+                return Err(cleanup_dispatch(
+                    &mut self.core.api,
+                    Some(address),
+                    Some(prepared.queue),
+                    Some(signal),
+                    primary,
+                ));
+            }
+        };
+        Ok(ReviewedHsaProfiledDispatchSessionV1 {
+            core: &mut self.core,
+            queue: Some(prepared.queue),
+            kernarg_address: Some(address),
+            completion_signal: Some(signal),
+            aql_grid,
+            workgroup: geometry.workgroup(),
+            private_segment_size: kernel.private_segment_size,
+            group_segment_size,
+            kernel_object: kernel.kernel_object,
+            timestamp_frequency_hz,
         })
     }
 }
@@ -2080,6 +2374,23 @@ mod tests {
             let status = crate::test_process_execution::status(&mut command).unwrap();
             assert_eq!(status.signal(), Some(6), "cleanup case {case}: {status}");
         }
+    }
+
+    #[cfg(feature = "hardware-test-hooks")]
+    #[test]
+    fn profiled_dispatch_duration_uses_wide_integer_arithmetic() {
+        let start = (1_u64 << 63) + 7;
+        let observation = ReviewedHsaProfiledDispatchObservationV1 {
+            start_tick: start,
+            end_tick: start + 123_456_789,
+            timestamp_frequency_hz: 100_000_000,
+            packet_id: u64::MAX,
+        };
+        assert_eq!(observation.start_tick(), start);
+        assert_eq!(observation.end_tick(), start + 123_456_789);
+        assert_eq!(observation.timestamp_frequency_hz(), 100_000_000);
+        assert_eq!(observation.packet_id(), u64::MAX);
+        assert_eq!(observation.duration_ns(), 1_234_567_890);
     }
 
     #[allow(dead_code)]

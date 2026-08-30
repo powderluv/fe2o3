@@ -16,6 +16,7 @@ use dialect_kernel::{
     AccessKindAttr, AllocationEffectOp, AtomicOrderingAttr, AtomicScopeAttr, IndexConstantOp,
     IndexEqualBranchArgsOp, IndexEqualBranchOp, IndexLessThanBranchArgsOp, IndexLessThanBranchOp,
     InvocationIndexOp, MAX_RANKED_MEMORY_RANK, MemorySpaceAttr, RankedAccessOp, RankedViewOp,
+    is_supported_allocation_effect_contract_v1,
 };
 use pliron::{
     builtin::ops::FuncOp, common_traits::Named, context::Context, operation::Operation,
@@ -23,6 +24,7 @@ use pliron::{
 };
 
 use crate::pliron_analysis_manager::PlironAnalysisManagerV1;
+use crate::pliron_analysis_witness::evaluate_raw_index_at_invocation_v1;
 use crate::pliron_invocation_trace::PlironTraceFailureV1;
 use crate::pliron_ranked_bounds::run_pliron_ranked_bounds_check_with_analyses_v1;
 use crate::pliron_sparse_index::SparseAffineIndexV1;
@@ -447,31 +449,44 @@ pub(crate) fn run_pliron_ranked_race_check_with_analyses_v1(
             has_global_fence = true;
         }
         if let Some(effect) = operation.downcast_ref::<AllocationEffectOp>() {
-            match effect.memory_space(context) {
-                Some(MemorySpaceAttr::Global) => {}
-                Some(MemorySpaceAttr::Private | MemorySpaceAttr::Workgroup) => {
+            let Some(kind) = effect.kind(context) else {
+                return one(RankedRaceFindingV1::AllocationContractUnavailable {
+                    detail: "a whole-allocation effect has no access kind".to_owned(),
+                });
+            };
+            let Some(memory_space) = effect.memory_space(context) else {
+                return one(RankedRaceFindingV1::AllocationContractUnavailable {
+                    detail: "a whole-allocation effect has no memory space".to_owned(),
+                });
+            };
+            let allocation_origin = effect.allocation_origin(context).unwrap_or(0);
+            let noalias_class = effect.noalias_class(context).unwrap_or(0);
+            match memory_space {
+                MemorySpaceAttr::Global => {}
+                MemorySpaceAttr::Workgroup
+                    if is_supported_allocation_effect_contract_v1(
+                        kind,
+                        memory_space,
+                        allocation_origin,
+                        noalias_class,
+                    ) =>
+                {
+                    // The production source join authenticates the typed
+                    // transpose lifecycle; no global race is represented.
+                    continue;
+                }
+                MemorySpaceAttr::Private | MemorySpaceAttr::Workgroup => {
                     return one(RankedRaceFindingV1::AllocationContractUnavailable {
                         detail:
                             "a whole-allocation effect uses an unsupported non-global memory space"
                                 .to_owned(),
                     });
                 }
-                None => {
-                    return one(RankedRaceFindingV1::AllocationContractUnavailable {
-                        detail: "a whole-allocation effect has no memory space".to_owned(),
-                    });
-                }
             }
-            let Some(kind) = effect.kind(context) else {
-                return one(RankedRaceFindingV1::AllocationContractUnavailable {
-                    detail: "a whole-allocation effect has no access kind".to_owned(),
-                });
-            };
             let location = RankedRaceLocationV1 {
                 block: block_index,
                 operation: operation_index,
             };
-            let allocation_origin = effect.allocation_origin(context).unwrap_or(0);
             effects.push(EffectV1 {
                 identity: if allocation_origin == 0 {
                     EffectIdentityV1::AllocationSite(location)
@@ -485,7 +500,7 @@ pub(crate) fn run_pliron_ranked_race_check_with_analyses_v1(
                 checked_success: None,
                 atomic_scope: None,
                 atomic_ordering: None,
-                noalias_class: effect.noalias_class(context).unwrap_or(0),
+                noalias_class,
                 conservative: true,
             });
             continue;
@@ -559,6 +574,10 @@ pub(crate) fn run_pliron_ranked_race_check_with_analyses_v1(
         .iter()
         .filter_map(|effect| effect.kind.writes_memory().then_some(effect.noalias_class))
         .collect::<HashSet<_>>();
+    // Read-only allocation classes cannot participate in a data race. Keep
+    // reads that may alias a write, but do not require unrelated input-only
+    // address calculations to be recoverable by the race proof.
+    effects.retain(|effect| classes_with_writes.contains(&effect.noalias_class));
     let layout = match analyses.execution_layout() {
         Ok(layout) => layout,
         Err(failure) => {
@@ -690,9 +709,18 @@ pub(crate) fn run_pliron_ranked_race_check_with_analyses_v1(
     }
 
     let zero_invocation = vec![0; launch_extents.len()];
+    let mut raw_evaluation_steps = 0;
     for effect in &effects {
         for (dimension, index) in effect.indices.iter().copied().enumerate() {
-            if sparse.fact(index).evaluate(&zero_invocation).is_none() {
+            if sparse.fact(index).evaluate(&zero_invocation).is_none()
+                && evaluate_raw_index_at_invocation_v1(
+                    context,
+                    index,
+                    &zero_invocation,
+                    &mut raw_evaluation_steps,
+                )
+                .is_none()
+            {
                 return one(RankedRaceFindingV1::UnresolvedIndex {
                     block: effect.location.block,
                     operation: effect.location.operation,
@@ -720,7 +748,16 @@ pub(crate) fn run_pliron_ranked_race_check_with_analyses_v1(
             let Some(indices) = effect
                 .indices
                 .iter()
-                .map(|index| sparse.fact(*index).evaluate(&invocation))
+                .map(|index| {
+                    sparse.fact(*index).evaluate(&invocation).or_else(|| {
+                        evaluate_raw_index_at_invocation_v1(
+                            context,
+                            *index,
+                            &invocation,
+                            &mut raw_evaluation_steps,
+                        )
+                    })
+                })
                 .collect::<Option<Vec<_>>>()
             else {
                 let (dimension, value) = effect

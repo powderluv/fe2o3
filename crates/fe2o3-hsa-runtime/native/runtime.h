@@ -59,6 +59,11 @@ typedef struct Fe2o3HsaQueueRecord {
   uintptr_t async_error;
 } Fe2o3HsaQueueRecord;
 
+typedef struct Fe2o3HsaDispatchTimeRecord {
+  uint64_t start;
+  uint64_t end;
+} Fe2o3HsaDispatchTimeRecord;
+
 _Static_assert(sizeof(Fe2o3HsaAgentRecord) == 264,
                "Fe2o3HsaAgentRecord ABI size");
 _Static_assert(_Alignof(Fe2o3HsaAgentRecord) == 8,
@@ -78,6 +83,10 @@ _Static_assert(sizeof(Fe2o3HsaQueueRecord) == 32,
                "Fe2o3HsaQueueRecord ABI size");
 _Static_assert(_Alignof(Fe2o3HsaQueueRecord) == 8,
                "Fe2o3HsaQueueRecord ABI alignment");
+_Static_assert(sizeof(Fe2o3HsaDispatchTimeRecord) == 16,
+               "Fe2o3HsaDispatchTimeRecord ABI size");
+_Static_assert(_Alignof(Fe2o3HsaDispatchTimeRecord) == 8,
+               "Fe2o3HsaDispatchTimeRecord ABI alignment");
 
 int32_t fe2o3_hsa_init(void);
 int32_t fe2o3_hsa_shut_down(void);
@@ -108,10 +117,16 @@ int32_t fe2o3_hsa_memory_free(void *address);
 int32_t fe2o3_hsa_queue_create(uint64_t agent, uint32_t size,
                                Fe2o3HsaQueueRecord *record);
 int32_t fe2o3_hsa_queue_async_error(const Fe2o3HsaQueueRecord *record);
+int32_t fe2o3_hsa_queue_enable_profiling(
+    const Fe2o3HsaQueueRecord *record);
 int32_t fe2o3_hsa_queue_destroy(Fe2o3HsaQueueRecord *record);
 int32_t fe2o3_hsa_signal_create(int64_t initial_value, uint64_t *signal);
 int32_t fe2o3_hsa_signal_destroy(uint64_t signal);
 int64_t fe2o3_hsa_signal_load_acquire(uint64_t signal);
+int32_t fe2o3_hsa_signal_store_release(uint64_t signal, int64_t value);
+int32_t fe2o3_hsa_system_timestamp_frequency(uint64_t *frequency);
+int32_t fe2o3_hsa_dispatch_time(uint64_t agent, uint64_t signal,
+                                Fe2o3HsaDispatchTimeRecord *record);
 int32_t
 fe2o3_hsa_test_malformed_queue_destroy_failure(Fe2o3HsaQueueRecord *record);
 void fe2o3_hsa_test_release_malformed_queue_record(Fe2o3HsaQueueRecord *record);

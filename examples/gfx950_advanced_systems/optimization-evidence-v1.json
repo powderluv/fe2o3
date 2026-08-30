@@ -1,0 +1,177 @@
+{
+  "schema": "fe2o3.gfx950.advanced-systems-optimization-evidence.v1",
+  "date": "2026-08-29",
+  "source_provenance": {
+    "published_baseline_commit": "63c5a5988b00b02bef07bdddcfa79039b1b0554e",
+    "published_baseline_tree": "771c00636db1437809fd7e6dec0de2d88bf6e0ff",
+    "preoptimization_kernel_source_blob": "bf2584437d776936d1b375af308a4a099df63b05",
+    "retained_kernel_source_blob": "063137c77b5bcd19a8350b5cf100c596feb48fc7"
+  },
+  "device": {
+    "host": "smci350-rck-g03-b19-03",
+    "architecture": "gfx950",
+    "physical_gpu": 6,
+    "rocm": "7.2.1"
+  },
+  "protocol": {
+    "timer": "rocr-hsa-dispatch-timestamps",
+    "frequency_hz": 1000000000,
+    "warmups": 200,
+    "blocks": 5,
+    "samples_per_block": 50,
+    "block_rewarm": 10,
+    "processes": 1,
+    "publishable_claim": false,
+    "candidate_records": "/home/harmenon/perf-runs/systems-candidate-ablation-v2/samples.jsonl",
+    "retained_ngram_records": "/home/harmenon/perf-runs/systems-ngram-retained-v4/samples.jsonl",
+    "baseline_records": "/home/harmenon/perf-runs/systems-baseline-ablation-v1/*.jsonl"
+  },
+  "resource_bound": {
+    "formula": "max(logical_bytes / 8000000000000, fp32_ops / 144200000000000, mixed_fp4_fp8_ops / 4600000000000000)",
+    "interpretation": "optimistic whole-device cold logical-payload floor, not a single-workgroup latency prediction"
+  },
+  "kernels": [
+    {
+      "kernel": "gfx950_moe_route_fp4_t16_e4_k2_v1",
+      "shape": "tokens=16, hidden=128, experts=4, top_k=2, dispatch_capacity=32",
+      "optimization": "compute each token route once per wave and reuse a packed route map",
+      "status": "production-lowering-blocked",
+      "blocker_log": "/tmp/systems-route-helper.log",
+      "blocker": "ConstantIndex projection on a non-array place in block 596, statement 0",
+      "logical_bytes": 4880,
+      "fp32_ops": 16384,
+      "mixed_fp4_fp8_ops": 0,
+      "resource_floor_ns": 0.610,
+      "baseline_median_ns": null,
+      "retained_median_ns": null,
+      "isa": null
+    },
+    {
+      "kernel": "gfx950_moe_expert_rank_fp4_fp8_v1",
+      "shape": "tokens=16, hidden=128, output=16, two routed experts plus optional shared expert",
+      "optimization": "one Wave64 with Blocked<Index1D,64,4> ownership and three mixed MFMAs",
+      "status": "production-lowering-blocked",
+      "blocker_log": "/tmp/systems-expert-rank-fixed.log",
+      "blocker": "FE2O3-RACE-002 block 27 op 0 unresolved access dimension v109",
+      "baseline_regression_log": "/tmp/systems-expert-helper-gated.log",
+      "logical_bytes": 9472,
+      "fp32_ops": 0,
+      "mixed_fp4_fp8_ops": 196608,
+      "resource_floor_ns": 1.184,
+      "baseline_median_ns": null,
+      "retained_median_ns": null,
+      "isa": null
+    },
+    {
+      "kernel": "gfx950_combine_expert_ranks_v1",
+      "shape": "rank_partials=2x16x16 f32, output=16x16 f32",
+      "optimization": "rejected one-wave blocked mapping; retained 256-thread exact mapping",
+      "status": "retained-baseline",
+      "logical_bytes": 3072,
+      "fp32_ops": 256,
+      "mixed_fp4_fp8_ops": 0,
+      "resource_floor_ns": 0.384,
+      "baseline_median_ns": 5000,
+      "baseline_ci95_ns": [4960, 5000],
+      "retained_median_ns": 5000,
+      "retained_ci95_ns": [4960, 5000],
+      "speedup": 1.0,
+      "baseline_hsaco_sha256": "aa5aa7fa613ae8f439dcf8b626ce18b7560f9705453bd3b9f0ddbc936501166e",
+      "retained_hsaco_sha256": "aa5aa7fa613ae8f439dcf8b626ce18b7560f9705453bd3b9f0ddbc936501166e",
+      "isa": {
+        "baseline": {"total": 291, "valu": 8, "global": 3, "ds": 0, "branches": 2, "vgpr": 5, "sgpr": 22},
+        "retained": {"total": 291, "valu": 8, "global": 3, "ds": 0, "branches": 2, "vgpr": 5, "sgpr": 22}
+      }
+    },
+    {
+      "kernel": "gfx950_speculative_transaction_v1",
+      "shape": "candidates=8, draft_steps=4, state_width=8",
+      "optimization": "reuse one acceptance result across each candidate state vector",
+      "status": "retained-optimized",
+      "logical_bytes": 896,
+      "fp32_ops": 64,
+      "mixed_fp4_fp8_ops": 0,
+      "resource_floor_ns": 0.112,
+      "baseline_median_ns": 8000,
+      "baseline_ci95_ns": [8000, 8040],
+      "retained_median_ns": 5680,
+      "retained_ci95_ns": [5680, 5680],
+      "median_ns_saved": 2320,
+      "speedup": 1.4084507042,
+      "baseline_hsaco_sha256": "b0ba51564d60b788a019266d6dcad78f404d30fde54684e4416829504795b34b",
+      "retained_hsaco_sha256": "5074044f3b46e0b04d24b066cfc23877df312d093dec151c75e3d126d36bbfde",
+      "retained_source_commit": "e49a19b795a6d653743e0282478d03b0052eabc1",
+      "isa": {
+        "baseline": {"total": 446, "valu": 77, "global": 16, "ds": 0, "branches": 9, "vgpr": 27, "sgpr": 66},
+        "retained": {"total": 417, "valu": 62, "global": 10, "ds": 1, "branches": 10, "vgpr": 17, "sgpr": 62}
+      }
+    },
+    {
+      "kernel": "gfx950_qwen_ngram_gather_v1",
+      "shape": "queries=8, ngram=3, table_slots=16, probes=16",
+      "optimization": "rejected hash-first short circuit; retained branchless full-key probe",
+      "status": "retained-baseline",
+      "logical_bytes": 576,
+      "fp32_ops": 0,
+      "mixed_fp4_fp8_ops": 0,
+      "resource_floor_ns": 0.072,
+      "baseline_median_ns": 8520,
+      "baseline_ci95_ns": [8520, 8560],
+      "rejected_hash_first_median_ns": 10680,
+      "rejected_hash_first_ci95_ns": [10640, 10680],
+      "retained_median_ns": 8520,
+      "retained_ci95_ns": [8520, 8560],
+      "speedup": 1.0,
+      "baseline_hsaco_sha256": "870afb85c86525288e1695d9764fd84180b62d20388c2678ef96ab318987699b",
+      "rejected_hash_first_hsaco_sha256": "cbc8af1229ed3dc24a8dd6d981fde33245fca8ca800c042297f0ca11a351ecf3",
+      "retained_hsaco_sha256": "98c846c2fdf20cdc935d955f5b14253e878e1c4b1ee1ef1c2bf772470a13a8c4",
+      "retained_source_commit": "9092646d058a56b85465034eefca59f681d5906f",
+      "isa": {
+        "baseline": {"total": 878, "valu": 251, "global": 66, "ds": 0, "branches": 33, "vgpr": 21, "sgpr": 34},
+        "retained": {"total": 878, "valu": 251, "global": 66, "ds": 0, "branches": 33, "vgpr": 22, "sgpr": 34}
+      }
+    },
+    {
+      "kernel": "gfx950_stage_gradient_shard_v1",
+      "shape": "one 4x4 f32 shard per launch",
+      "optimization": "retained existing one-Wave64 exact copy",
+      "status": "retained-baseline",
+      "logical_bytes": 128,
+      "fp32_ops": 0,
+      "mixed_fp4_fp8_ops": 0,
+      "resource_floor_ns": 0.016,
+      "baseline_median_ns": 5000,
+      "retained_median_ns": 5000,
+      "speedup": 1.0,
+      "baseline_hsaco_sha256": "ac52b38973af23d63dbb05f6edd0ceea5caa92f1f331318d95fe7d62d5b251ce",
+      "retained_hsaco_sha256": "ac52b38973af23d63dbb05f6edd0ceea5caa92f1f331318d95fe7d62d5b251ce",
+      "isa": {
+        "baseline": {"total": 282, "valu": 6, "global": 2, "ds": 0, "branches": 1, "vgpr": 4, "sgpr": 18},
+        "retained": {"total": 282, "valu": 6, "global": 2, "ds": 0, "branches": 1, "vgpr": 4, "sgpr": 18}
+      }
+    },
+    {
+      "kernel": "gfx950_muon_update_4x4_v1",
+      "shape": "two 4x4 f32 shards, five Newton-Schulz iterations",
+      "optimization": "distribute matrix elements across lanes and use Wave64 reductions/broadcasts",
+      "status": "retained-optimized",
+      "logical_bytes": 196,
+      "fp32_ops": 1649,
+      "mixed_fp4_fp8_ops": 0,
+      "resource_floor_ns": 0.0245,
+      "baseline_median_ns": 5720,
+      "baseline_ci95_ns": [5700, 5760],
+      "retained_median_ns": 5040,
+      "retained_ci95_ns": [5000, 5040],
+      "median_ns_saved": 680,
+      "speedup": 1.1349206349,
+      "baseline_hsaco_sha256": "e36673b4eeb8eea0563a3b7141eee99da52843e53f967c53db56a8987e6f1a31",
+      "retained_hsaco_sha256": "bb6e61181e05244a71b6475bcc34a6a0c62d94147bbe27304287f71d8181fe5d",
+      "retained_source_commit": "e49a19b795a6d653743e0282478d03b0052eabc1",
+      "isa": {
+        "baseline": {"total": 1360, "valu": 969, "global": 2, "ds": 0, "branches": 21, "vgpr": 62, "sgpr": 58},
+        "retained": {"total": 593, "valu": 160, "global": 4, "ds": 86, "branches": 3, "vgpr": 19, "sgpr": 22}
+      }
+    }
+  ]
+}

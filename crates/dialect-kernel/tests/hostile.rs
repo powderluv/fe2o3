@@ -2,7 +2,11 @@ use dialect_kernel::{
     AccessKindAttr, AlgorithmOp, AlgorithmType, AllocationEffectOp, AnalysisSplitControlCountAttr,
     AnalysisSplitOp, AtomicOrderingAttr, AtomicScopeAttr, BranchArgsOp, BranchOp,
     CheckedRowStripedIndex2DOp, CheckedTiledIndex2DOp, DIALECT_NAME, DYNAMIC_EXTENT,
-    DeterministicJoinOp, DimensionAttr, DimensionOp, ITERATION_DOMAIN_ATTR_KEY, IndexConstantOp,
+    DeterministicJoinOp, DimensionAttr, DimensionOp,
+    GFX950_TRANSPOSE_FP4_WORKGROUP_ALLOCATION_ORIGIN_V1,
+    GFX950_TRANSPOSE_FP4_WORKGROUP_NOALIAS_CLASS_V1,
+    GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+    GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1, ITERATION_DOMAIN_ATTR_KEY, IndexConstantOp,
     IndexEqualBranchArgsOp, IndexEqualBranchOp, IndexLessThanBranchArgsOp, IndexLessThanBranchOp,
     IndexType, IndexValueAttr, IterationDomainAttr, KernelError, MAX_DETERMINISTIC_JOIN_INPUTS_V1,
     MAX_ITERATION_RANK, MAX_RANKED_MEMORY_RANK, MemorySpaceAttr, OwnershipContractOp,
@@ -480,6 +484,24 @@ fn allocation_effect_is_global_non_atomic_and_authenticated() {
     assert_eq!(effect.memory_space(context), Some(MemorySpaceAttr::Global));
     assert_eq!(effect.allocation_origin(context), Some(17));
     assert_eq!(effect.noalias_class(context), Some(23));
+
+    for (origin, noalias) in [
+        (
+            GFX950_TRANSPOSE_FP4_WORKGROUP_ALLOCATION_ORIGIN_V1,
+            GFX950_TRANSPOSE_FP4_WORKGROUP_NOALIAS_CLASS_V1,
+        ),
+        (
+            GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+            GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1,
+        ),
+    ] {
+        for kind in [AccessKindAttr::Read, AccessKindAttr::Write] {
+            let transpose =
+                AllocationEffectOp::new(context, kind, MemorySpaceAttr::Workgroup, origin, noalias)
+                    .expect("reserved gfx950 transpose effect");
+            verify_op(&transpose, context).expect("reserved transpose effect verifies");
+        }
+    }
 
     assert!(
         AllocationEffectOp::new(

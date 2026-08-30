@@ -2305,7 +2305,8 @@ fn tensor_trace(trace: &PlironInvocationTraceV1) -> Vec<PlironTraceLocationV1> {
             PlironTraceEventV1::Barrier { .. }
             | PlironTraceEventV1::Fence { .. }
             | PlironTraceEventV1::Trap { .. }
-            | PlironTraceEventV1::Memory { .. } => None,
+            | PlironTraceEventV1::Memory { .. }
+            | PlironTraceEventV1::CollectiveAllocation { .. } => None,
         })
         .collect()
 }

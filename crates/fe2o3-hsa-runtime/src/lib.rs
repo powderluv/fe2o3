@@ -16,7 +16,10 @@ mod test_process_execution {
     }
 }
 #[cfg(feature = "hardware-test-hooks")]
-pub use dispatch::ReviewedHsaHardwareTestBufferV1;
+pub use dispatch::{
+    ReviewedHsaHardwareTestBufferV1, ReviewedHsaProfiledDispatchObservationV1,
+    ReviewedHsaProfiledDispatchSessionV1,
+};
 pub use environment::{HsaRuntimeAdapterError, ReviewedHsaRuntimeAdapterV1};
 pub use lifecycle::{ReviewedHsaExecutableV1, ReviewedHsaKernelSetV1, ReviewedHsaKernelV1};
 

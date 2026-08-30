@@ -3,10 +3,10 @@
 #![allow(missing_docs)]
 
 use fe2o3_device::{
-    DisjointSlice, Gfx950F32AccumulatorFragment, Gfx950Fp4E2M1, Gfx950Fp4MfmaAMatrix,
+    Blocked, DisjointSlice, Gfx950F32AccumulatorFragment, Gfx950Fp4E2M1, Gfx950Fp4MfmaAMatrix,
     Gfx950Fp4MfmaBMatrix, Gfx950Fp8E4M3, Gfx950Fp8MfmaAMatrix, Gfx950Fp8MfmaBMatrix,
     Gfx950LdsTransposeTile, Gfx950Matrix, Gfx950Subgroup, Gfx950TransposeUninitialized, Index1D,
-    KernelError, KernelResult, Math, StridedReadView2D, Tiled2D, Wave64, WaveLane, kernel, thread,
+    KernelError, KernelResult, Math, StridedReadView2D, Wave64, WaveLane, kernel, thread,
 };
 
 pub const GFX950_WORKGROUP: [u32; 3] = [64, 1, 1];
@@ -43,35 +43,39 @@ fn decode_fp4_e2m1(bits: u8) -> f32 {
 pub fn gfx950_fp4_gemm_rust(
     lhs: &[u8],
     rhs: &[u8],
-    mut output: DisjointSlice<f32, Tiled2D<Index1D, 64, 16, 16, 4>>,
+    mut output: DisjointSlice<f32, Blocked<Index1D, 16, 4>>,
 ) -> KernelResult {
     if lhs.len() < GEMM_M * GEMM_K || rhs.len() < GEMM_K * GEMM_N || output.len() < GEMM_M * GEMM_N
     {
         return Err(KernelError::InvalidArgument);
     }
     let index = thread::index_1d();
-    let output_tile = index
-        .checked_tiled_2d::<64, 16, 16, 4>()
-        .ok_or(KernelError::OutOfBounds)?;
     let lane = WaveLane::<Wave64>::current();
-    let lhs =
-        Gfx950Fp4MfmaAMatrix::row_major(lhs, 0, GEMM_M, GEMM_K, GEMM_K)?.load_m16k128(&lane, 0, 0);
-    let rhs =
-        Gfx950Fp4MfmaBMatrix::row_major(rhs, 0, GEMM_K, GEMM_N, GEMM_N)?.load_k128n16(&lane, 0, 0);
+    let Ok(lhs_matrix) = Gfx950Fp4MfmaAMatrix::row_major(lhs, 0, GEMM_M, GEMM_K, GEMM_K) else {
+        return Err(KernelError::InvalidArgument);
+    };
+    let lhs = lhs_matrix.load_m16k128(&lane, 0, 0);
+    let Ok(rhs_matrix) = Gfx950Fp4MfmaBMatrix::row_major(rhs, 0, GEMM_K, GEMM_N, GEMM_N) else {
+        return Err(KernelError::InvalidArgument);
+    };
+    let rhs = rhs_matrix.load_k128n16(&lane, 0, 0);
     let accumulator = Gfx950F32AccumulatorFragment::<Gfx950Fp4E2M1>::zero(&lane);
     let values = Gfx950Matrix::current()
         .multiply_accumulate_fp4(lhs, rhs, accumulator)
         .into_values();
-    if let Some(element) = output.get_tiled_2d_mut(&output_tile, 0, GEMM_M, GEMM_N, GEMM_N) {
+    let Some(output_block) = index.checked_block::<16, 4>() else {
+        return Err(KernelError::OutOfBounds);
+    };
+    if let Some(element) = output.get_block_mut(&output_block, 0) {
         *element = values[0];
     }
-    if let Some(element) = output.get_tiled_2d_mut(&output_tile, 1, GEMM_M, GEMM_N, GEMM_N) {
+    if let Some(element) = output.get_block_mut(&output_block, 1) {
         *element = values[1];
     }
-    if let Some(element) = output.get_tiled_2d_mut(&output_tile, 2, GEMM_M, GEMM_N, GEMM_N) {
+    if let Some(element) = output.get_block_mut(&output_block, 2) {
         *element = values[2];
     }
-    if let Some(element) = output.get_tiled_2d_mut(&output_tile, 3, GEMM_M, GEMM_N, GEMM_N) {
+    if let Some(element) = output.get_block_mut(&output_block, 3) {
         *element = values[3];
     }
     Ok(())
@@ -86,35 +90,39 @@ pub fn gfx950_fp4_gemm_rust(
 pub fn gfx950_fp8_gemm_rust(
     lhs: &[u8],
     rhs: &[u8],
-    mut output: DisjointSlice<f32, Tiled2D<Index1D, 64, 16, 16, 4>>,
+    mut output: DisjointSlice<f32, Blocked<Index1D, 16, 4>>,
 ) -> KernelResult {
     if lhs.len() < GEMM_M * GEMM_K || rhs.len() < GEMM_K * GEMM_N || output.len() < GEMM_M * GEMM_N
     {
         return Err(KernelError::InvalidArgument);
     }
     let index = thread::index_1d();
-    let output_tile = index
-        .checked_tiled_2d::<64, 16, 16, 4>()
-        .ok_or(KernelError::OutOfBounds)?;
     let lane = WaveLane::<Wave64>::current();
-    let lhs =
-        Gfx950Fp8MfmaAMatrix::row_major(lhs, 0, GEMM_M, GEMM_K, GEMM_K)?.load_m16k128(&lane, 0, 0);
-    let rhs =
-        Gfx950Fp8MfmaBMatrix::row_major(rhs, 0, GEMM_K, GEMM_N, GEMM_N)?.load_k128n16(&lane, 0, 0);
+    let Ok(lhs_matrix) = Gfx950Fp8MfmaAMatrix::row_major(lhs, 0, GEMM_M, GEMM_K, GEMM_K) else {
+        return Err(KernelError::InvalidArgument);
+    };
+    let lhs = lhs_matrix.load_m16k128(&lane, 0, 0);
+    let Ok(rhs_matrix) = Gfx950Fp8MfmaBMatrix::row_major(rhs, 0, GEMM_K, GEMM_N, GEMM_N) else {
+        return Err(KernelError::InvalidArgument);
+    };
+    let rhs = rhs_matrix.load_k128n16(&lane, 0, 0);
     let accumulator = Gfx950F32AccumulatorFragment::<Gfx950Fp8E4M3>::zero(&lane);
     let values = Gfx950Matrix::current()
         .multiply_accumulate_fp8(lhs, rhs, accumulator)
         .into_values();
-    if let Some(element) = output.get_tiled_2d_mut(&output_tile, 0, GEMM_M, GEMM_N, GEMM_N) {
+    let Some(output_block) = index.checked_block::<16, 4>() else {
+        return Err(KernelError::OutOfBounds);
+    };
+    if let Some(element) = output.get_block_mut(&output_block, 0) {
         *element = values[0];
     }
-    if let Some(element) = output.get_tiled_2d_mut(&output_tile, 1, GEMM_M, GEMM_N, GEMM_N) {
+    if let Some(element) = output.get_block_mut(&output_block, 1) {
         *element = values[1];
     }
-    if let Some(element) = output.get_tiled_2d_mut(&output_tile, 2, GEMM_M, GEMM_N, GEMM_N) {
+    if let Some(element) = output.get_block_mut(&output_block, 2) {
         *element = values[2];
     }
-    if let Some(element) = output.get_tiled_2d_mut(&output_tile, 3, GEMM_M, GEMM_N, GEMM_N) {
+    if let Some(element) = output.get_block_mut(&output_block, 3) {
         *element = values[3];
     }
     Ok(())
@@ -130,24 +138,29 @@ pub fn gfx950_fp4_attention_rust(
     query: &[u8],
     key: &[u8],
     value: &[u8],
-    mut output: DisjointSlice<f32, Tiled2D<Index1D, 64, 16, 16, 4>>,
-) -> KernelResult {
+    mut output: DisjointSlice<f32, Blocked<Index1D, 16, 4>>,
+) {
+    // Invalid launch buffers abort the full wave before collective work begins.
     if query.len() < ATTENTION_TOKENS * GEMM_K
         || key.len() < ATTENTION_TOKENS * GEMM_K
         || value.len() < ATTENTION_TOKENS * VALUE_COLUMNS
         || output.len() < ATTENTION_TOKENS * VALUE_COLUMNS
     {
-        return Err(KernelError::InvalidArgument);
+        fe2o3_device::trap();
     }
     let index = thread::index_1d();
     let lane_column = index.get() % 16;
-    let output_tile = index
-        .checked_tiled_2d::<64, 16, 16, 4>()
-        .ok_or(KernelError::OutOfBounds)?;
     let lane = WaveLane::<Wave64>::current();
-    let query = Gfx950Fp4MfmaAMatrix::row_major(query, 0, ATTENTION_TOKENS, GEMM_K, GEMM_K)?
-        .load_m16k128(&lane, 0, 0);
-    let key = Gfx950Fp4MfmaAMatrix::row_major(key, 0, ATTENTION_TOKENS, GEMM_K, GEMM_K)?;
+    let Ok(query_matrix) =
+        Gfx950Fp4MfmaAMatrix::row_major(query, 0, ATTENTION_TOKENS, GEMM_K, GEMM_K)
+    else {
+        fe2o3_device::trap();
+    };
+    let query = query_matrix.load_m16k128(&lane, 0, 0);
+    let Ok(key) = Gfx950Fp4MfmaAMatrix::row_major(key, 0, ATTENTION_TOKENS, GEMM_K, GEMM_K)
+    else {
+        fe2o3_device::trap();
+    };
     let key = Gfx950LdsTransposeTile::<Gfx950Fp4E2M1, Gfx950TransposeUninitialized>::current(&lane)
         .stage_k_transposed(&key, 0, 0)
         .publish()
@@ -156,13 +169,15 @@ pub fn gfx950_fp4_attention_rust(
     let scores = Gfx950Matrix::current()
         .multiply_accumulate_fp4(query, key, accumulator)
         .into_values();
-    let value = StridedReadView2D::from_shared_slice(
+    let Ok(value) = StridedReadView2D::from_shared_slice(
         value,
         0,
         ATTENTION_TOKENS,
         VALUE_COLUMNS,
         VALUE_COLUMNS,
-    )?;
+    ) else {
+        fe2o3_device::trap();
+    };
     let subgroup = Gfx950Subgroup::current();
     let math = Math::current();
     let maximum0 = subgroup.reduce_max_f32::<16>(scores[0] * ATTENTION_SCALE);
@@ -261,43 +276,21 @@ pub fn gfx950_fp4_attention_rust(
     result1 += subgroup.broadcast_f32::<16>(normalized1, 15) * value15;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 15) * value15;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 15) * value15;
-    if let Some(element) = output.get_tiled_2d_mut(
-        &output_tile,
-        0,
-        ATTENTION_TOKENS,
-        VALUE_COLUMNS,
-        VALUE_COLUMNS,
-    ) {
+    let Some(output_block) = index.checked_block::<16, 4>() else {
+        fe2o3_device::trap();
+    };
+    if let Some(element) = output.get_block_mut(&output_block, 0) {
         *element = result0;
     }
-    if let Some(element) = output.get_tiled_2d_mut(
-        &output_tile,
-        1,
-        ATTENTION_TOKENS,
-        VALUE_COLUMNS,
-        VALUE_COLUMNS,
-    ) {
+    if let Some(element) = output.get_block_mut(&output_block, 1) {
         *element = result1;
     }
-    if let Some(element) = output.get_tiled_2d_mut(
-        &output_tile,
-        2,
-        ATTENTION_TOKENS,
-        VALUE_COLUMNS,
-        VALUE_COLUMNS,
-    ) {
+    if let Some(element) = output.get_block_mut(&output_block, 2) {
         *element = result2;
     }
-    if let Some(element) = output.get_tiled_2d_mut(
-        &output_tile,
-        3,
-        ATTENTION_TOKENS,
-        VALUE_COLUMNS,
-        VALUE_COLUMNS,
-    ) {
+    if let Some(element) = output.get_block_mut(&output_block, 3) {
         *element = result3;
     }
-    Ok(())
 }
 
 #[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-fp8-attention"))]
@@ -310,24 +303,29 @@ pub fn gfx950_fp8_attention_rust(
     query: &[u8],
     key: &[u8],
     value: &[u8],
-    mut output: DisjointSlice<f32, Tiled2D<Index1D, 64, 16, 16, 4>>,
-) -> KernelResult {
+    mut output: DisjointSlice<f32, Blocked<Index1D, 16, 4>>,
+) {
+    // Invalid launch buffers abort the full wave before collective work begins.
     if query.len() < ATTENTION_TOKENS * GEMM_K
         || key.len() < ATTENTION_TOKENS * GEMM_K
         || value.len() < ATTENTION_TOKENS * VALUE_COLUMNS
         || output.len() < ATTENTION_TOKENS * VALUE_COLUMNS
     {
-        return Err(KernelError::InvalidArgument);
+        fe2o3_device::trap();
     }
     let index = thread::index_1d();
     let lane_column = index.get() % 16;
-    let output_tile = index
-        .checked_tiled_2d::<64, 16, 16, 4>()
-        .ok_or(KernelError::OutOfBounds)?;
     let lane = WaveLane::<Wave64>::current();
-    let query = Gfx950Fp8MfmaAMatrix::row_major(query, 0, ATTENTION_TOKENS, GEMM_K, GEMM_K)?
-        .load_m16k128(&lane, 0, 0);
-    let key = Gfx950Fp8MfmaAMatrix::row_major(key, 0, ATTENTION_TOKENS, GEMM_K, GEMM_K)?;
+    let Ok(query_matrix) =
+        Gfx950Fp8MfmaAMatrix::row_major(query, 0, ATTENTION_TOKENS, GEMM_K, GEMM_K)
+    else {
+        fe2o3_device::trap();
+    };
+    let query = query_matrix.load_m16k128(&lane, 0, 0);
+    let Ok(key) = Gfx950Fp8MfmaAMatrix::row_major(key, 0, ATTENTION_TOKENS, GEMM_K, GEMM_K)
+    else {
+        fe2o3_device::trap();
+    };
     let key = Gfx950LdsTransposeTile::<Gfx950Fp8E4M3, Gfx950TransposeUninitialized>::current(&lane)
         .stage_k_transposed(&key, 0, 0)
         .publish()
@@ -336,13 +334,15 @@ pub fn gfx950_fp8_attention_rust(
     let scores = Gfx950Matrix::current()
         .multiply_accumulate_fp8(query, key, accumulator)
         .into_values();
-    let value = StridedReadView2D::from_shared_slice(
+    let Ok(value) = StridedReadView2D::from_shared_slice(
         value,
         0,
         ATTENTION_TOKENS,
         VALUE_COLUMNS,
         VALUE_COLUMNS,
-    )?;
+    ) else {
+        fe2o3_device::trap();
+    };
     let subgroup = Gfx950Subgroup::current();
     let math = Math::current();
     let maximum0 = subgroup.reduce_max_f32::<16>(scores[0] * ATTENTION_SCALE);
@@ -761,41 +761,19 @@ pub fn gfx950_fp8_attention_rust(
     result1 += subgroup.broadcast_f32::<16>(normalized1, 15) * value15;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 15) * value15;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 15) * value15;
-    if let Some(element) = output.get_tiled_2d_mut(
-        &output_tile,
-        0,
-        ATTENTION_TOKENS,
-        VALUE_COLUMNS,
-        VALUE_COLUMNS,
-    ) {
+    let Some(output_block) = index.checked_block::<16, 4>() else {
+        fe2o3_device::trap();
+    };
+    if let Some(element) = output.get_block_mut(&output_block, 0) {
         *element = result0;
     }
-    if let Some(element) = output.get_tiled_2d_mut(
-        &output_tile,
-        1,
-        ATTENTION_TOKENS,
-        VALUE_COLUMNS,
-        VALUE_COLUMNS,
-    ) {
+    if let Some(element) = output.get_block_mut(&output_block, 1) {
         *element = result1;
     }
-    if let Some(element) = output.get_tiled_2d_mut(
-        &output_tile,
-        2,
-        ATTENTION_TOKENS,
-        VALUE_COLUMNS,
-        VALUE_COLUMNS,
-    ) {
+    if let Some(element) = output.get_block_mut(&output_block, 2) {
         *element = result2;
     }
-    if let Some(element) = output.get_tiled_2d_mut(
-        &output_tile,
-        3,
-        ATTENTION_TOKENS,
-        VALUE_COLUMNS,
-        VALUE_COLUMNS,
-    ) {
+    if let Some(element) = output.get_block_mut(&output_block, 3) {
         *element = result3;
     }
-    Ok(())
 }

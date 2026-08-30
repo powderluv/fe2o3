@@ -1774,6 +1774,13 @@ struct KirCorrelationIndexV1<'module> {
 struct RankedViewDefinitionV1 {
     allocation_origin: u64,
     memory_space: dialect_kernel::MemorySpaceAttr,
+    noalias_class: u64,
+}
+
+#[derive(Clone, Copy)]
+enum IndexedRankedAllocationV1 {
+    View(ProductionRankedValueV1),
+    Direct(RankedViewDefinitionV1),
 }
 
 #[derive(Clone, Copy)]
@@ -1781,14 +1788,14 @@ struct IndexedRankedAccessSourceV1 {
     ranked_block: u32,
     ranked_operation: u32,
     access: dialect_kernel::AccessKindAttr,
-    view: Option<ProductionRankedValueV1>,
-    allocation: Option<RankedViewDefinitionV1>,
+    allocation: IndexedRankedAllocationV1,
     value: Option<ProductionRankedValueV1>,
     atomic: Option<NormalizedAtomicContractV1>,
 }
 
 struct RankedCorrelationIndexV1 {
     sources_by_site: BTreeMap<SemanticAccessSiteV1, IndexedRankedAccessSourceV1>,
+    conservative_sources_by_statement: BTreeMap<(u32, Option<u32>), IndexedRankedAccessSourceV1>,
     sites_by_ranked_location: BTreeMap<(u32, u32), SemanticAccessSiteV1>,
     view_definitions: BTreeMap<ProductionRankedValueIdV1, RankedViewDefinitionV1>,
     semantic_expressions: BTreeMap<
@@ -2036,7 +2043,8 @@ fn unsupported_indices_match_ranked_sources_result(
             };
             let first_logical_use =
                 used_ranked_locations.insert((source.ranked_block, source.ranked_operation));
-            if (!first_logical_use && source.allocation.is_none())
+            if (!first_logical_use
+                && matches!(source.allocation, IndexedRankedAllocationV1::View(_)))
                 || !indexed_ranked_source_matches_allocation(
                     &ranked,
                     source,
@@ -2554,6 +2562,7 @@ fn index_ranked_correlation(
                     RankedViewDefinitionV1 {
                         allocation_origin: *allocation_origin,
                         memory_space: dialect_kernel::MemorySpaceAttr::Global,
+                        noalias_class: 0,
                     },
                 )),
                 ProductionRankedOperationV1::ViewInSpace {
@@ -2566,6 +2575,7 @@ fn index_ranked_correlation(
                     RankedViewDefinitionV1 {
                         allocation_origin: *allocation_origin,
                         memory_space: *memory_space,
+                        noalias_class: 0,
                     },
                 )),
                 _ => None,
@@ -2597,6 +2607,8 @@ fn index_ranked_correlation(
     let mut sites_by_ranked_location = BTreeMap::new();
     let mut source_ordinals = BTreeMap::<(u32, Option<u32>), BTreeSet<u32>>::new();
     let mut sources_by_site = BTreeMap::new();
+    let mut conservative_sources_by_statement = BTreeMap::new();
+    let mut ambiguous_conservative_statements = BTreeSet::new();
     for source in sources {
         budget.charge()?;
         let operation = lowering
@@ -2605,16 +2617,21 @@ fn index_ranked_correlation(
             .get(source.ranked_block as usize)?
             .operations()
             .get(source.ranked_operation as usize)?;
-        let (access, view, allocation, value, atomic) = match operation {
+        let (access, allocation, value, atomic) = match operation {
             ProductionRankedOperationV1::Access { kind, view, .. } => {
-                (*kind, Some(*view), None, None, None)
+                (*kind, IndexedRankedAllocationV1::View(*view), None, None)
             }
             ProductionRankedOperationV1::PredicatedAccess { kind, view, .. } => {
-                (*kind, Some(*view), None, None, None)
+                (*kind, IndexedRankedAllocationV1::View(*view), None, None)
             }
             ProductionRankedOperationV1::ValueAccess {
                 kind, view, value, ..
-            } => (*kind, Some(*view), None, Some(*value), None),
+            } => (
+                *kind,
+                IndexedRankedAllocationV1::View(*view),
+                Some(*value),
+                None,
+            ),
             ProductionRankedOperationV1::AtomicAccess {
                 kind,
                 ordering,
@@ -2623,8 +2640,7 @@ fn index_ranked_correlation(
                 ..
             } => (
                 *kind,
-                Some(*view),
-                None,
+                IndexedRankedAllocationV1::View(*view),
                 None,
                 Some(normalize_ranked_atomic_contract_v1(*ordering, *scope)),
             ),
@@ -2637,8 +2653,7 @@ fn index_ranked_correlation(
                 ..
             } => (
                 *kind,
-                Some(*view),
-                None,
+                IndexedRankedAllocationV1::View(*view),
                 Some(*value),
                 Some(normalize_ranked_atomic_contract_v1(*ordering, *scope)),
             ),
@@ -2646,13 +2661,13 @@ fn index_ranked_correlation(
                 kind,
                 memory_space,
                 allocation_origin,
-                ..
+                noalias_class,
             } => (
                 *kind,
-                None,
-                Some(RankedViewDefinitionV1 {
+                IndexedRankedAllocationV1::Direct(RankedViewDefinitionV1 {
                     allocation_origin: *allocation_origin,
                     memory_space: *memory_space,
+                    noalias_class: *noalias_class,
                 }),
                 None,
                 None,
@@ -2678,21 +2693,26 @@ fn index_ranked_correlation(
         {
             return None;
         }
-        if sources_by_site
-            .insert(
-                site,
-                IndexedRankedAccessSourceV1 {
-                    ranked_block: source.ranked_block,
-                    ranked_operation: source.ranked_operation,
-                    access,
-                    view,
-                    allocation,
-                    value,
-                    atomic,
-                },
-            )
-            .is_some()
-        {
+        let indexed = IndexedRankedAccessSourceV1 {
+            ranked_block: source.ranked_block,
+            ranked_operation: source.ranked_operation,
+            access,
+            allocation,
+            value,
+            atomic,
+        };
+        if matches!(allocation, IndexedRankedAllocationV1::Direct(_)) {
+            let key = (site.block, site.statement);
+            if !ambiguous_conservative_statements.contains(&key)
+                && conservative_sources_by_statement
+                    .insert(key, indexed)
+                    .is_some()
+            {
+                conservative_sources_by_statement.remove(&key);
+                ambiguous_conservative_statements.insert(key);
+            }
+        }
+        if sources_by_site.insert(site, indexed).is_some() {
             return None;
         }
     }
@@ -2708,6 +2728,7 @@ fn index_ranked_correlation(
     }
     Some(RankedCorrelationIndexV1 {
         sources_by_site,
+        conservative_sources_by_statement,
         sites_by_ranked_location,
         view_definitions,
         semantic_expressions,
@@ -2790,12 +2811,16 @@ fn normalize_ranked_expression_v1(
                 .sites_by_ranked_location
                 .get(&(load.block, load.operation))?;
             let source = ranked.sources_by_site.get(&site)?;
-            if source.access != dialect_kernel::AccessKindAttr::Read
-                || source.view != Some(load.view)
-            {
+            if source.access != dialect_kernel::AccessKindAttr::Read {
                 return None;
             }
-            let Some(ProductionRankedValueV1::Local(view)) = source.view else {
+            let IndexedRankedAllocationV1::View(source_view) = source.allocation else {
+                return None;
+            };
+            if source_view != load.view {
+                return None;
+            }
+            let ProductionRankedValueV1::Local(view) = source_view else {
                 return None;
             };
             let definition = ranked.view_definitions.get(&view)?;
@@ -3251,6 +3276,33 @@ fn normalize_kir_cast_v1(
     }
 }
 
+fn expected_gfx950_workgroup_allocation_identity_v1(
+    operation: &Operation,
+    operation_access_ordinal: u32,
+) -> Option<(u64, u64)> {
+    let format = match &operation.kind {
+        OperationKind::Gfx950LdsTranspose(Gfx950LdsTransposeOperationV1 {
+            kind: Gfx950LdsTransposeOperationKindV1::Stage { format, .. },
+            ..
+        }) if operation_access_ordinal == 1 => *format,
+        OperationKind::Gfx950LdsTranspose(Gfx950LdsTransposeOperationV1 {
+            kind: Gfx950LdsTransposeOperationKindV1::Read { format, .. },
+            ..
+        }) if operation_access_ordinal == 0 => *format,
+        _ => return None,
+    };
+    Some(match format {
+        Gfx950LdsTransposeFormatV1::Fp4E2M1 => (
+            dialect_kernel::GFX950_TRANSPOSE_FP4_WORKGROUP_ALLOCATION_ORIGIN_V1,
+            dialect_kernel::GFX950_TRANSPOSE_FP4_WORKGROUP_NOALIAS_CLASS_V1,
+        ),
+        Gfx950LdsTransposeFormatV1::Fp8E4M3 => (
+            dialect_kernel::GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+            dialect_kernel::GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1,
+        ),
+    })
+}
+
 fn validate_mir_pliron_translation_v1(
     module: &Module,
     correspondence: &SemanticKirCorrespondenceV1,
@@ -3341,27 +3393,46 @@ fn validate_mir_pliron_translation_v1(
                 },
             );
         }
-        let definition = match (source.view, source.allocation) {
-            (Some(ProductionRankedValueV1::Local(view)), None) => {
-                ranked.view_definitions.get(&view).copied().ok_or(
-                    ProductionMirPlironTranslationErrorV1::AllocationOriginMismatch {
-                        location: consumer.location,
-                    },
-                )?
+        let definition = match source.allocation {
+            IndexedRankedAllocationV1::View(ProductionRankedValueV1::Local(view)) => {
+                ranked.view_definitions.get(&view).copied()
             }
-            (None, Some(allocation)) => allocation,
-            _ => {
-                return Err(
-                    ProductionMirPlironTranslationErrorV1::AllocationOriginMismatch {
-                        location: consumer.location,
-                    },
-                );
-            }
+            IndexedRankedAllocationV1::View(_) => None,
+            IndexedRankedAllocationV1::Direct(definition) => Some(definition),
         };
+        let definition = definition.ok_or(
+            ProductionMirPlironTranslationErrorV1::AllocationOriginMismatch {
+                location: consumer.location,
+            },
+        )?;
         if definition.memory_space != consumer.memory_space {
             return Err(ProductionMirPlironTranslationErrorV1::MemorySpaceMismatch {
                 location: consumer.location,
             });
+        }
+        if consumer.memory_space == dialect_kernel::MemorySpaceAttr::Workgroup {
+            let operation = kir.operations.get(&consumer.location).ok_or(
+                ProductionMirPlironTranslationErrorV1::AllocationOriginMismatch {
+                    location: consumer.location,
+                },
+            )?;
+            let expected = expected_gfx950_workgroup_allocation_identity_v1(
+                operation,
+                consumer.operation_access_ordinal,
+            );
+            match (source.allocation, expected) {
+                (IndexedRankedAllocationV1::View(_), None) => {}
+                (IndexedRankedAllocationV1::Direct(definition), Some((origin, class)))
+                    if definition.allocation_origin == origin
+                        && definition.noalias_class == class => {}
+                _ => {
+                    return Err(
+                        ProductionMirPlironTranslationErrorV1::AllocationOriginMismatch {
+                            location: consumer.location,
+                        },
+                    );
+                }
+            }
         }
         if consumer.memory_space == dialect_kernel::MemorySpaceAttr::Global {
             let parameter = external_allocation_parameter_v1(
@@ -3391,7 +3462,8 @@ fn validate_mir_pliron_translation_v1(
         }
         let first_logical_use =
             used_ranked_locations.insert((source.ranked_block, source.ranked_operation));
-        if !first_logical_use && source.allocation.is_none() {
+        if !first_logical_use && !matches!(source.allocation, IndexedRankedAllocationV1::Direct(_))
+        {
             return Err(ProductionMirPlironTranslationErrorV1::ExtraRankedEffect {
                 ranked_block: source.ranked_block,
                 ranked_operation: source.ranked_operation,
@@ -3483,7 +3555,21 @@ fn validate_mir_pliron_translation_v1(
         budget
             .charge()
             .ok_or(ProductionMirPlironTranslationErrorV1::ResourceLimit)?;
-        if !used_ranked_locations.contains(&(source.ranked_block, source.ranked_operation)) {
+        let is_private = match source.allocation {
+            IndexedRankedAllocationV1::View(ProductionRankedValueV1::Local(view)) => ranked
+                .view_definitions
+                .get(&view)
+                .is_some_and(|definition| {
+                    definition.memory_space == dialect_kernel::MemorySpaceAttr::Private
+                }),
+            IndexedRankedAllocationV1::View(_) => false,
+            IndexedRankedAllocationV1::Direct(definition) => {
+                definition.memory_space == dialect_kernel::MemorySpaceAttr::Private
+            }
+        };
+        if !used_ranked_locations.contains(&(source.ranked_block, source.ranked_operation))
+            && !is_private
+        {
             return Err(ProductionMirPlironTranslationErrorV1::ExtraRankedEffect {
                 ranked_block: source.ranked_block,
                 ranked_operation: source.ranked_operation,
@@ -3531,12 +3617,14 @@ fn ranked_source_for_semantic_effect_v1<'index>(
     if let Some(source) = ranked.sources_by_site.get(&site) {
         return Some((site, source));
     }
-    let logical_site = SemanticAccessSiteV1 { ordinal: 0, ..site };
-    let source = ranked.sources_by_site.get(&logical_site)?;
-    source
-        .allocation
-        .is_some()
-        .then_some((logical_site, source))
+    let source = ranked
+        .conservative_sources_by_statement
+        .get(&(site.block, site.statement))?;
+    let logical_site = ranked
+        .sites_by_ranked_location
+        .get(&(source.ranked_block, source.ranked_operation))
+        .copied()?;
+    Some((logical_site, source))
 }
 
 fn compiler_owned_enum_payload_access_v1(
@@ -3647,10 +3735,23 @@ fn validate_effect_control_flow_v1(
 ) -> Result<(), ProductionMirPlironTranslationErrorV1> {
     let mut kir_events = BTreeMap::<u32, Vec<(u64, SemanticAccessSiteV1)>>::new();
     let mut ranked_events = BTreeMap::<u32, Vec<(u64, SemanticAccessSiteV1)>>::new();
+    let mut seen_ranked_effects = BTreeMap::<(u32, u32), SemanticAccessSiteV1>::new();
     for (site, kir, operation_access_ordinal, ranked) in locations {
         budget
             .charge()
             .ok_or(ProductionMirPlironTranslationErrorV1::ResourceLimit)?;
+        if let Some(first) = seen_ranked_effects.get(ranked) {
+            if (first.block, first.statement) != (site.block, site.statement) {
+                return Err(ProductionMirPlironTranslationErrorV1::ControlFlowMismatch {
+                    first_semantic_block: first.block,
+                    first_semantic_statement: first.statement,
+                    second_semantic_block: site.block,
+                    second_semantic_statement: site.statement,
+                });
+            }
+            continue;
+        }
+        seen_ranked_effects.insert(*ranked, *site);
         kir_events.entry(kir.block.0).or_default().push((
             (u64::try_from(kir.operation_index)
                 .map_err(|_| ProductionMirPlironTranslationErrorV1::ResourceLimit)?
@@ -4170,15 +4271,15 @@ fn indexed_ranked_source_matches_allocation(
     expected_memory_space: dialect_kernel::MemorySpaceAttr,
     parameter_index: u32,
 ) -> bool {
-    let definition = match (source.view, source.allocation) {
-        (Some(ProductionRankedValueV1::Local(view)), None) => {
-            let Some(definition) = ranked.view_definitions.get(&view).copied() else {
-                return false;
-            };
-            definition
+    let definition = match source.allocation {
+        IndexedRankedAllocationV1::View(ProductionRankedValueV1::Local(view)) => {
+            ranked.view_definitions.get(&view).copied()
         }
-        (None, Some(allocation)) => allocation,
-        _ => return false,
+        IndexedRankedAllocationV1::View(_) => None,
+        IndexedRankedAllocationV1::Direct(definition) => Some(definition),
+    };
+    let Some(definition) = definition else {
+        return false;
     };
     source.access == expected_access
         && definition.memory_space == expected_memory_space
@@ -5597,6 +5698,511 @@ fn whole_semantic_operand_local_v1(operand: &SemanticOperandV1) -> Option<usize>
     }
 }
 
+fn semantic_unsigned_integer_bits_v1(
+    types: &[SemanticTypeDeclV1],
+    ty: SemanticTypeIdV1,
+) -> Option<u16> {
+    match types.get(ty.index() as usize)?.shape() {
+        SemanticTypeShapeV1::Scalar(SemanticScalarTypeV1::Integer {
+            signed: false,
+            bits,
+        }) if (1..=128).contains(bits) => Some(*bits),
+        _ => None,
+    }
+}
+
+fn exact_unsigned_semantic_constant_v1(
+    types: &[SemanticTypeDeclV1],
+    operand: &SemanticOperandV1,
+    expected_type: SemanticTypeIdV1,
+) -> Option<u128> {
+    let SemanticOperandV1::Constant(constant) = operand else {
+        return None;
+    };
+    let SemanticConstantValueV1::Scalar(value) = constant.value() else {
+        return None;
+    };
+    let bits = semantic_unsigned_integer_bits_v1(types, expected_type)?;
+    if constant.ty() != expected_type || u16::from(value.size_bytes()) * 8 != bits {
+        return None;
+    }
+    let value = value.bits();
+    ((bits == 128) || value < (1_u128 << bits)).then_some(value)
+}
+
+fn semantic_unsigned_type_contains_exclusive_bound_v1(
+    types: &[SemanticTypeDeclV1],
+    ty: SemanticTypeIdV1,
+    exclusive_bound: u128,
+) -> bool {
+    let Some(bits) = semantic_unsigned_integer_bits_v1(types, ty) else {
+        return false;
+    };
+    exclusive_bound == 0 || bits == 128 || exclusive_bound - 1 < (1_u128 << bits)
+}
+
+fn resolve_semantic_header_copy_alias_v1(
+    block: &fe2o3_mir_model::semantic_mir_v1::SemanticBasicBlockV1,
+    before_statement: usize,
+    operand: &SemanticOperandV1,
+) -> Option<u32> {
+    let mut current = u32::try_from(whole_semantic_operand_local_v1(operand)?).ok()?;
+    let mut visited = BTreeSet::new();
+    for _ in 0..=before_statement {
+        if !visited.insert(current) {
+            return None;
+        }
+        let definitions = block.statements()[..before_statement]
+            .iter()
+            .filter_map(|statement| {
+                let SemanticStatementKindV1::Assign(assignment) = statement.kind() else {
+                    return None;
+                };
+                (semantic_definition_local_v1(assignment.destination())
+                    == usize::try_from(current).ok())
+                .then_some(assignment)
+            })
+            .collect::<Vec<_>>();
+        if definitions.is_empty() {
+            return Some(current);
+        }
+        if definitions.len() != 1 || !definitions[0].destination().projections().is_empty() {
+            return None;
+        }
+        let SemanticRvalueKindV1::Use(source) = definitions[0].value().kind() else {
+            return None;
+        };
+        if definitions[0].destination().ty() != source.ty() {
+            return None;
+        }
+        current = u32::try_from(whole_semantic_operand_local_v1(source)?).ok()?;
+    }
+    None
+}
+
+fn semantic_cfg_graph_v1(
+    function: &SemanticFunctionDeclV1,
+) -> Result<(Vec<Vec<usize>>, Vec<Vec<usize>>, Vec<bool>), ProductionSemanticKirErrorV1> {
+    let mut successors = vec![Vec::new(); function.blocks().len()];
+    let mut predecessors = vec![Vec::new(); function.blocks().len()];
+    for (source, block) in function.blocks().iter().enumerate() {
+        block
+            .terminator()
+            .kind()
+            .try_for_each_edge::<ProductionSemanticKirErrorV1>(|edge| {
+                let target = edge.target().index() as usize;
+                if target >= function.blocks().len() {
+                    return Err(unsupported(
+                        0,
+                        Some(source as u32),
+                        None,
+                        "authenticated induction proof references a missing CFG successor",
+                    ));
+                }
+                successors[source].push(target);
+                Ok(())
+            })?;
+        successors[source].sort_unstable();
+        successors[source].dedup();
+        for target in successors[source].iter().copied() {
+            predecessors[target].push(source);
+        }
+    }
+    let reachable =
+        semantic_reachable_blocks_v1(&successors, function.entry().index() as usize, None)?;
+    Ok((successors, predecessors, reachable))
+}
+
+fn authenticated_natural_loop_topology_v1(
+    function: &SemanticFunctionDeclV1,
+    successors: &[Vec<usize>],
+    predecessors: &[Vec<usize>],
+    reachable: &[bool],
+    header: usize,
+    body_entry: usize,
+    exit: usize,
+) -> Option<(usize, usize, Vec<usize>)> {
+    if !reachable.get(header).copied().unwrap_or(false)
+        || body_entry >= successors.len()
+        || exit >= successors.len()
+        || body_entry == exit
+    {
+        return None;
+    }
+    let mut reachable_without_header = vec![false; successors.len()];
+    let entry = function.entry().index() as usize;
+    let mut pending = (entry != header)
+        .then_some(entry)
+        .into_iter()
+        .collect::<Vec<_>>();
+    while let Some(block) = pending.pop() {
+        if block == header || reachable_without_header[block] {
+            continue;
+        }
+        reachable_without_header[block] = true;
+        pending.extend(successors[block].iter().copied());
+    }
+    let header_predecessors = predecessors[header]
+        .iter()
+        .copied()
+        .filter(|predecessor| reachable[*predecessor])
+        .collect::<Vec<_>>();
+    let backedges = header_predecessors
+        .iter()
+        .copied()
+        .filter(|predecessor| !reachable_without_header[*predecessor])
+        .collect::<Vec<_>>();
+    let preheaders = header_predecessors
+        .iter()
+        .copied()
+        .filter(|predecessor| reachable_without_header[*predecessor])
+        .collect::<Vec<_>>();
+    if backedges.len() != 1 || preheaders.len() != 1 {
+        return None;
+    }
+    let latch = backedges[0];
+    let preheader = preheaders[0];
+    if !matches!(
+        function.blocks()[preheader].terminator().kind(),
+        SemanticTerminatorKindV1::Goto(edge) if edge.target().index() as usize == header
+    ) || !matches!(
+        function.blocks()[latch].terminator().kind(),
+        SemanticTerminatorKindV1::Goto(edge) if edge.target().index() as usize == header
+    ) {
+        return None;
+    }
+
+    let mut in_loop = vec![false; successors.len()];
+    in_loop[header] = true;
+    in_loop[latch] = true;
+    let mut pending = vec![latch];
+    while let Some(block) = pending.pop() {
+        if block == header {
+            continue;
+        }
+        for predecessor in predecessors[block].iter().copied() {
+            if reachable[predecessor] && !in_loop[predecessor] {
+                in_loop[predecessor] = true;
+                pending.push(predecessor);
+            }
+        }
+    }
+    if !in_loop[body_entry] || in_loop[exit] {
+        return None;
+    }
+    for (block, inside) in in_loop.iter().copied().enumerate() {
+        if !inside || reachable_without_header[block] {
+            if inside && reachable_without_header[block] {
+                return None;
+            }
+            continue;
+        }
+        if predecessors[block].iter().copied().any(|predecessor| {
+            reachable[predecessor]
+                && !in_loop[predecessor]
+                && !(block == header && predecessor == preheader)
+        }) {
+            return None;
+        }
+    }
+    let mut exits = Vec::new();
+    for (source, inside) in in_loop.iter().copied().enumerate() {
+        if !inside {
+            continue;
+        }
+        for target in successors[source].iter().copied() {
+            if !in_loop[target] {
+                exits.push((source, target));
+            }
+        }
+    }
+    if exits.as_slice() != [(header, exit)] {
+        return None;
+    }
+    Some((
+        preheader,
+        latch,
+        in_loop
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(block, inside)| inside.then_some(block))
+            .collect(),
+    ))
+}
+
+fn authenticated_loop_induction_shape_v1(
+    types: &[SemanticTypeDeclV1],
+    function: &SemanticFunctionDeclV1,
+    induction: u32,
+    preheader: usize,
+    latch: usize,
+    exclusive_bound: u128,
+) -> Option<()> {
+    let induction_index = induction as usize;
+    let induction_type = function.locals().get(induction_index)?.ty();
+    let bits = semantic_unsigned_integer_bits_v1(types, induction_type)?;
+    let mut initial = None;
+    let mut step = None;
+    let mut definitions = 0_u8;
+    for (block_index, block) in function.blocks().iter().enumerate() {
+        for statement in block.statements() {
+            match statement.kind() {
+                SemanticStatementKindV1::Assign(assignment) => {
+                    if let SemanticRvalueKindV1::Borrow { place, .. }
+                    | SemanticRvalueKindV1::AddressOf { place, .. } = assignment.value().kind()
+                        && semantic_definition_local_v1(place) == Some(induction_index)
+                    {
+                        return None;
+                    }
+                    if semantic_definition_local_v1(assignment.destination())
+                        != Some(induction_index)
+                    {
+                        continue;
+                    }
+                    if !assignment.destination().projections().is_empty() {
+                        return None;
+                    }
+                    definitions = definitions.checked_add(1)?;
+                    if block_index == preheader {
+                        let SemanticRvalueKindV1::Use(value) = assignment.value().kind() else {
+                            return None;
+                        };
+                        initial = Some(exact_unsigned_semantic_constant_v1(
+                            types,
+                            value,
+                            induction_type,
+                        )?);
+                    } else if block_index == latch {
+                        let SemanticRvalueKindV1::Binary {
+                            operation: SemanticBinaryOpV1::Add,
+                            left,
+                            right,
+                        } = assignment.value().kind()
+                        else {
+                            return None;
+                        };
+                        let constant = if whole_semantic_operand_local_v1(left)
+                            == Some(induction_index)
+                        {
+                            right
+                        } else if whole_semantic_operand_local_v1(right) == Some(induction_index) {
+                            left
+                        } else {
+                            return None;
+                        };
+                        step = Some(exact_unsigned_semantic_constant_v1(
+                            types,
+                            constant,
+                            induction_type,
+                        )?);
+                    } else {
+                        return None;
+                    }
+                }
+                SemanticStatementKindV1::Store(store)
+                    if semantic_definition_local_v1(store.destination())
+                        == Some(induction_index) =>
+                {
+                    return None;
+                }
+                SemanticStatementKindV1::AtomicRmw(atomic)
+                    if semantic_definition_local_v1(atomic.destination())
+                        == Some(induction_index)
+                        || semantic_definition_local_v1(atomic.address())
+                            == Some(induction_index) =>
+                {
+                    return None;
+                }
+                SemanticStatementKindV1::AtomicCompareExchange(atomic)
+                    if semantic_definition_local_v1(atomic.destination())
+                        == Some(induction_index)
+                        || semantic_definition_local_v1(atomic.address())
+                            == Some(induction_index) =>
+                {
+                    return None;
+                }
+                SemanticStatementKindV1::SetDiscriminant { place, .. }
+                | SemanticStatementKindV1::Deinitialize(place)
+                    if semantic_definition_local_v1(place) == Some(induction_index) =>
+                {
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        if let SemanticTerminatorKindV1::Call(call) = block.terminator().kind()
+            && call.destination().is_some_and(|destination| {
+                semantic_definition_local_v1(destination.place()) == Some(induction_index)
+            })
+        {
+            return None;
+        }
+    }
+    let step = step?;
+    if definitions != 2 || initial != Some(0) || step == 0 || exclusive_bound == 0 {
+        return None;
+    }
+    let maximum = if bits == 128 {
+        u128::MAX
+    } else {
+        (1_u128 << bits) - 1
+    };
+    (exclusive_bound - 1)
+        .checked_add(step)
+        .filter(|next| *next <= maximum)
+        .map(|_| ())
+}
+
+fn authenticated_loop_induction_bounds_v1(
+    types: &[SemanticTypeDeclV1],
+    function: &SemanticFunctionDeclV1,
+) -> Result<BTreeMap<(u32, u32), u128>, ProductionSemanticKirErrorV1> {
+    let (successors, predecessors, reachable) = semantic_cfg_graph_v1(function)?;
+    let mut bounds = BTreeMap::new();
+    for (header, block) in function.blocks().iter().enumerate() {
+        let SemanticTerminatorKindV1::SwitchInt {
+            discriminant,
+            targets,
+        } = block.terminator().kind()
+        else {
+            continue;
+        };
+        if targets.values().len() != 1 || targets.values()[0].value() != 0 {
+            continue;
+        }
+        let Some(discriminant_local) = whole_semantic_operand_local_v1(discriminant) else {
+            continue;
+        };
+        let comparisons = block
+            .statements()
+            .iter()
+            .enumerate()
+            .filter_map(|(statement, source)| {
+                let SemanticStatementKindV1::Assign(assignment) = source.kind() else {
+                    return None;
+                };
+                (semantic_definition_local_v1(assignment.destination()) == Some(discriminant_local))
+                    .then_some((statement, assignment))
+            })
+            .collect::<Vec<_>>();
+        let [(comparison_statement, comparison)] = comparisons.as_slice() else {
+            continue;
+        };
+        if !comparison.destination().projections().is_empty() {
+            continue;
+        }
+        let SemanticRvalueKindV1::Binary {
+            operation: SemanticBinaryOpV1::LessThan,
+            left,
+            right,
+        } = comparison.value().kind()
+        else {
+            continue;
+        };
+        let Some(induction) =
+            resolve_semantic_header_copy_alias_v1(block, *comparison_statement, left)
+        else {
+            continue;
+        };
+        let Some(induction_type) = function
+            .locals()
+            .get(induction as usize)
+            .map(|local| local.ty())
+        else {
+            continue;
+        };
+        let Some(exclusive_bound) =
+            exact_unsigned_semantic_constant_v1(types, right, induction_type)
+        else {
+            continue;
+        };
+        let body_entry = targets.otherwise().target().index() as usize;
+        let exit = targets.values()[0].edge().target().index() as usize;
+        let Some((preheader, latch, loop_blocks)) = authenticated_natural_loop_topology_v1(
+            function,
+            &successors,
+            &predecessors,
+            &reachable,
+            header,
+            body_entry,
+            exit,
+        ) else {
+            continue;
+        };
+        if authenticated_loop_induction_shape_v1(
+            types,
+            function,
+            induction,
+            preheader,
+            latch,
+            exclusive_bound,
+        )
+        .is_none()
+        {
+            continue;
+        }
+        for body_block in loop_blocks.into_iter().filter(|body| *body != header) {
+            bounds.insert((body_block as u32, induction), exclusive_bound);
+        }
+    }
+    Ok(bounds)
+}
+
+fn authenticated_unsigned_operand_exclusive_bound_v1(
+    types: &[SemanticTypeDeclV1],
+    function: &SemanticFunctionDeclV1,
+    bounds: &BTreeMap<(u32, u32), u128>,
+    block: SemanticBlockIdV1,
+    operand: &SemanticOperandV1,
+) -> Option<u128> {
+    let source_block = function.blocks().get(block.index() as usize)?;
+    let mut current = u32::try_from(whole_semantic_operand_local_v1(operand)?).ok()?;
+    let mut traversed_types = vec![operand.ty()];
+    let mut visited = BTreeSet::new();
+    for _ in 0..=source_block.statements().len() {
+        if !visited.insert(current) {
+            return None;
+        }
+        if let Some(bound) = bounds.get(&(block.index(), current)).copied() {
+            return traversed_types
+                .iter()
+                .all(|ty| semantic_unsigned_type_contains_exclusive_bound_v1(types, *ty, bound))
+                .then_some(bound);
+        }
+        let definitions = source_block
+            .statements()
+            .iter()
+            .filter_map(|statement| {
+                let SemanticStatementKindV1::Assign(assignment) = statement.kind() else {
+                    return None;
+                };
+                (semantic_definition_local_v1(assignment.destination()) == Some(current as usize))
+                    .then_some(assignment)
+            })
+            .collect::<Vec<_>>();
+        let [definition] = definitions.as_slice() else {
+            return None;
+        };
+        if !definition.destination().projections().is_empty()
+            || definition.destination().ty() != *traversed_types.last()?
+        {
+            return None;
+        }
+        let source = match definition.value().kind() {
+            SemanticRvalueKindV1::Use(source) => source,
+            SemanticRvalueKindV1::Cast {
+                kind: SemanticCastKindV1::Integer,
+                operand: source,
+            } => source,
+            _ => return None,
+        };
+        current = u32::try_from(whole_semantic_operand_local_v1(source)?).ok()?;
+        traversed_types.push(source.ty());
+    }
+    None
+}
+
 fn semantic_reachable_blocks_v1(
     successors: &[Vec<usize>],
     entry: usize,
@@ -5840,6 +6446,7 @@ fn lower_module(
         required_workgroup,
         infallible_asserts,
         launch_rank,
+        authenticated_launch_rank.is_some(),
         limits.max_operations,
     )?;
 
@@ -7851,6 +8458,8 @@ struct SemanticFunctionLoweringV1<'a> {
     emitted_operations: usize,
     emitted_u32_constants: BTreeMap<ValueId, u32>,
     emitted_u32_bitand_masks: BTreeMap<ValueId, u32>,
+    authenticated_loop_induction_bounds: BTreeMap<(u32, u32), u128>,
+    emitted_unsigned_exclusive_bounds: BTreeMap<ValueId, u128>,
 }
 
 struct SemanticParameterBindingsV1<'a> {
@@ -7869,6 +8478,7 @@ impl<'a> SemanticFunctionLoweringV1<'a> {
         required_workgroup: Option<[u32; 3]>,
         infallible_asserts: BTreeSet<u32>,
         launch_rank: u8,
+        authenticated_ranked_control: bool,
         max_operations: usize,
     ) -> Result<Self, ProductionSemanticKirErrorV1> {
         let mut locals = vec![None; function.locals().len()];
@@ -7896,6 +8506,11 @@ impl<'a> SemanticFunctionLoweringV1<'a> {
             callables,
             &control_flow_ssa.compiler_issued_bindings,
         )?;
+        let authenticated_loop_induction_bounds = if authenticated_ranked_control {
+            authenticated_loop_induction_bounds_v1(types, function)?
+        } else {
+            BTreeMap::new()
+        };
         let promoted_enum_variant_by_block =
             analyze_promoted_enum_variants_v1(types, function, &control_flow_ssa)?;
         let mut block_parameters = BTreeMap::new();
@@ -7954,6 +8569,8 @@ impl<'a> SemanticFunctionLoweringV1<'a> {
             emitted_operations: 0,
             emitted_u32_constants: BTreeMap::new(),
             emitted_u32_bitand_masks: BTreeMap::new(),
+            authenticated_loop_induction_bounds,
+            emitted_unsigned_exclusive_bounds: BTreeMap::new(),
         })
     }
 
@@ -11000,10 +11617,50 @@ impl<'a> SemanticFunctionLoweringV1<'a> {
                     .lower_operand(block, None, &call.arguments()[1], operations)?
                     .value()
                     .map_err(|detail| unsupported(0, Some(block.index()), None, detail))?;
+                let authenticated_source_bound = authenticated_unsigned_operand_exclusive_bound_v1(
+                    self.types,
+                    self.function,
+                    &self.authenticated_loop_induction_bounds,
+                    block,
+                    &call.arguments()[2],
+                );
                 let (source_lane, source_ty) = self
                     .lower_operand(block, None, &call.arguments()[2], operations)?
                     .value()
                     .map_err(|detail| unsupported(0, Some(block.index()), None, detail))?;
+                let authenticated_source_bound = authenticated_source_bound.filter(|bound| {
+                    source_ty == Type::Scalar(ScalarType::U32)
+                        && authenticated_subgroup_broadcast_source_is_bounded(*bound, *width)
+                });
+                let source_lane = if authenticated_source_bound.is_some() {
+                    let mask = self
+                        .emit(
+                            operations,
+                            Type::Scalar(ScalarType::U32),
+                            OperationKind::Constant(Constant::U32(*width - 1)),
+                        )?
+                        .value()
+                        .expect("authenticated subgroup mask has one value")
+                        .0;
+                    self.emit(
+                        operations,
+                        Type::Scalar(ScalarType::U32),
+                        OperationKind::Binary {
+                            op: BinaryOp::BitAnd,
+                            lhs: source_lane,
+                            rhs: mask,
+                        },
+                    )?
+                    .value()
+                    .expect("authenticated subgroup source mask has one value")
+                    .0
+                } else {
+                    source_lane
+                };
+                if let Some(bound) = authenticated_source_bound {
+                    self.emitted_unsigned_exclusive_bounds
+                        .insert(source_lane, bound);
+                }
                 let bounded_source = subgroup_broadcast_source_is_statically_bounded(
                     operations,
                     source_lane,
@@ -11015,7 +11672,13 @@ impl<'a> SemanticFunctionLoweringV1<'a> {
                     || self
                         .emitted_u32_bitand_masks
                         .get(&source_lane)
-                        .is_some_and(|mask| *mask < *width);
+                        .is_some_and(|mask| *mask < *width)
+                    || self
+                        .emitted_unsigned_exclusive_bounds
+                        .get(&source_lane)
+                        .is_some_and(|bound| {
+                            authenticated_subgroup_broadcast_source_is_bounded(*bound, *width)
+                        });
                 if value_ty != Type::Scalar(ScalarType::F32)
                     || source_ty != Type::Scalar(ScalarType::U32)
                     || *width == 0
@@ -17998,6 +18661,10 @@ fn enforce_limit(
     }
 }
 
+fn authenticated_subgroup_broadcast_source_is_bounded(exclusive_bound: u128, width: u32) -> bool {
+    width != 0 && width.is_power_of_two() && width <= 64 && exclusive_bound <= u128::from(width)
+}
+
 fn subgroup_broadcast_source_is_statically_bounded(
     operations: &[Operation],
     source_lane: ValueId,
@@ -18158,6 +18825,265 @@ mod resource_tests {
             masked,
             64,
         ));
+    }
+
+    #[derive(Clone, Copy)]
+    struct AuthenticatedInductionFixtureV1 {
+        bits: u16,
+        bound: u128,
+        step: u128,
+        extra_write: bool,
+        bypass_guard: bool,
+    }
+
+    impl Default for AuthenticatedInductionFixtureV1 {
+        fn default() -> Self {
+            Self {
+                bits: 64,
+                bound: 64,
+                step: 1,
+                extra_write: false,
+                bypass_guard: false,
+            }
+        }
+    }
+
+    fn authenticated_induction_fixture_v1(
+        options: AuthenticatedInductionFixtureV1,
+    ) -> (Vec<SemanticTypeDeclV1>, SemanticFunctionDeclV1) {
+        let unit = SemanticTypeIdV1::from_index(0);
+        let induction_ty = SemanticTypeIdV1::from_index(1);
+        let bool_ty = SemanticTypeIdV1::from_index(2);
+        let u32_ty = SemanticTypeIdV1::from_index(3);
+        let source = SemanticSourceProvenanceV1::unavailable();
+        let size = u8::try_from(options.bits / 8).unwrap();
+        let place = |local, ty| {
+            SemanticPlaceV1::new(SemanticLocalIdV1::from_index(local), vec![], ty).unwrap()
+        };
+        let operand = |local, ty| SemanticOperandV1::Copy(place(local, ty));
+        let constant = |ty, value| {
+            SemanticOperandV1::Constant(SemanticConstantV1::new(
+                ty,
+                SemanticConstantValueV1::Scalar(SemanticScalarValueV1::new(value, size).unwrap()),
+            ))
+        };
+        let assign = |local, ty, value| {
+            SemanticStatementV1::new(
+                source,
+                SemanticStatementKindV1::Assign(SemanticAssignmentV1::new(
+                    place(local, ty),
+                    SemanticRvalueV1::new(ty, value),
+                )),
+            )
+        };
+        let edge = |role, target| {
+            SemanticControlFlowEdgeV1::new(role, SemanticBlockIdV1::from_index(target))
+        };
+        let block = |tag, statements, terminator| {
+            SemanticBasicBlockV1::new(
+                SemanticBlockIdentityV1::from_sha256([tag; 32]),
+                source,
+                statements,
+                SemanticTerminatorV1::new(source, terminator),
+            )
+            .unwrap()
+        };
+        let entry = block(
+            210,
+            vec![assign(
+                1,
+                induction_ty,
+                SemanticRvalueKindV1::Use(constant(induction_ty, 0)),
+            )],
+            SemanticTerminatorKindV1::Goto(edge(SemanticEdgeRoleV1::Goto, 1)),
+        );
+        let header = block(
+            211,
+            vec![assign(
+                2,
+                bool_ty,
+                SemanticRvalueKindV1::Binary {
+                    operation: SemanticBinaryOpV1::LessThan,
+                    left: operand(1, induction_ty),
+                    right: constant(induction_ty, options.bound),
+                },
+            )],
+            SemanticTerminatorKindV1::SwitchInt {
+                discriminant: operand(2, bool_ty),
+                targets: SemanticSwitchTargetsV1::new(
+                    vec![SemanticSwitchTargetV1::new(
+                        0,
+                        edge(SemanticEdgeRoleV1::SwitchValue, 4),
+                    )],
+                    edge(SemanticEdgeRoleV1::SwitchOtherwise, 2),
+                )
+                .unwrap(),
+            },
+        );
+        let mut body_statements = vec![assign(
+            3,
+            u32_ty,
+            SemanticRvalueKindV1::Cast {
+                kind: SemanticCastKindV1::Integer,
+                operand: operand(1, induction_ty),
+            },
+        )];
+        if options.extra_write {
+            body_statements.push(assign(
+                1,
+                induction_ty,
+                SemanticRvalueKindV1::Use(constant(induction_ty, 0)),
+            ));
+        }
+        let body = block(
+            212,
+            body_statements,
+            SemanticTerminatorKindV1::Goto(edge(SemanticEdgeRoleV1::Goto, 3)),
+        );
+        let latch = block(
+            213,
+            vec![assign(
+                1,
+                induction_ty,
+                SemanticRvalueKindV1::Binary {
+                    operation: SemanticBinaryOpV1::Add,
+                    left: operand(1, induction_ty),
+                    right: constant(induction_ty, options.step),
+                },
+            )],
+            SemanticTerminatorKindV1::Goto(edge(SemanticEdgeRoleV1::Goto, 1)),
+        );
+        let exit = block(
+            214,
+            vec![],
+            if options.bypass_guard {
+                SemanticTerminatorKindV1::Goto(edge(SemanticEdgeRoleV1::Goto, 2))
+            } else {
+                SemanticTerminatorKindV1::Return
+            },
+        );
+        let abi = SemanticFunctionAbiV1::from_rustc(
+            SemanticAbiIdentityV1::from_sha256([215; 32]),
+            SemanticLayoutIdentityV1::from_sha256([216; 32]),
+            SemanticCanonAbiV1::GpuKernel,
+            SemanticExternAbiV1::GpuKernel,
+            false,
+            false,
+            0,
+            vec![],
+            SemanticAbiValueV1::new(unit, SemanticAbiPassModeV1::Ignore),
+        )
+        .unwrap();
+        let locals: Vec<SemanticLocalDeclV1> = [
+            (unit, SemanticLocalRoleV1::Return),
+            (induction_ty, SemanticLocalRoleV1::Temporary),
+            (bool_ty, SemanticLocalRoleV1::Temporary),
+            (u32_ty, SemanticLocalRoleV1::Temporary),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(local, (ty, role))| {
+            SemanticLocalDeclV1::new(
+                SemanticLocalIdentityV1::from_sha256([217 + local as u8; 32]),
+                ty,
+                role,
+                source,
+            )
+        })
+        .collect();
+        let function = SemanticFunctionDeclV1::new(
+            SemanticFunctionIdentityV1::from_sha256([221; 32]),
+            SemanticFunctionRoleV1::InternalHelper,
+            SemanticItemDefinitionIdentityV1::from_sha256([222; 32]),
+            SemanticMonomorphizationIdentityV1::from_sha256([223; 32]),
+            SemanticGenericTypeArgumentsIdentityV1::from_sha256([224; 32]),
+            SemanticConstGenericArgumentsIdentityV1::from_sha256([225; 32]),
+            source,
+            abi,
+            locals,
+            SemanticBlockIdV1::from_index(0),
+            vec![entry, header, body, latch, exit],
+        )
+        .unwrap();
+        (
+            vec![
+                unit_type(),
+                unsigned_scalar_type(226, options.bits),
+                bool_type(),
+                unsigned_scalar_type(228, 32),
+            ],
+            function,
+        )
+    }
+
+    #[test]
+    fn ranked_canonical_induction_bound_survives_exact_u64_to_u32_cast() {
+        let (types, function) =
+            authenticated_induction_fixture_v1(AuthenticatedInductionFixtureV1::default());
+        let bounds = authenticated_loop_induction_bounds_v1(&types, &function).unwrap();
+        assert_eq!(bounds.get(&(2, 1)), Some(&64));
+        let alias = SemanticOperandV1::Copy(
+            SemanticPlaceV1::new(
+                SemanticLocalIdV1::from_index(3),
+                vec![],
+                SemanticTypeIdV1::from_index(3),
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            authenticated_unsigned_operand_exclusive_bound_v1(
+                &types,
+                &function,
+                &bounds,
+                SemanticBlockIdV1::from_index(2),
+                &alias,
+            ),
+            Some(64),
+        );
+    }
+
+    #[test]
+    fn authenticated_induction_bound_rejects_width_overrun_and_hostile_loops() {
+        let (types, function) =
+            authenticated_induction_fixture_v1(AuthenticatedInductionFixtureV1 {
+                bound: 65,
+                ..AuthenticatedInductionFixtureV1::default()
+            });
+        let bounds = authenticated_loop_induction_bounds_v1(&types, &function).unwrap();
+        assert_eq!(bounds.get(&(2, 1)), Some(&65));
+        assert!(!authenticated_subgroup_broadcast_source_is_bounded(
+            *bounds.get(&(2, 1)).unwrap(),
+            64,
+        ));
+        assert!(!authenticated_subgroup_broadcast_source_is_bounded(0, 0));
+
+        for options in [
+            AuthenticatedInductionFixtureV1 {
+                extra_write: true,
+                ..AuthenticatedInductionFixtureV1::default()
+            },
+            AuthenticatedInductionFixtureV1 {
+                step: 0,
+                ..AuthenticatedInductionFixtureV1::default()
+            },
+            AuthenticatedInductionFixtureV1 {
+                bits: 8,
+                bound: 255,
+                step: 2,
+                ..AuthenticatedInductionFixtureV1::default()
+            },
+            AuthenticatedInductionFixtureV1 {
+                bypass_guard: true,
+                ..AuthenticatedInductionFixtureV1::default()
+            },
+        ] {
+            let (types, function) = authenticated_induction_fixture_v1(options);
+            assert!(
+                authenticated_loop_induction_bounds_v1(&types, &function)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 
     #[test]
@@ -18415,6 +19341,7 @@ mod resource_tests {
                 None,
                 BTreeSet::new(),
                 1,
+                false,
                 max_operations,
             )
             .unwrap();
@@ -18585,6 +19512,7 @@ mod resource_tests {
             None,
             BTreeSet::new(),
             1,
+            false,
             max_operations,
         )
         .unwrap();
@@ -18937,6 +19865,7 @@ mod resource_tests {
             None,
             BTreeSet::new(),
             1,
+            false,
             16,
         )
         .unwrap();
@@ -20243,6 +21172,7 @@ mod resource_tests {
             None,
             BTreeSet::new(),
             1,
+            false,
             16,
         )
         .unwrap();
@@ -21178,6 +22108,51 @@ mod resource_tests {
     }
 
     #[test]
+    fn mir_pliron_translation_validation_accepts_exact_conservative_allocation_effect() {
+        let mut fixture = unsupported_index_correlation_fixture();
+        fixture.module.functions[0].body.as_mut().unwrap().blocks[0]
+            .operations
+            .push(Operation::effect_free(
+                ValueDef::new(ValueId(6), Type::Scalar(ScalarType::F32)),
+                OperationKind::Load {
+                    pointer: ValueId(4),
+                    access: MemoryAccess::new(AddressSpace::Global, 4),
+                },
+            ));
+        verify_module(&fixture.module).expect("multi-load summary fixture remains valid");
+        fixture.correspondence.statement_operation_spans[0].operation_count = 6;
+        fixture.correspondence.terminator_operation_spans[0].first_operation_ordinal = 6;
+        let lowering = ranked_correlation_input_for_effects(
+            vec![ProductionRankedOperationV1::AllocationEffect {
+                kind: AccessKindAttr::Read,
+                memory_space: dialect_kernel::MemorySpaceAttr::Global,
+                allocation_origin: 1,
+                noalias_class: 1,
+            }],
+            1,
+        );
+        let report = validate_translation_fixture(&fixture, &lowering, &[fixture.source], 16)
+            .expect("the exact conservative allocation effect must reconcile");
+
+        assert_eq!(report.memory_effects(), 2);
+        assert_eq!(report.conservative_ranked_effects(), 1);
+
+        let wrong_allocation = ranked_correlation_input_for_effects(
+            vec![ProductionRankedOperationV1::AllocationEffect {
+                kind: AccessKindAttr::Read,
+                memory_space: dialect_kernel::MemorySpaceAttr::Global,
+                allocation_origin: 2,
+                noalias_class: 2,
+            }],
+            1,
+        );
+        assert!(matches!(
+            validate_translation_fixture(&fixture, &wrong_allocation, &[fixture.source], 16),
+            Err(ProductionMirPlironTranslationErrorV1::AllocationOriginMismatch { .. })
+        ));
+    }
+
+    #[test]
     fn mir_pliron_translation_validation_rejects_missing_and_extra_effects() {
         let fixture = unsupported_index_correlation_fixture();
         let one = ranked_correlation_input(AccessKindAttr::Read, 1);
@@ -21481,6 +22456,171 @@ mod resource_tests {
             index.unmodeled_memory_effects,
             vec![FunctionOperationLocation::new(BlockId(0), 0)],
         );
+    }
+
+    fn workgroup_translation_fixture(
+        operation: Operation,
+    ) -> (Module, SemanticKirCorrespondenceV1) {
+        let mut block = BasicBlock::new(BlockId(0));
+        block.operations.push(operation);
+        block.terminator = Some(Terminator::Return { values: vec![] });
+        let mut module = Module::new("workgroup-translation");
+        module.functions.push(Function::kernel_entry(
+            "workgroup_translation",
+            Signature::new(vec![gfx950_lds_transpose_pointer_type_v1()], vec![]),
+            vec![ValueId(0)],
+            vec![block],
+        ));
+        module.kernels.push(Kernel::new(
+            "workgroup-translation",
+            "workgroup_translation",
+            LaunchDomain::D1 {
+                x: LaunchExtent::Static(64),
+            },
+        ));
+        let correspondence = SemanticKirCorrespondenceV1 {
+            semantic_sha256: [10; 32],
+            function_count: 1,
+            blocks: vec![SemanticKirBlockCorrespondenceV1 {
+                semantic_function: SemanticFunctionIdV1::from_index(0),
+                semantic_block: SemanticBlockIdV1::from_index(0),
+                kernel_ir_block: BlockId(0),
+                source_statement_count: 1,
+            }]
+            .into_boxed_slice(),
+            statement_operation_spans: vec![SemanticKirStatementOperationSpanV1 {
+                semantic_function: SemanticFunctionIdV1::from_index(0),
+                semantic_block: SemanticBlockIdV1::from_index(0),
+                statement_ordinal: 0,
+                kernel_ir_block: BlockId(0),
+                first_operation_ordinal: 0,
+                operation_count: 1,
+            }]
+            .into_boxed_slice(),
+            terminator_operation_spans: vec![SemanticKirTerminatorOperationSpanV1 {
+                semantic_function: SemanticFunctionIdV1::from_index(0),
+                semantic_block: SemanticBlockIdV1::from_index(0),
+                kernel_ir_block: BlockId(0),
+                first_operation_ordinal: 1,
+                operation_count: 0,
+            }]
+            .into_boxed_slice(),
+            synthetic_operation_spans: Box::new([]),
+            parameter_bindings: Box::new([]),
+        };
+        (module, correspondence)
+    }
+
+    fn ranked_gfx950_transpose_lifecycle(fp8: bool) -> ProductionRankedKernelLoweringInputV1 {
+        let (allocation_origin, noalias_class) = if fp8 {
+            (
+                dialect_kernel::GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+                dialect_kernel::GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1,
+            )
+        } else {
+            (
+                dialect_kernel::GFX950_TRANSPOSE_FP4_WORKGROUP_ALLOCATION_ORIGIN_V1,
+                dialect_kernel::GFX950_TRANSPOSE_FP4_WORKGROUP_NOALIAS_CLASS_V1,
+            )
+        };
+        let effect = |kind| ProductionRankedOperationV1::AllocationEffect {
+            kind,
+            memory_space: dialect_kernel::MemorySpaceAttr::Workgroup,
+            allocation_origin,
+            noalias_class,
+        };
+        let kernel = ProductionRankedKernelV1::new(
+            "workgroup_translation",
+            0,
+            vec![ProductionRankedBlockV1::new(
+                vec![
+                    ProductionRankedOperationV1::ExecutionLayout {
+                        grid_identity: 10,
+                        global_extents: [64, 1, 1],
+                        workgroup_extents: [64, 1, 1],
+                        subgroup_size: 64,
+                        full_physical_workgroups: true,
+                    },
+                    effect(AccessKindAttr::Write),
+                    ProductionRankedOperationV1::Barrier {
+                        execution_scope: dialect_gpu::HierarchyAttr::Workgroup,
+                        memory_scope: dialect_gpu::MemoryScopeAttr::Workgroup,
+                        address_space: dialect_gpu::AddressSpaceAttr::Workgroup,
+                        order: dialect_gpu::MemoryOrderAttr::AcquireRelease,
+                    },
+                    effect(AccessKindAttr::Read),
+                ],
+                ProductionRankedTerminatorV1::Return,
+            )],
+        )
+        .expect("exact reserved transpose lifecycle");
+        compile_ranked_kernel_for_lowering_v1(
+            ProductionConstructionV1::ranked_kernel("workgroup_translation", kernel).unwrap(),
+            ProductionSessionLimitsV1::default(),
+        )
+        .expect("exact reserved transpose lifecycle reaches lowering")
+    }
+
+    #[test]
+    fn mir_pliron_translation_binds_reserved_workgroup_effects_to_format_and_operation() {
+        let read_fp8 = Operation::new(
+            vec![],
+            OperationKind::Gfx950LdsTranspose(Gfx950LdsTransposeOperationV1::full(
+                Gfx950LdsTransposeOperationKindV1::Read {
+                    format: Gfx950LdsTransposeFormatV1::Fp8E4M3,
+                    storage: ValueId(0),
+                },
+            )),
+        );
+        assert_eq!(
+            expected_gfx950_workgroup_allocation_identity_v1(&read_fp8, 0),
+            Some((
+                dialect_kernel::GFX950_TRANSPOSE_FP8_WORKGROUP_ALLOCATION_ORIGIN_V1,
+                dialect_kernel::GFX950_TRANSPOSE_FP8_WORKGROUP_NOALIAS_CLASS_V1,
+            ))
+        );
+        assert_eq!(
+            expected_gfx950_workgroup_allocation_identity_v1(&read_fp8, 1),
+            None
+        );
+
+        let (module, correspondence) = workgroup_translation_fixture(read_fp8);
+        let fp4_lowering = ranked_gfx950_transpose_lifecycle(false);
+        let read_source = ProductionRankedAccessSourceV1::new(0, Some(0), 0, 0, 3);
+        assert!(matches!(
+            validate_mir_pliron_translation_v1(
+                &module,
+                &correspondence,
+                &fp4_lowering,
+                &[read_source],
+                8,
+            ),
+            Err(ProductionMirPlironTranslationErrorV1::AllocationOriginMismatch { .. })
+        ));
+
+        let ordinary_lds = Operation::new(
+            vec![],
+            OperationKind::Matrix(MatrixOperation::lds_load(
+                ValueId(0),
+                fe2o3_kernel_ir::MatrixElement::Bf16,
+            )),
+        );
+        assert_eq!(
+            expected_gfx950_workgroup_allocation_identity_v1(&ordinary_lds, 0),
+            None
+        );
+        let (module, correspondence) = workgroup_translation_fixture(ordinary_lds);
+        let fp8_lowering = ranked_gfx950_transpose_lifecycle(true);
+        assert!(matches!(
+            validate_mir_pliron_translation_v1(
+                &module,
+                &correspondence,
+                &fp8_lowering,
+                &[read_source],
+                8,
+            ),
+            Err(ProductionMirPlironTranslationErrorV1::AllocationOriginMismatch { .. })
+        ));
     }
 
     #[test]

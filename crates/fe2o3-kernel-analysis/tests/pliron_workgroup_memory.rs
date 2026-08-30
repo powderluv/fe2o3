@@ -3,9 +3,11 @@ use dialect_gpu::{
     MemoryScopeAttr,
 };
 use dialect_kernel::{
-    AccessKindAttr, AtomicOrderingAttr, AtomicScopeAttr, DIALECT_NAME, IndexBinaryKindAttr,
-    IndexBinaryOp, IndexConstantOp, InvocationIndexOp, MemorySpaceAttr, RankedAccessOp,
-    RankedViewOp, RankedViewType, ReturnOp, register_dialect,
+    AccessKindAttr, AllocationEffectOp, AnalysisSplitOp, AtomicOrderingAttr, AtomicScopeAttr,
+    DIALECT_NAME, GFX950_TRANSPOSE_FP4_WORKGROUP_ALLOCATION_ORIGIN_V1,
+    GFX950_TRANSPOSE_FP4_WORKGROUP_NOALIAS_CLASS_V1, IndexBinaryKindAttr, IndexBinaryOp,
+    IndexConstantOp, InvocationIndexOp, MemorySpaceAttr, RankedAccessOp, RankedViewOp,
+    RankedViewType, ReturnOp, TrapOp, register_dialect,
 };
 use fe2o3_kernel_analysis::{
     KernelCheckPassKindV1, PlironWorkgroupMemoryFindingV1,
@@ -14,7 +16,7 @@ use fe2o3_kernel_analysis::{
 };
 use pliron::{
     basic_block::BasicBlock,
-    builtin::{ops::FuncOp, types::FunctionType},
+    builtin::{op_interfaces::OneRegionInterface, ops::FuncOp, types::FunctionType},
     context::{Context, Ptr},
     dialect::DialectName,
     op::Op,
@@ -64,8 +66,25 @@ fn function_with_domain(
     function
 }
 
+fn block(context: &mut Context, function: &FuncOp, name: &str) -> Ptr<BasicBlock> {
+    let block = BasicBlock::new(context, Some(name.try_into().unwrap()), vec![]);
+    block.insert_at_back(function.get_region(context), context);
+    block
+}
+
 fn append<O: Op>(context: &Context, block: Ptr<BasicBlock>, operation: &O) {
     operation.get_operation().insert_at_back(block, context);
+}
+
+fn transpose_effect(context: &mut Context, kind: AccessKindAttr) -> AllocationEffectOp {
+    AllocationEffectOp::new(
+        context,
+        kind,
+        MemorySpaceAttr::Workgroup,
+        GFX950_TRANSPOSE_FP4_WORKGROUP_ALLOCATION_ORIGIN_V1,
+        GFX950_TRANSPOSE_FP4_WORKGROUP_NOALIAS_CLASS_V1,
+    )
+    .expect("reserved gfx950 transpose effect")
 }
 
 fn view(context: &mut Context) -> RankedViewOp {
@@ -125,6 +144,67 @@ fn access(
         None => RankedAccessOp::new(context, kind, view.result(context), vec![index]),
     }
     .unwrap()
+}
+
+#[test]
+fn collective_transpose_traps_are_accepted_only_at_lifecycle_boundaries() {
+    for (events_before_trap, clean) in [(0, true), (1, false), (2, false), (3, true)] {
+        let context = &mut setup();
+        let function = function(
+            context,
+            &format!("transpose_trap_after_{events_before_trap}"),
+        );
+        let entry = function.get_entry_block(context);
+        let normal = block(context, &function, "normal");
+        let trapped = block(context, &function, "trapped");
+
+        if events_before_trap >= 1 {
+            let write = transpose_effect(context, AccessKindAttr::Write);
+            append(context, entry, &write);
+        }
+        if events_before_trap >= 2 {
+            let publish = barrier(context, AddressSpaceAttr::Workgroup);
+            append(context, entry, &publish);
+        }
+        if events_before_trap >= 3 {
+            let read = transpose_effect(context, AccessKindAttr::Read);
+            append(context, entry, &read);
+        }
+        let split = AnalysisSplitOp::new(context, normal, trapped);
+        append(context, entry, &split);
+
+        if events_before_trap < 1 {
+            let write = transpose_effect(context, AccessKindAttr::Write);
+            append(context, normal, &write);
+        }
+        if events_before_trap < 2 {
+            let publish = barrier(context, AddressSpaceAttr::Workgroup);
+            append(context, normal, &publish);
+        }
+        if events_before_trap < 3 {
+            let read = transpose_effect(context, AccessKindAttr::Read);
+            append(context, normal, &read);
+        }
+        let ret = ReturnOp::new(context);
+        append(context, normal, &ret);
+        let trap = TrapOp::new(context);
+        append(context, trapped, &trap);
+
+        let report = run_pliron_workgroup_memory_check_v1(context, &function);
+        assert_eq!(
+            report.is_clean(),
+            clean,
+            "unexpected lifecycle result after {events_before_trap} events: {:#?}",
+            report.findings(),
+        );
+        if !clean {
+            assert!(matches!(
+                report.findings(),
+                [PlironWorkgroupMemoryFindingV1::AnalysisIncomplete { detail }]
+                    if detail.contains("partially executes the collective transpose lifecycle")
+            ));
+        }
+    }
 }
 
 #[test]

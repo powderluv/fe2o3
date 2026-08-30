@@ -7,6 +7,11 @@ fn gfx950_kernels_are_safe_attributed_rust_with_typed_operations() {
         .expect("read Rust kernel source");
     assert_eq!(source.matches("#[kernel(").count(), 4);
     assert_eq!(source.matches("typed,").count(), 4);
+    assert_eq!(source.matches("Blocked<Index1D, 16, 4>").count(), 4);
+    assert_eq!(source.matches("checked_block::<16, 4>").count(), 4);
+    assert_eq!(source.matches("get_block_mut").count(), 16);
+    assert!(!source.contains("checked_tiled_2d"));
+    assert!(!source.contains("get_tiled_2d_mut"));
     assert!(source.contains("multiply_accumulate_fp4"));
     assert!(source.contains("multiply_accumulate_fp8"));
     assert!(source.contains("Gfx950LdsTransposeTile"));

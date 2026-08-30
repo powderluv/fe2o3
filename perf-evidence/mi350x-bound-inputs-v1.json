@@ -1,0 +1,44 @@
+{
+  "schema": "fe2o3.mi350x-architecture-bound-inputs.v1",
+  "device": "AMD Instinct MI350X",
+  "architecture": "CDNA 4",
+  "inputs": {
+    "compute_units": "256",
+    "maximum_engine_clock_hz": "2200000000",
+    "hbm_bandwidth_bytes_per_second": "8000000000000",
+    "fp32_flops_per_second": "144200000000000",
+    "fp8_flops_per_second": "4600000000000000",
+    "mxfp4_flops_per_second": "9200000000000000"
+  },
+  "strict_global_resource_floor": {
+    "formula": "max(compulsory_bytes/hbm_bandwidth, fp32_ops/fp32_peak, fp8_ops/fp8_peak, mxfp4_ops/mxfp4_peak)",
+    "units": "seconds",
+    "assumptions": [
+      "all listed device resources are available to this workload",
+      "peak rates and bandwidth are sustainable for the workload",
+      "operation classes do not add when their execution overlaps",
+      "compulsory bytes exclude cache hits unless the stated cache regime proves them"
+    ],
+    "interpretation": "An optimistic whole-device resource lower bound, not a single-workgroup latency prediction."
+  },
+  "practical_dispatch_floor": {
+    "value": null,
+    "units": "nanoseconds",
+    "required_measurement": "A digest-pinned minimal or empty kernel using the same persistent ROCr queue, signal, kernarg, warmup, block, and timestamp protocol.",
+    "interpretation": "A measured software and device dispatch latency floor; keep distinct from the strict global resource floor."
+  },
+  "instruction_latency_floor": {
+    "value": null,
+    "units": "nanoseconds",
+    "required_inputs": [
+      "audited per-kernel gfx950 ISA instruction counts",
+      "official or experimentally validated per-CU issue throughput by instruction class",
+      "critical dependency-chain latency",
+      "wave occupancy and resource constraints"
+    ]
+  },
+  "provenance": {
+    "constants_supplied_for_project_protocol": "2026-08-28",
+    "verification_required_before_publication": true
+  }
+}

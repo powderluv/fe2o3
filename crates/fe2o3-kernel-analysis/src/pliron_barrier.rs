@@ -459,6 +459,9 @@ enum BarrierPathSummaryV1 {
     Incomplete(String),
 }
 
+const MAX_FALLBACK_BARRIER_CFG_BLOCKS_V1: usize = 512;
+const MAX_FALLBACK_BARRIER_PATH_EVENTS_V1: usize = 256;
+
 fn summarize_all_barrier_paths(
     context: &Context,
     inventory: &crate::pliron_function_inventory::BoundedPlironFunctionInventoryV1,
@@ -471,6 +474,12 @@ fn summarize_all_barrier_paths(
         .collect::<HashMap<Ptr<BasicBlock>, usize>>();
     if blocks.is_empty() {
         return BarrierPathSummaryV1::Incomplete("the kernel CFG is empty".to_owned());
+    }
+    if blocks.len() > MAX_FALLBACK_BARRIER_CFG_BLOCKS_V1 {
+        return BarrierPathSummaryV1::Incomplete(format!(
+            "the fallback barrier CFG has {} blocks, exceeding the bounded limit of {MAX_FALLBACK_BARRIER_CFG_BLOCKS_V1}",
+            blocks.len()
+        ));
     }
     let mut states = vec![0_u8; blocks.len()];
     let mut summaries = vec![None; blocks.len()];
@@ -512,17 +521,25 @@ struct BarrierPathBlockSummaryV1 {
 fn prepend_barrier_path_v1(
     local: &[(usize, usize)],
     summary: BarrierPathBlockSummaryV1,
-) -> BarrierPathBlockSummaryV1 {
+) -> Result<BarrierPathBlockSummaryV1, BarrierPathFailureV1> {
     let prepend = |mut suffix: Vec<(usize, usize)>| {
-        let mut trace = Vec::with_capacity(local.len().saturating_add(suffix.len()));
+        let total = local.len().checked_add(suffix.len()).ok_or_else(|| {
+            BarrierPathFailureV1::Incomplete("fallback barrier path length overflowed".to_owned())
+        })?;
+        if total > MAX_FALLBACK_BARRIER_PATH_EVENTS_V1 {
+            return Err(BarrierPathFailureV1::Incomplete(format!(
+                "a fallback barrier path has more than {MAX_FALLBACK_BARRIER_PATH_EVENTS_V1} events"
+            )));
+        }
+        let mut trace = Vec::with_capacity(total);
         trace.extend_from_slice(local);
         trace.append(&mut suffix);
-        trace
+        Ok(trace)
     };
-    BarrierPathBlockSummaryV1 {
-        normal: summary.normal.map(&prepend),
-        trapped_prefix: summary.trapped_prefix.map(prepend),
-    }
+    Ok(BarrierPathBlockSummaryV1 {
+        normal: summary.normal.map(&prepend).transpose()?,
+        trapped_prefix: summary.trapped_prefix.map(prepend).transpose()?,
+    })
 }
 
 fn merge_barrier_path_summary_v1(
@@ -602,7 +619,7 @@ fn summarize_barrier_paths_from(
         .ok_or_else(|| {
             BarrierPathFailureV1::Incomplete(format!("block {block_index} has no terminator"))
         })?;
-    let mut local = Vec::new();
+    let mut local = Vec::with_capacity(MAX_FALLBACK_BARRIER_PATH_EVENTS_V1);
     for site in inventory.block_operations(block_index) {
         let operation_index = site.operation();
         let operation = site.pointer();
@@ -613,6 +630,11 @@ fn summarize_barrier_paths_from(
             .downcast_ref::<BarrierOp>()
             .is_some()
         {
+            if local.len() == MAX_FALLBACK_BARRIER_PATH_EVENTS_V1 {
+                return Err(BarrierPathFailureV1::Incomplete(format!(
+                    "block {block_index} has more than {MAX_FALLBACK_BARRIER_PATH_EVENTS_V1} barriers"
+                )));
+            }
             local.push((block_index, operation_index));
         }
     }
@@ -659,7 +681,8 @@ fn summarize_barrier_paths_from(
             states,
             summaries,
         )?;
-        merge_barrier_path_summary_v1(&mut complete, prepend_barrier_path_v1(&local, suffix))?;
+        let candidate = prepend_barrier_path_v1(&local, suffix)?;
+        merge_barrier_path_summary_v1(&mut complete, candidate)?;
     }
     if is_return {
         complete.normal = Some(local);
@@ -714,7 +737,8 @@ fn barrier_trace(
             | PlironTraceEventV1::Fence { .. }
             | PlironTraceEventV1::TensorInstruction { .. }
             | PlironTraceEventV1::Trap { .. }
-            | PlironTraceEventV1::Memory { .. } => None,
+            | PlironTraceEventV1::Memory { .. }
+            | PlironTraceEventV1::CollectiveAllocation { .. } => None,
         })
         .collect()
 }
@@ -871,6 +895,18 @@ mod status_tests {
         assert_eq!(
             PlironBarrierReportV1 { findings: vec![] }.status(),
             KernelCheckStatusV1::Clean
+        );
+    }
+
+    #[test]
+    fn fallback_barrier_path_event_vectors_are_bounded() {
+        let summary = BarrierPathBlockSummaryV1 {
+            normal: Some(vec![(0, 0); MAX_FALLBACK_BARRIER_PATH_EVENTS_V1]),
+            trapped_prefix: None,
+        };
+        let error = prepend_barrier_path_v1(&[(1, 0)], summary).unwrap_err();
+        assert!(
+            matches!(error, BarrierPathFailureV1::Incomplete(detail) if detail.contains("more than 256 events"))
         );
     }
 }

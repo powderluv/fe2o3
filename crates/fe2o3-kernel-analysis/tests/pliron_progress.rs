@@ -432,6 +432,126 @@ fn multi_block_loop(
     function
 }
 
+#[derive(Clone, Copy)]
+enum BranchyLoopCase {
+    Canonical,
+    MutatedArm,
+    BypassUpdate,
+}
+
+fn branchy_loop(context: &mut Context, case: BranchyLoopCase) -> FuncOp {
+    let (function, _) = make_function(context, "branchy_loop", 0);
+    let entry = function.get_entry_block(context);
+    let (header, induction) = index_block(context, &function, "header");
+    let (split, split_induction) = index_block(context, &function, "split");
+    let (left, left_induction) = index_block(context, &function, "left");
+    let (right, right_induction) = index_block(context, &function, "right");
+    let (merge, merge_induction) = index_block(context, &function, "merge");
+    let (latch, latch_induction) = index_block(context, &function, "latch");
+    let exit = block(context, &function, "exit");
+    let zero = IndexConstantOp::new(context, 0);
+    let one = IndexConstantOp::new(context, 1);
+    let bound = IndexConstantOp::new(context, 8);
+    let enter = BranchArgsOp::new(context, vec![zero.result(context)], header);
+    let condition = IndexLessThanBranchArgsOp::new(
+        context,
+        induction,
+        bound.result(context),
+        vec![induction],
+        vec![],
+        split,
+        exit,
+    );
+    let fork = IndexLessThanBranchArgsOp::new(
+        context,
+        zero.result(context),
+        one.result(context),
+        vec![split_induction],
+        vec![split_induction],
+        left,
+        right,
+    );
+    let left_target = if matches!(case, BranchyLoopCase::BypassUpdate) {
+        split
+    } else {
+        merge
+    };
+    let left_forward = BranchArgsOp::new(context, vec![left_induction], left_target);
+    let changed = matches!(case, BranchyLoopCase::MutatedArm).then(|| {
+        IndexBinaryOp::new(
+            context,
+            IndexBinaryKindAttr::Add,
+            right_induction,
+            one.result(context),
+        )
+    });
+    let right_value = changed
+        .as_ref()
+        .map_or(right_induction, |operation| operation.result(context));
+    let right_forward = BranchArgsOp::new(context, vec![right_value], merge);
+    let to_latch = BranchArgsOp::new(context, vec![merge_induction], latch);
+    let next = IndexBinaryOp::new(
+        context,
+        IndexBinaryKindAttr::Add,
+        latch_induction,
+        one.result(context),
+    );
+    let repeat = BranchArgsOp::new(context, vec![next.result(context)], header);
+    let ret = ReturnOp::new(context);
+
+    for operation in [
+        zero.get_operation(),
+        one.get_operation(),
+        bound.get_operation(),
+        enter.get_operation(),
+    ] {
+        operation.insert_at_back(entry, context);
+    }
+    append(context, header, &condition);
+    append(context, split, &fork);
+    append(context, left, &left_forward);
+    if let Some(changed) = &changed {
+        append(context, right, changed);
+    }
+    append(context, right, &right_forward);
+    append(context, merge, &to_latch);
+    append(context, latch, &next);
+    append(context, latch, &repeat);
+    append(context, exit, &ret);
+    verify_operation(function.get_operation(), context).unwrap();
+    function
+}
+
+#[test]
+fn branchy_recurrence_reconverges_before_one_authenticated_update() {
+    let context = &mut setup();
+    let function = branchy_loop(context, BranchyLoopCase::Canonical);
+    let report = run_pliron_progress_check_v1(context, &function);
+    assert!(report.is_clean(), "{report:?}");
+    assert_eq!(report.certificates().len(), 1);
+}
+
+#[test]
+fn branchy_recurrence_rejects_mutated_arm_and_update_bypass_cycle() {
+    for (case, expected) in [
+        (
+            BranchyLoopCase::MutatedArm,
+            "forward the induction value unchanged",
+        ),
+        (BranchyLoopCase::BypassUpdate, "bypass the induction update"),
+    ] {
+        let context = &mut setup();
+        let function = branchy_loop(context, case);
+        let report = run_pliron_progress_check_v1(context, &function);
+        assert_eq!(report.status(), KernelCheckStatusV1::Incomplete);
+        assert!(matches!(
+            report.findings(),
+            [PlironProgressFindingV1::ProgressIncomplete { reason, .. }]
+                if reason.contains(expected)
+        ));
+    }
+}
+
 #[test]
 fn malformed_branch_arguments_fail_structural_verification_before_progress() {
     let context = &mut setup();
@@ -1159,7 +1279,7 @@ fn external_body_predecessor_invalidates_the_canonical_recurrence() {
     assert!(matches!(
         report.findings(),
         [PlironProgressFindingV1::ProgressIncomplete { reason, .. }]
-            if reason.contains("body has a predecessor")
+            if reason.contains("bypasses the guarded header")
     ));
 }
 

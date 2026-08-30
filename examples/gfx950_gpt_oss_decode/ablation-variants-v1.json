@@ -1,0 +1,109 @@
+{
+  "schema": "fe2o3.gfx950.gpt-oss-ablation-registry.v1",
+  "scope": "fixed-shape exact-oracle gfx950 GPT-OSS-120B batch-1 layer-tile variants",
+  "invariants": {
+    "full_kernel_export": "gfx950_gpt_oss_120b_decode_megakernel_v1",
+    "same_full_kernel_abi_inputs_and_cpu_oracle": true,
+    "batch": 1,
+    "hidden": 512,
+    "experts": 128,
+    "selected_experts": 4,
+    "attention_tokens": 16,
+    "attention_channels": 16,
+    "workgroup": [64, 1, 1],
+    "grid": [1, 1, 1]
+  },
+  "admitted": [
+    {
+      "variant": "optimized",
+      "feature": "kernel-gpt-oss-decode",
+      "isolated_stack": [
+        "parallel two-expert-per-lane router with stable top-4 broadcasts",
+        "fused BF16 MFMA attention and MXFP4 selected-expert projection",
+        "sequential expert-fragment construction and consumption",
+        "grouped disjoint attention, expert, and packed-route stores"
+      ],
+      "lds_bytes": 0,
+      "pipeline_assessment": "the admitted implementation keeps the fixed one-wave dependency chains in registers"
+    },
+    {
+      "variant": "serial-router",
+      "feature": "kernel-gpt-oss-decode-router-serial",
+      "baseline_variant": "optimized",
+      "isolated_change": "revert the parallel router to one lane's ordered 128-expert scan",
+      "lds_bytes": 0
+    },
+    {
+      "variant": "held-fragments",
+      "feature": "kernel-gpt-oss-decode-held-fragments",
+      "baseline_variant": "optimized",
+      "isolated_change": "hold four MXFP4 accumulator fragments live before scaling and consumption",
+      "lds_bytes": 0
+    },
+    {
+      "variant": "interleaved-stores",
+      "feature": "kernel-gpt-oss-decode-interleaved-stores",
+      "baseline_variant": "optimized",
+      "isolated_change": "interleave the three disjoint output-store groups instead of committing each group contiguously",
+      "lds_bytes": 0
+    },
+    {
+      "variant": "materialized",
+      "component_features": [
+        "kernel-gpt-oss-router-component",
+        "kernel-gpt-oss-attention-component",
+        "kernel-gpt-oss-expert-component"
+      ],
+      "baseline_variant": "optimized",
+      "isolated_change": "split the fused dispatch into exact router, attention, and selected-expert component dispatches",
+      "unique_compulsory_global_bytes": 1509976,
+      "lds_bytes": 0
+    }
+  ],
+  "rejected": [
+    {
+      "variant": "scalar-attention",
+      "feature": "kernel-gpt-oss-decode-scalar-attention",
+      "status": "compiler-rejected",
+      "reason": "native BF16 widening reaches an unsupported MIR Transmute; the arithmetic-safe helper then reaches a call terminator without an exact callable memory-effect summary",
+      "retained_conclusion": "no HSACO, numerical result, or latency contribution is claimed"
+    },
+    {
+      "variant": "pipelined-attention",
+      "feature": "kernel-gpt-oss-decode-pipelined-attention",
+      "status": "compiler-rejected",
+      "planned_lds_bytes": 2048,
+      "planned_stages": 2,
+      "planned_prefetch_distance": 1,
+      "reason": "the ranked projection rejects a pipeline scalar temporary with multiple definitions after the exact prime, loop, and drain lifecycle is constructed",
+      "retained_conclusion": "this is a production-lowering feasibility rejection, not a measured slowdown"
+    },
+    {
+      "variant": "pipelined-fp4-expert",
+      "status": "structurally-inapplicable",
+      "reason": "the sealed workgroup-pipeline element surface is implemented for BF16 MFMA fragments but not gfx950 FP4 fragments",
+      "retained_conclusion": "no unsupported pipeline primitive or synthetic timing is admitted"
+    },
+    {
+      "variant": "router-lds-staging",
+      "status": "structurally-inapplicable",
+      "reason": "the one-wave router streams 1474560 bytes of strided weights without cooperative reuse",
+      "retained_conclusion": "LDS staging would add copies and synchronization without reducing compulsory traffic"
+    },
+    {
+      "variant": "alternate-mfma-tile",
+      "status": "unavailable-in-admitted-api",
+      "reason": "the production-safe surfaces expose BF16 m16n16k16 Wave64 and gfx950 low-precision m16n16k128 Wave64 only",
+      "retained_conclusion": "batch-1 padding is reported explicitly; an unavailable alternate-tile contribution is not fabricated"
+    }
+  ],
+  "resource_floor": {
+    "optimized_unique_compulsory_global_bytes": 1509972,
+    "fp32_flops": 745472,
+    "bf16_executed_flops": 32768,
+    "mxfp4_executed_flops": 262144,
+    "mxfp4_useful_flops": 4096,
+    "optimistic_whole_device_floor_ns": 188.7465,
+    "derivation": "max(1509972 / 8e12, 745472 / 144.2e12, 262144 / 9.2e15) seconds; the omitted BF16 peak makes the floor deliberately optimistic"
+  }
+}

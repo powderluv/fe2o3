@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://powderluv.github.io/fe2o3/perf-evidence/gfx950-advanced-dispatch-sample-v1.json",
+  "title": "fe2o3 gfx950 advanced dispatch sample v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "campaign_id", "record_id", "implementation", "artifact",
+    "workload", "launch", "trial", "timer", "correctness", "environment"
+  ],
+  "properties": {
+    "schema": {"const": "fe2o3.gfx950.advanced-dispatch-sample.v1"},
+    "campaign_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "record_id": {"type": "string", "minLength": 1, "maxLength": 512},
+    "implementation": {
+      "type": "object",
+      "required": ["id", "variant"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "variant": {"type": "string", "minLength": 1}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": [
+        "source_commit", "source_tree", "crate_binding_sha256", "llvm_sha256",
+        "hsaco_sha256", "isa_sha256", "kernel_export", "descriptor"
+      ],
+      "properties": {
+        "source_commit": {"$ref": "#/$defs/sha1"},
+        "source_tree": {"$ref": "#/$defs/sha1"},
+        "crate_binding_sha256": {"$ref": "#/$defs/sha256"},
+        "llvm_sha256": {"$ref": "#/$defs/sha256"},
+        "hsaco_sha256": {"$ref": "#/$defs/sha256"},
+        "isa_sha256": {"$ref": "#/$defs/sha256"},
+        "kernel_export": {"type": "string", "minLength": 1},
+        "descriptor": {"type": "string", "minLength": 1}
+      }
+    },
+    "workload": {
+      "type": "object",
+      "required": ["id", "input_sha256", "buffers", "cache_regime"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "input_sha256": {"$ref": "#/$defs/sha256"},
+        "buffers": {"type": "array", "minItems": 1},
+        "cache_regime": {"const": "persistent-allocation-repeated-single-workgroup"}
+      }
+    },
+    "launch": {
+      "type": "object",
+      "required": [
+        "grid", "workgroup", "dynamic_lds_bytes", "static_lds_bytes",
+        "kernarg_bytes"
+      ],
+      "properties": {
+        "grid": {"const": [1, 1, 1]},
+        "workgroup": {
+          "type": "array", "prefixItems": [
+            {"type": "integer", "minimum": 1},
+            {"const": 1}, {"const": 1}
+          ], "minItems": 3, "maxItems": 3
+        },
+        "dynamic_lds_bytes": {"const": 0},
+        "static_lds_bytes": {"type": "integer", "minimum": 0},
+        "kernarg_bytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "trial": {
+      "type": "object",
+      "required": [
+        "process", "block", "sample", "initial_warmups", "block_rewarm",
+        "samples_per_block"
+      ],
+      "properties": {
+        "process": {"type": "integer", "minimum": 0},
+        "block": {"type": "integer", "minimum": 0},
+        "sample": {"type": "integer", "minimum": 0},
+        "initial_warmups": {"type": "integer", "minimum": 0},
+        "block_rewarm": {"type": "integer", "minimum": 0},
+        "samples_per_block": {"type": "integer", "minimum": 1}
+      }
+    },
+    "timer": {
+      "type": "object",
+      "required": [
+        "source", "start_tick", "end_tick", "duration_ticks", "frequency_hz",
+        "duration_ns", "aql_packet_id"
+      ],
+      "properties": {
+        "source": {"const": "rocr-hsa-dispatch-timestamps"},
+        "start_tick": {"$ref": "#/$defs/decimal"},
+        "end_tick": {"$ref": "#/$defs/decimal"},
+        "duration_ticks": {"$ref": "#/$defs/decimal"},
+        "frequency_hz": {"$ref": "#/$defs/nonzeroDecimal"},
+        "duration_ns": {"$ref": "#/$defs/decimal"},
+        "aql_packet_id": {"$ref": "#/$defs/decimal"}
+      }
+    },
+    "correctness": {
+      "type": "object",
+      "required": [
+        "passed", "preflight_dispatch_checked", "post_block_checked",
+        "guard_canaries_checked", "oracle"
+      ],
+      "properties": {
+        "passed": {"const": true},
+        "preflight_dispatch_checked": {"const": true},
+        "post_block_checked": {"const": true},
+        "guard_canaries_checked": {"const": true},
+        "oracle": {"const": "current-repository-cpu-reference"}
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": [
+        "hostname", "process_id", "hsa_runtime", "physical_device"
+      ],
+      "properties": {
+        "hostname": {"type": "string", "minLength": 1},
+        "process_id": {"type": "integer", "minimum": 1},
+        "rocr_visible_devices": {"type": ["string", "null"]},
+        "hip_visible_devices": {"type": ["string", "null"]},
+        "hsa_runtime": {"type": "object"},
+        "physical_device": {"type": "object"}
+      }
+    }
+  },
+  "$defs": {
+    "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "decimal": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
+    "nonzeroDecimal": {"type": "string", "pattern": "^[1-9][0-9]*$"}
+  }
+}

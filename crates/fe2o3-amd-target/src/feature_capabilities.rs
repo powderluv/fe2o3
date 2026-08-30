@@ -295,8 +295,12 @@ impl MfmaFamilies {
             | Self::F32_FROM_FP8_FNUZ
             | Self::F32_FROM_BF8_FNUZ,
     );
-    pub(crate) const GFX950_REVIEWED: Self =
-        Self(Self::F32_FROM_FP8_OCP | Self::F32_FROM_BF8_OCP | Self::F32_FROM_FP4_OCP);
+    pub(crate) const GFX950_REVIEWED: Self = Self(
+        Self::F32_FROM_BF16
+            | Self::F32_FROM_FP8_OCP
+            | Self::F32_FROM_BF8_OCP
+            | Self::F32_FROM_FP4_OCP,
+    );
 
     /// Returns whether the numerical family has a reviewed target mapping.
     ///

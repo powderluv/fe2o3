@@ -1,0 +1,130 @@
+{
+  "schema": "fe2o3.gfx950.attention-ablation-registry.v1",
+  "scope": "fixed-shape exact-oracle gfx950 attention tutorial variants",
+  "invariants": {
+    "same_export_per_workload": true,
+    "same_abi_inputs_and_cpu_oracle": true,
+    "workgroup": [64, 1, 1],
+    "grid": [1, 1, 1]
+  },
+  "admitted": [
+    {
+      "feature": "kernel-kda-decode-wave-tiled-v1",
+      "kernel_export": "gfx950_kda_gdn_decode",
+      "baseline_feature": "kernel-kda-decode",
+      "isolated_change": "repeat the 16-channel mapping in four wave16 groups and restrict writes to the first group",
+      "shape": "three history taps by 16 channels; one recurrent token",
+      "unique_compulsory_global_bytes": 460,
+      "lds_bytes": 0,
+      "lds_stages": 0,
+      "pipeline_assessment": "the recurrent state, two exponentials, wave16 square reduction, and square root form one serial decode chain"
+    },
+    {
+      "feature": "kernel-kda-prefill-channel-mask-v1",
+      "kernel_export": "gfx950_kda_gdn_prefill",
+      "baseline_feature": "kernel-kda-prefill",
+      "isolated_change": "replace channel = linear % 16 with channel = linear & 15",
+      "shape": "eight ordered recurrent tokens by 16 channels in two four-token output chunks",
+      "unique_compulsory_global_bytes": 1676,
+      "lds_bytes": 0,
+      "lds_stages": 0,
+      "pipeline_assessment": "each token consumes the preceding state, so only the lane-index strength reduction is independent",
+      "preliminary_result": "baseline and variant produced byte-identical gfx950 HSACO 58536eb9abf290821b3d85d39c262ed5b49ac8d835ee959b2c36fa9446998bfa"
+    },
+    {
+      "feature": "kernel-content-sparse-attention-reciprocal-reuse-v1",
+      "kernel_export": "gfx950_content_sparse_attention",
+      "baseline_feature": "kernel-content-sparse-attention",
+      "isolated_change": "replace three normalized value divisions with one reciprocal after accumulating the weighted numerator",
+      "shape": "one 16x16x128 E4M3 score tile; top two of four blocks; top three of 16 tokens; 16 output channels",
+      "unique_compulsory_global_bytes": 4492,
+      "mfma_tile_flops": 65536,
+      "lds_bytes": 2048,
+      "lds_stages": 1,
+      "pipeline_assessment": "K=128 is exactly one native MFMA tile, leaving no next K tile for a useful ping-pong stage"
+    },
+    {
+      "feature": "kernel-compressed-hybrid-attention-division-baseline-v1",
+      "kernel_export": "gfx950_compressed_hybrid_attention",
+      "production_feature": "kernel-compressed-hybrid-attention",
+      "role": "pre-promotion division baseline",
+      "isolated_change": "restore four local and three global normalized divisions instead of the production kernel's two reciprocal reuses",
+      "shape": "one 16x16x128 E4M3 score tile; four local tokens; three compressed four-token blocks; 16 output channels",
+      "unique_compulsory_global_bytes": 4480,
+      "mfma_tile_flops": 65536,
+      "lds_bytes": 2048,
+      "lds_stages": 1,
+      "pipeline_assessment": "K=128 is exactly one native MFMA tile, leaving no next K tile for a useful ping-pong stage; final GPU6 evidence promoted reciprocal reuse into production"
+    },
+    {
+      "feature": "kernel-attnres-aggregate-explicit-reuse-v1",
+      "kernel_export": "gfx950_attnres_aggregate",
+      "baseline_feature": "kernel-attnres-aggregate",
+      "isolated_change": "make the four fixed logits and weights explicit so each is loaded and evaluated once",
+      "shape": "four residual depths by 16 channels",
+      "unique_compulsory_global_bytes": 576,
+      "lds_bytes": 0,
+      "lds_stages": 0,
+      "pipeline_assessment": "each channel is independent and the four-element softmax fits in registers"
+    },
+    {
+      "feature": "kernel-four-branch-residual-explicit-v1",
+      "kernel_export": "gfx950_four_branch_residual",
+      "baseline_feature": "kernel-four-branch-residual",
+      "isolated_change": "make all four fixed sigmoid-gated branches explicit",
+      "shape": "one residual and four branches by 16 channels",
+      "unique_compulsory_global_bytes": 640,
+      "lds_bytes": 0,
+      "lds_stages": 0,
+      "pipeline_assessment": "each channel is independent and all branch values are register-local"
+    },
+    {
+      "feature": "kernel-mhc-sinkhorn-mix-scalar-v1",
+      "kernel_export": "gfx950_mhc_sinkhorn_mix",
+      "baseline_feature": "kernel-mhc-sinkhorn-mix",
+      "isolated_change": "retain the pre-wave16 scalar Sinkhorn mapping as the exact baseline for the distributed production kernel",
+      "shape": "4x4 mixing matrix; four streams by 16 channels; three Sinkhorn iterations",
+      "unique_compulsory_global_bytes": 576,
+      "lds_bytes": 0,
+      "lds_stages": 0,
+      "pipeline_assessment": "row normalization feeds column normalization in every iteration; the fixed matrix is register-local"
+    }
+  ],
+  "rejected": [
+    {
+      "variant": "content-sparse-selected-score-scalar-v1",
+      "kernel_export": "gfx950_content_sparse_attention",
+      "status": "compiler-rejected",
+      "reason": "the V1 kernel control-flow sidecar rejects the bounded 128-step score loop combined with the statement selection macro",
+      "retained_conclusion": "do not admit or time a variant that bypasses the typed production lowering"
+    },
+    {
+      "variant": "compressed-hybrid-seven-score-scalar-v1",
+      "kernel_export": "gfx950_compressed_hybrid_attention",
+      "status": "compiler-rejected",
+      "reason": "the V1 kernel control-flow sidecar rejects the bounded 128-step score loop combined with the statement decode macro",
+      "retained_conclusion": "keep the validated one-tile MFMA path"
+    },
+    {
+      "variant": "attention-lds-double-buffer-v1",
+      "kernel_export": "gfx950_content_sparse_attention and gfx950_compressed_hybrid_attention",
+      "status": "structurally-inapplicable",
+      "reason": "the fixed reduction depth is one native K=128 MFMA tile, so no future tile exists to prefetch while the current tile executes",
+      "retained_conclusion": "a second 2048-byte LDS copy would be duplicate staging rather than software pipelining and would change no dependency overlap"
+    },
+    {
+      "variant": "kda-prefill-ping-pong-v1",
+      "kernel_export": "gfx950_kda_gdn_prefill",
+      "status": "structurally-inapplicable",
+      "reason": "each token consumes the preceding recurrent state and normalization result",
+      "retained_conclusion": "multi-buffering cannot overlap the serial token recurrence without changing semantics"
+    },
+    {
+      "variant": "mixing-lds-staging-v1",
+      "kernel_export": "gfx950_attnres_aggregate, gfx950_four_branch_residual, and gfx950_mhc_sinkhorn_mix",
+      "status": "structurally-inapplicable",
+      "reason": "the fixed four-element reductions and branch values are register-local and have no reusable K-tile stream",
+      "retained_conclusion": "LDS would add stores, synchronization, and reloads without reducing compulsory global traffic"
+    }
+  ]
+}
