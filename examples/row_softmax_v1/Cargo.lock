@@ -775,6 +775,7 @@ dependencies = [
 name = "fe2o3-verifier"
 version = "0.1.0"
 dependencies = [
+ "dialect-amdgcn",
  "dialect-kernel",
  "ed25519-dalek",
  "fe2o3-artifact-transaction",

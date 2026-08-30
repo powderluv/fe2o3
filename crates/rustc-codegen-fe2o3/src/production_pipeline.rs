@@ -58,9 +58,9 @@ pub(crate) enum ProductionPipelineError {
     SimulationProductionKirV9,
     FormalMemoryAdmission(fe2o3_lower_mir_kernel::ProductionFormalMemoryErrorV1),
     Geometry(crate::production_geometry_v1::ProductionGeometryErrorV1),
-    TargetBinding(fe2o3_kernel_ir::VerificationErrors),
+    TargetBinding(dialect_amdgcn::ProductionTargetBindingErrorV1),
     TargetLowering(dialect_amdgcn::LoweringErrors),
-    UpstreamLlvmLayoutBinding(String),
+    UpstreamLlvmLayoutBinding(dialect_amdgcn::ProductionLlvmLayoutBindingErrorV1),
     DescriptorEvidence(crate::compiler_descriptor::CompilerDescriptorError),
     SemanticLineage(crate::production_semantic_lineage_v3::ProductionSemanticLineageErrorV3),
     RustcLineageMismatch,
@@ -211,6 +211,7 @@ impl std::error::Error for ProductionPipelineError {
             Self::Geometry(error) => Some(error),
             Self::TargetBinding(error) => Some(error),
             Self::TargetLowering(error) => Some(error),
+            Self::UpstreamLlvmLayoutBinding(error) => Some(error),
             Self::DescriptorEvidence(error) => Some(error),
             Self::SemanticLineage(error) => Some(error),
             Self::ProtectedRustcInvocation(error) => Some(error),
@@ -226,7 +227,6 @@ impl std::error::Error for ProductionPipelineError {
             | Self::RustcLineageMismatch
             | Self::SimulationProductionKirV9
             | Self::SimulationDebugMapCorrespondence(_)
-            | Self::UpstreamLlvmLayoutBinding(_)
             | Self::ExtractionCannotPublish
             | Self::CompilerExecutionReceiptTransportBindingMismatch
             | Self::WorkerHandoffExtractionRequiresExtractionCustody => None,
@@ -593,38 +593,12 @@ impl FormalMemoryAdmittedProductionCompilation {
         )
         .map_err(ProductionPipelineError::Geometry)?;
 
-        let mut target_module = admitted.semantic_kir().module().clone();
-        let target = match target_profile {
-            fe2o3_amd_target::ProductionAmdTargetProfileV1::Gfx942 => {
-                fe2o3_kernel_ir::gfx942_xnack_minus_target_capability()
-            }
-            fe2o3_amd_target::ProductionAmdTargetProfileV1::Gfx950 => {
-                fe2o3_kernel_ir::gfx950_xnack_minus_target_capability()
-            }
-        };
-        let wave = fe2o3_kernel_ir::TargetCapability::WaveWidth(fe2o3_kernel_ir::WaveWidth::Wave64);
-        target_module.required_capabilities.insert(target.clone());
-        target_module.required_capabilities.insert(wave.clone());
-        let [kernel] = target_module.kernels.as_mut_slice() else {
-            return Err(ProductionPipelineError::Geometry(
-                crate::production_geometry_v1::ProductionGeometryErrorV1::KernelClosure,
-            ));
-        };
-        kernel.required_capabilities.insert(target.clone());
-        kernel.required_capabilities.insert(wave.clone());
-        let kernel_id = kernel.id.clone();
-        let entry_id = kernel.entry.clone();
-        let entry = target_module
-            .functions
-            .iter_mut()
-            .find(|function| function.id == entry_id)
-            .ok_or(ProductionPipelineError::Geometry(
-                crate::production_geometry_v1::ProductionGeometryErrorV1::KernelClosure,
-            ))?;
-        entry.required_capabilities.insert(target);
-        entry.required_capabilities.insert(wave);
-        fe2o3_kernel_ir::verify_module(&target_module)
-            .map_err(ProductionPipelineError::TargetBinding)?;
+        let target_bound = dialect_amdgcn::bind_production_target_v1(
+            admitted.semantic_kir().module(),
+            target_profile,
+        )
+        .map_err(ProductionPipelineError::TargetBinding)?;
+        let (target_module, kernel_id) = target_bound.into_parts();
         let lowering = match target_profile {
             fe2o3_amd_target::ProductionAmdTargetProfileV1::Gfx942 => {
                 dialect_amdgcn::lower_kernel_to_gfx942_xnack_minus_llvm_ir(
@@ -640,7 +614,7 @@ impl FormalMemoryAdmittedProductionCompilation {
             }
         };
         let dialect_llvm_ir = lowering.map_err(ProductionPipelineError::TargetLowering)?;
-        let llvm_ir = bind_production_upstream_llvm_layout_v1(dialect_llvm_ir)
+        let llvm_ir = dialect_amdgcn::bind_production_upstream_llvm_layout_v1(&dialect_llvm_ir)
             .map_err(ProductionPipelineError::UpstreamLlvmLayoutBinding)?;
         Ok(TargetLoweredProductionCompilation {
             admitted,
@@ -650,34 +624,6 @@ impl FormalMemoryAdmittedProductionCompilation {
             bindings,
         })
     }
-}
-
-fn bind_production_upstream_llvm_layout_v1(dialect_llvm_ir: String) -> Result<String, String> {
-    const TRIPLE_HEADER: &str = "target triple = \"amdgcn-amd-amdhsa\"\n";
-    let dialect_layout = format!(
-        "target datalayout = \"{}\"\n",
-        dialect_amdgcn::GFX942_XNACK_MINUS_DATA_LAYOUT
-    );
-    let expected_prefix = format!("{TRIPLE_HEADER}{dialect_layout}\n");
-    if !dialect_llvm_ir.starts_with(&expected_prefix)
-        || dialect_llvm_ir.matches("target triple =").count() != 1
-        || dialect_llvm_ir.matches("target datalayout =").count() != 1
-    {
-        return Err(
-            "verified AMDGPU lowering did not retain one canonical target header".to_owned(),
-        );
-    }
-
-    let upstream_layout = crate::production_target_v1::PRODUCTION_WORKER_DATA_LAYOUT_V1;
-    let mut bound = String::with_capacity(
-        dialect_llvm_ir.len() + upstream_layout.len().saturating_sub(dialect_layout.len()),
-    );
-    bound.push_str(TRIPLE_HEADER);
-    bound.push_str("target datalayout = \"");
-    bound.push_str(upstream_layout);
-    bound.push_str("\"\n\n");
-    bound.push_str(&dialect_llvm_ir[expected_prefix.len()..]);
-    Ok(bound)
 }
 
 impl TargetLoweredProductionCompilation {
@@ -1981,7 +1927,7 @@ mod tests {
             "target triple = \"amdgcn-amd-amdhsa\"\ntarget datalayout = \"{}\"\n\ndefine void @body() {{ ret void }}\n",
             dialect_amdgcn::GFX942_XNACK_MINUS_DATA_LAYOUT
         );
-        let bound = bind_production_upstream_llvm_layout_v1(legacy).unwrap();
+        let bound = dialect_amdgcn::bind_production_upstream_llvm_layout_v1(&legacy).unwrap();
         assert!(bound.starts_with(&format!(
             "target triple = \"amdgcn-amd-amdhsa\"\ntarget datalayout = \"{}\"\n\n",
             crate::production_target_v1::PRODUCTION_WORKER_DATA_LAYOUT_V1
@@ -2003,8 +1949,23 @@ mod tests {
             canonical.replacen("\n\n", "\n", 1),
             format!("{canonical}target datalayout = \"e-p:64:64\"\n"),
         ] {
-            assert!(bind_production_upstream_llvm_layout_v1(hostile).is_err());
+            assert!(dialect_amdgcn::bind_production_upstream_llvm_layout_v1(&hostile).is_err());
         }
+    }
+
+    #[test]
+    fn production_target_lowering_uses_shared_replayable_transforms() {
+        let source = include_str!("production_pipeline.rs");
+        let transaction = source
+            .split("impl FormalMemoryAdmittedProductionCompilation")
+            .nth(1)
+            .expect("target-lowering stage")
+            .split("impl TargetLoweredProductionCompilation")
+            .next()
+            .expect("bounded target-lowering body");
+        assert!(transaction.contains("dialect_amdgcn::bind_production_target_v1("));
+        assert!(transaction.contains("dialect_amdgcn::bind_production_upstream_llvm_layout_v1("));
+        assert!(!transaction.contains("required_capabilities.insert"));
     }
 
     #[test]

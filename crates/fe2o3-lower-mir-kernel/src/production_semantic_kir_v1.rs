@@ -1099,6 +1099,18 @@ pub struct ProductionCanonicalKernelIrIdentityV1 {
 }
 
 impl ProductionCanonicalKernelIrIdentityV1 {
+    pub(crate) const fn from_canonical_parts(
+        version: ProductionCanonicalKernelIrVersionV1,
+        digest: [u8; 32],
+        canonical_length: u64,
+    ) -> Self {
+        Self {
+            version,
+            digest,
+            canonical_length,
+        }
+    }
+
     /// Returns the exact canonical wire version committed by this identity.
     pub const fn version(&self) -> ProductionCanonicalKernelIrVersionV1 {
         self.version

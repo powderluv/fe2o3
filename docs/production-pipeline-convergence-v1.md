@@ -276,11 +276,22 @@ leave code unchanged, but it may not select an old compiler route.
 
 ## Proof and verification
 
-Verification does not select compiler implementation. The generic MIR-to-KIR
-receipt binds an operation correspondence between one retained MIR owner and
-one canonical Kernel IR module. A workload-specific Verus proof may discharge
-obligations for that module, but it cannot replace MIR or Kernel IR or provide
-artifact authority.
+Verification does not select compiler implementation. The current MIR-to-KIR
+receipt binds the exact semantic MIR identity to the production KIR wire
+version, digest, and byte length. It retains complete block, statement,
+terminator, synthetic-operation, and parameter correspondence plus the exact
+semantic induction report. The formal-memory receipt independently binds the
+same versioned KIR identity to the complete canonical obligation receipt and
+its structural witness.
+
+For gfx942, the independent proof-input validator strictly decodes canonical
+KIR V8, checks complete contiguous operation coverage, replays the induction
+analysis deterministically, and requires each admitted induction certificate
+to name exactly one checked KIR addition in its retained source span. Hostile
+span reassignment, report mutation, parameter rebinding, synthetic-trap drift,
+and independently well-formed KIR identity substitution all fail closed. A
+workload-specific Verus proof may discharge obligations for that module, but it
+cannot replace MIR or Kernel IR or provide artifact authority.
 
 The #106 General GEMM proof is therefore the first substantial producer of a
 generic MIR-to-KIR correspondence receipt. The #174 consumer retains that
@@ -430,14 +441,16 @@ routes.
 ## Critical milestones
 
 The current checkpoint has completed the feature-invariant backend entry and
-the first source-authentic workgroup vertical slice. Safe dynamic GEMM still
-ends at deterministic gfx942 LLVM, but the ordinary attributed WG64 `i32` LDS
-reduction continues through the compiler-bound handoff, measured upstream LLVM
-target APIs, in-process LLD, and inspected COV6 HSACO. Its exact 256-byte LDS
-and launch-resource contract survives every compiler and artifact stage. The
-same route also requalifies the scoped atomic kernel. Neither path uses COMGR,
-a shell linker, or a workload-profile selector, and neither currently grants
-load or launch authority.
+the first source-authentic workgroup vertical slice. Scalar GEMM reaches
+deterministic gfx942 LLVM with checked induction custody. Dynamic tiled GEMM and
+attention currently stop earlier because their uniform loop bounds are not yet
+admitted as exact total unsigned index expressions. The ordinary attributed
+WG64 `i32` LDS reduction continues through the compiler-bound handoff, measured
+upstream LLVM target APIs, in-process LLD, and inspected COV6 HSACO. Its exact
+256-byte LDS and launch-resource contract survives every compiler and artifact
+stage. The same route also requalifies the scoped atomic kernel. Neither path
+uses COMGR, a shell linker, or a workload-profile selector, and neither
+currently grants load or launch authority.
 
 1. **Compiler middle end, bounded operational:** one importer carries the LDS
    slice through semantic MIR, ranked PLIRON, general Kernel IR, composed
@@ -448,8 +461,10 @@ load or launch authority.
 3. **Safety semantics, in progress:** bounded references, LDS, barriers, and
    scoped atomics use the same transaction with hostile tests; general race,
    alias, convergence, and address-space proofs remain.
-4. **Rust and verification:** #106 evidence is consumed by the generic #174
-   MIR-to-KIR receipt; no profile-selected semantic replacement remains.
+4. **Rust and verification:** current gfx942 receipts bind exact semantic MIR,
+   canonical KIR V8, complete operation spans, formal obligations, and replayed
+   checked-induction anchors. KIR-to-LLVM and machine refinement remain open;
+   no profile-selected semantic replacement remains.
 5. **Parameterized GEMM:** ordinary attributed Rust GEMM reaches inspected
    HSACO through the production transaction; #173 remains only an oracle.
  6. **Worker V3/KFD execution:** the source-bound artifact enters the sole

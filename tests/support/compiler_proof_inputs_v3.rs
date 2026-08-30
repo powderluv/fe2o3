@@ -7,9 +7,11 @@ use fe2o3_functional_proof::{
 };
 use fe2o3_kernel_ir::VerifiedCanonicalKernelIrV5;
 use fe2o3_lower_mir_kernel::{
-    InertCanonicalFormalMemoryAdmissionEvidenceV3, InertCanonicalMirToKirCorrespondenceEvidenceV3,
+    InertCanonicalFormalMemoryAdmissionEvidenceV3, InertCanonicalFormalMemoryAdmissionEvidenceV4,
+    InertCanonicalMirToKirCorrespondenceEvidenceV3, InertCanonicalMirToKirCorrespondenceEvidenceV4,
     ProductionFormalMemoryOwnerV1, ProductionSemanticKirLimitsV1, ProductionSemanticKirOwnerV1,
 };
+use fe2o3_mir_model::analyze_semantic_u32_induction_no_overflow_v1;
 use fe2o3_mir_model::semantic_mir_v1::*;
 use fe2o3_pliron::{
     InertProductionMiddleEndEvidenceV5, PRODUCTION_MIDDLE_END_EVIDENCE_DOMAIN_V5,
@@ -52,29 +54,90 @@ impl CanonicalCompilerProofInputsV3 {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "shared support is compiled by V4-only integration tests"
+)]
 pub(crate) fn canonical_compiler_proof_inputs_v3(seed: u8) -> CanonicalCompilerProofInputsV3 {
+    canonical_compiler_proof_inputs(seed, semantic_owner(seed), false)
+}
+
+#[allow(
+    dead_code,
+    reason = "shared support is compiled by V3-only integration tests"
+)]
+pub(crate) fn canonical_compiler_proof_inputs_v4(seed: u8) -> CanonicalCompilerProofInputsV3 {
+    canonical_compiler_proof_inputs(seed, semantic_owner(seed), true)
+}
+
+#[allow(
+    dead_code,
+    reason = "shared support is compiled by V3-only integration tests"
+)]
+pub(crate) fn canonical_compiler_proof_inputs_v4_with_induction(
+    seed: u8,
+) -> CanonicalCompilerProofInputsV3 {
+    canonical_compiler_proof_inputs(seed, semantic_induction_owner(seed), true)
+}
+
+fn canonical_compiler_proof_inputs(
+    seed: u8,
+    semantic_owner: ProductionSemanticMirOwnerV1,
+    lossless_correspondence: bool,
+) -> CanonicalCompilerProofInputsV3 {
     let semantic_kir = ProductionSemanticKirOwnerV1::try_lower(
-        semantic_owner(seed),
+        semantic_owner,
         ProductionSemanticKirLimitsV1::default(),
     )
     .unwrap();
     let semantic = semantic_kir.semantic().semantic();
     let semantic_mir = semantic.canonical_encoding().to_vec();
     let semantic_identity = *semantic.semantic_sha256().as_bytes();
-    let kernel_ir =
-        VerifiedCanonicalKernelIrV5::from_module(semantic_kir.module().clone()).unwrap();
-    let correspondence =
-        InertCanonicalMirToKirCorrespondenceEvidenceV3::from_live_owner(&semantic_kir).unwrap();
+    let (kernel_ir, correspondence) = if lossless_correspondence {
+        let report = analyze_semantic_u32_induction_no_overflow_v1(
+            semantic,
+            SemanticFunctionIdV1::from_index(0),
+        )
+        .unwrap();
+        let correspondence =
+            InertCanonicalMirToKirCorrespondenceEvidenceV4::from_live_owner(&semantic_kir, &report)
+                .unwrap()
+                .canonical_bytes()
+                .to_vec();
+        (
+            semantic_kir
+                .canonical_kernel_ir_v8()
+                .canonical_bytes()
+                .to_vec(),
+            correspondence,
+        )
+    } else {
+        let kernel_ir =
+            VerifiedCanonicalKernelIrV5::from_module(semantic_kir.module().clone()).unwrap();
+        let correspondence =
+            InertCanonicalMirToKirCorrespondenceEvidenceV3::from_live_owner(&semantic_kir)
+                .unwrap()
+                .canonical_bytes()
+                .to_vec();
+        (kernel_ir.into_canonical_bytes(), correspondence)
+    };
     let formal_owner = ProductionFormalMemoryOwnerV1::try_admit(semantic_kir).unwrap();
-    let formal_memory =
-        InertCanonicalFormalMemoryAdmissionEvidenceV3::from_live_owner(&formal_owner).unwrap();
+    let formal_memory = if lossless_correspondence {
+        InertCanonicalFormalMemoryAdmissionEvidenceV4::from_live_owner(&formal_owner)
+            .unwrap()
+            .into_canonical_bytes()
+    } else {
+        InertCanonicalFormalMemoryAdmissionEvidenceV3::from_live_owner(&formal_owner)
+            .unwrap()
+            .into_canonical_bytes()
+    };
 
     CanonicalCompilerProofInputsV3 {
         semantic_mir,
         middle_end: middle_end_v5_bytes(semantic_identity, seed),
-        kernel_ir: kernel_ir.into_canonical_bytes(),
-        correspondence: correspondence.into_canonical_bytes(),
-        formal_memory: formal_memory.into_canonical_bytes(),
+        kernel_ir,
+        correspondence,
+        formal_memory,
     }
 }
 
@@ -258,6 +321,258 @@ fn semantic_owner(seed: u8) -> ProductionSemanticMirOwnerV1 {
     let admitted = InertSemanticMirRequestV1::new(
         SemanticTargetDataLayoutV1::gfx942(layout),
         vec![unit_type(seed)],
+        vec![],
+        vec![],
+        vec![],
+        vec![function],
+        vec![SemanticFunctionIdV1::from_index(0)],
+    )
+    .unwrap()
+    .admit_current_production(SemanticMirLimitsV1::default())
+    .unwrap();
+    ProductionSemanticMirOwnerV1::try_new(admitted, ProductionSemanticMirLimitsV1::default())
+        .unwrap()
+}
+
+#[allow(
+    dead_code,
+    reason = "used only by the shared checked-induction V4 fixture"
+)]
+fn semantic_induction_owner(seed: u8) -> ProductionSemanticMirOwnerV1 {
+    let unit = SemanticTypeIdV1::from_index(0);
+    let u32_ty = SemanticTypeIdV1::from_index(1);
+    let bool_ty = SemanticTypeIdV1::from_index(2);
+    let checked_u32 = SemanticTypeIdV1::from_index(3);
+    let induction = SemanticLocalIdV1::from_index(1);
+    let bound = SemanticLocalIdV1::from_index(2);
+    let predicate = SemanticLocalIdV1::from_index(3);
+    let checked_result = SemanticLocalIdV1::from_index(4);
+
+    let scalar_type = |tag, size, shape, primitive, maximum| {
+        SemanticTypeDeclV1::new(
+            SemanticTypeIdentityV1::from_sha256(bytes(tag, seed)),
+            SemanticLayoutIdentityV1::from_sha256(bytes(tag, seed)),
+            SemanticTypeLayoutV1::new_with_backend_repr(
+                Some(size),
+                size,
+                SemanticBackendReprV1::scalar(SemanticBackendScalarV1::initialized(
+                    primitive,
+                    SemanticScalarValidityRangeV1::new(0, maximum),
+                )),
+                false,
+            )
+            .unwrap(),
+            SemanticTypeShapeV1::Scalar(shape),
+        )
+    };
+    let u32_type = scalar_type(
+        101,
+        4,
+        SemanticScalarTypeV1::Integer {
+            signed: false,
+            bits: 32,
+        },
+        SemanticBackendPrimitiveV1::integer(false, 32, 4),
+        u128::from(u32::MAX),
+    );
+    let bool_type = scalar_type(
+        102,
+        1,
+        SemanticScalarTypeV1::Bool,
+        SemanticBackendPrimitiveV1::integer(false, 8, 1),
+        1,
+    );
+    let checked_type = SemanticTypeDeclV1::new(
+        SemanticTypeIdentityV1::from_sha256(bytes(103, seed)),
+        SemanticLayoutIdentityV1::from_sha256(bytes(103, seed)),
+        SemanticTypeLayoutV1::aggregate(
+            Some(8),
+            4,
+            SemanticAggregateLayoutV1::new(vec![0, 4], vec![SemanticPaddingV1::new(5, 3).unwrap()])
+                .unwrap(),
+        )
+        .unwrap(),
+        SemanticTypeShapeV1::Tuple(SemanticAggregateTypeV1::new(vec![u32_ty, bool_ty]).unwrap()),
+    );
+    let place = |local, ty| SemanticPlaceV1::new(local, vec![], ty).unwrap();
+    let field = |local, index, ty| {
+        SemanticPlaceV1::new(
+            local,
+            vec![SemanticProjectionV1::new(SemanticProjectionKindV1::Field(index), ty).unwrap()],
+            ty,
+        )
+        .unwrap()
+    };
+    let copy = |local, ty| SemanticOperandV1::Copy(place(local, ty));
+    let constant = |value| {
+        SemanticOperandV1::Constant(SemanticConstantV1::new(
+            u32_ty,
+            SemanticConstantValueV1::Scalar(SemanticScalarValueV1::new(value, 4).unwrap()),
+        ))
+    };
+    let assign = |destination, ty, value| {
+        SemanticStatementV1::new(
+            SemanticSourceProvenanceV1::unavailable(),
+            SemanticStatementKindV1::Assign(SemanticAssignmentV1::new(
+                destination,
+                SemanticRvalueV1::new(ty, value),
+            )),
+        )
+    };
+    let edge =
+        |role, target| SemanticControlFlowEdgeV1::new(role, SemanticBlockIdV1::from_index(target));
+    let semantic_block = |tag, statements, terminator| block(tag, seed, statements, terminator);
+
+    let initialization = assign(
+        place(induction, u32_ty),
+        u32_ty,
+        SemanticRvalueKindV1::Use(constant(0)),
+    );
+    let guard = assign(
+        place(predicate, bool_ty),
+        bool_ty,
+        SemanticRvalueKindV1::Binary {
+            operation: SemanticBinaryOpV1::LessThan,
+            left: copy(induction, u32_ty),
+            right: copy(bound, u32_ty),
+        },
+    );
+    let checked_add = assign(
+        place(checked_result, checked_u32),
+        checked_u32,
+        SemanticRvalueKindV1::CheckedBinary(SemanticCheckedBinaryRvalueV1::new(
+            SemanticCheckedBinaryOpV1::Add,
+            copy(induction, u32_ty),
+            constant(1),
+        )),
+    );
+    let update = assign(
+        place(induction, u32_ty),
+        u32_ty,
+        SemanticRvalueKindV1::Use(SemanticOperandV1::Move(field(checked_result, 0, u32_ty))),
+    );
+    let blocks = vec![
+        semantic_block(
+            110,
+            vec![initialization],
+            SemanticTerminatorKindV1::Goto(edge(SemanticEdgeRoleV1::Goto, 1)),
+        ),
+        semantic_block(
+            111,
+            vec![guard],
+            SemanticTerminatorKindV1::SwitchInt {
+                discriminant: copy(predicate, bool_ty),
+                targets: SemanticSwitchTargetsV1::new(
+                    vec![SemanticSwitchTargetV1::new(
+                        0,
+                        edge(SemanticEdgeRoleV1::SwitchValue, 4),
+                    )],
+                    edge(SemanticEdgeRoleV1::SwitchOtherwise, 2),
+                )
+                .unwrap(),
+            },
+        ),
+        semantic_block(
+            112,
+            vec![
+                SemanticStatementV1::new(
+                    SemanticSourceProvenanceV1::unavailable(),
+                    SemanticStatementKindV1::Nop,
+                ),
+                checked_add,
+            ],
+            SemanticTerminatorKindV1::Assert {
+                condition: SemanticOperandV1::Copy(field(checked_result, 1, bool_ty)),
+                expected: false,
+                message: SemanticAssertMessageV1::Overflow {
+                    operation: SemanticBinaryOpV1::Add,
+                    left: copy(induction, u32_ty),
+                    right: constant(1),
+                },
+                target: edge(SemanticEdgeRoleV1::AssertSuccess, 3),
+                unwind: SemanticUnwindActionV1::Unreachable,
+            },
+        ),
+        semantic_block(
+            113,
+            vec![update],
+            SemanticTerminatorKindV1::Goto(edge(SemanticEdgeRoleV1::Goto, 1)),
+        ),
+        semantic_block(114, vec![], SemanticTerminatorKindV1::Return),
+    ];
+
+    let direct_u32 = SemanticAbiValueV1::new(
+        u32_ty,
+        SemanticAbiPassModeV1::Direct(
+            SemanticAbiValueAttributesV1::new(
+                SemanticAbiRegularAttributesV1::new(false, None, false, false, false, true),
+                SemanticAbiExtensionV1::None,
+                0,
+                None,
+            )
+            .unwrap(),
+        ),
+    );
+    let abi = SemanticFunctionAbiV1::from_rustc(
+        SemanticAbiIdentityV1::from_sha256(bytes(120, seed)),
+        SemanticLayoutIdentityV1::from_sha256(bytes(250, seed)),
+        SemanticCanonAbiV1::GpuKernel,
+        SemanticExternAbiV1::GpuKernel,
+        false,
+        false,
+        1,
+        vec![SemanticAbiArgumentV1::source(direct_u32)],
+        SemanticAbiValueV1::new(unit, SemanticAbiPassModeV1::Ignore),
+    )
+    .unwrap();
+    let local = |tag, ty, role| {
+        SemanticLocalDeclV1::new(
+            SemanticLocalIdentityV1::from_sha256(bytes(tag, seed)),
+            ty,
+            role,
+            SemanticSourceProvenanceV1::unavailable(),
+        )
+    };
+    let function = SemanticFunctionDeclV1::new(
+        SemanticFunctionIdentityV1::from_sha256(bytes(121, seed)),
+        SemanticFunctionRoleV1::KernelRoot,
+        SemanticItemDefinitionIdentityV1::from_sha256(bytes(122, seed)),
+        SemanticMonomorphizationIdentityV1::from_sha256(bytes(123, seed)),
+        SemanticGenericTypeArgumentsIdentityV1::from_sha256(bytes(124, seed)),
+        SemanticConstGenericArgumentsIdentityV1::from_sha256(bytes(125, seed)),
+        SemanticSourceProvenanceV1::unavailable(),
+        abi,
+        vec![
+            local(130, unit, SemanticLocalRoleV1::Return),
+            local(131, u32_ty, SemanticLocalRoleV1::Temporary),
+            local(132, u32_ty, SemanticLocalRoleV1::Argument(0)),
+            local(133, bool_ty, SemanticLocalRoleV1::Temporary),
+            local(134, checked_u32, SemanticLocalRoleV1::Temporary),
+        ],
+        SemanticBlockIdV1::from_index(0),
+        blocks,
+    )
+    .unwrap()
+    .with_kernel_entry(SemanticKernelEntryV1::new(
+        SemanticLinkSymbolV1::new(format!("proof_induction_{seed}").into_bytes()).unwrap(),
+        SemanticKernelBindingIdentityV1::from_sha256(bytes(126, seed)),
+        SemanticKernelSourceContractV1::new(
+            Some(
+                SemanticKernelLaunchBoundsV1::new(
+                    Some(SemanticWorkgroupDimensionsV1::new([64, 1, 1]).unwrap()),
+                    Some(SemanticWorkgroupDimensionsV1::new([64, 1, 1]).unwrap()),
+                    None,
+                )
+                .unwrap(),
+            ),
+            None,
+            None,
+        )
+        .unwrap(),
+    ));
+    let admitted = InertSemanticMirRequestV1::new(
+        SemanticTargetDataLayoutV1::gfx942(SemanticLayoutIdentityV1::from_sha256(bytes(250, seed))),
+        vec![unit_type(seed), u32_type, bool_type, checked_type],
         vec![],
         vec![],
         vec![],

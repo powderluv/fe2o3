@@ -1383,6 +1383,8 @@ mod tests {
 
     use super::*;
     use crate::{
+        FormalMemoryCompletenessPolicyV4, FormalMemoryCompletenessStatusV4,
+        InertCanonicalFormalMemoryAdmissionEvidenceV4,
         InertCanonicalMirToKirCorrespondenceEvidenceV4,
         MAX_MIR_TO_KIR_CORRESPONDENCE_EVIDENCE_BYTES_V4, MAX_MIR_TO_KIR_STATEMENT_SPANS_V4,
         PRODUCTION_FORMAL_MEMORY_WITNESS_EXTENT_V1, ProductionCorrespondenceEvidenceErrorV4,
@@ -1650,11 +1652,9 @@ mod tests {
             evidence.semantic_u32_induction().semantic_mir_sha256(),
             semantic.semantic_sha256().as_bytes()
         );
-        let canonical_kir =
-            VerifiedCanonicalKernelIrV5::from_module(semantic_kir.module().clone()).unwrap();
         assert_eq!(
-            evidence.block_correspondence().canonical_kir_v5_identity(),
-            canonical_kir.identity().digest()
+            evidence.canonical_kernel_ir_identity(),
+            semantic_kir.canonical_kernel_ir_identity()
         );
         assert!(!evidence.grants_authority());
 
@@ -1673,10 +1673,24 @@ mod tests {
         trailing.push(0);
         assert!(InertCanonicalMirToKirCorrespondenceEvidenceV4::decode(&trailing).is_err());
 
+        let mut unknown_kir_version = canonical.to_vec();
+        put_u16(&mut unknown_kir_version, 52, 7);
+        assert!(matches!(
+            InertCanonicalMirToKirCorrespondenceEvidenceV4::decode(&unknown_kir_version),
+            Err(ProductionCorrespondenceEvidenceErrorV4::InvalidHeader)
+        ));
+
+        let mut zero_kir_length = canonical.to_vec();
+        put_u64(&mut zero_kir_length, 56, 0);
+        assert!(matches!(
+            InertCanonicalMirToKirCorrespondenceEvidenceV4::decode(&zero_kir_length),
+            Err(ProductionCorrespondenceEvidenceErrorV4::ZeroIdentity)
+        ));
+
         let mut oversized_statement_count = canonical.to_vec();
         put_u32(
             &mut oversized_statement_count,
-            24,
+            104,
             MAX_MIR_TO_KIR_STATEMENT_SPANS_V4 as u32 + 1,
         );
         assert!(matches!(
@@ -1684,13 +1698,13 @@ mod tests {
             Err(ProductionCorrespondenceEvidenceErrorV4::LimitExceeded)
         ));
 
-        let block_length = u32::from_le_bytes(canonical[20..24].try_into().unwrap()) as usize;
-        let statement_count = u32::from_le_bytes(canonical[24..28].try_into().unwrap()) as usize;
-        let terminator_count = u32::from_le_bytes(canonical[28..32].try_into().unwrap()) as usize;
-        let synthetic_count = u32::from_le_bytes(canonical[32..36].try_into().unwrap()) as usize;
-        let parameter_count = u32::from_le_bytes(canonical[36..40].try_into().unwrap()) as usize;
-        let induction_offset = 44
-            + block_length
+        let block_count = u32::from_le_bytes(canonical[100..104].try_into().unwrap()) as usize;
+        let statement_count = u32::from_le_bytes(canonical[104..108].try_into().unwrap()) as usize;
+        let terminator_count = u32::from_le_bytes(canonical[108..112].try_into().unwrap()) as usize;
+        let synthetic_count = u32::from_le_bytes(canonical[112..116].try_into().unwrap()) as usize;
+        let parameter_count = u32::from_le_bytes(canonical[116..120].try_into().unwrap()) as usize;
+        let induction_offset = 124
+            + block_count * 16
             + statement_count * 24
             + terminator_count * 20
             + synthetic_count * 16
@@ -1707,6 +1721,91 @@ mod tests {
             InertCanonicalMirToKirCorrespondenceEvidenceV4::decode(&oversized),
             Err(ProductionCorrespondenceEvidenceErrorV4::TooLarge)
         ));
+    }
+
+    #[test]
+    fn current_formal_memory_evidence_binds_versioned_kir_and_exact_receipt() {
+        let semantic_kir = semantic_kir_owner();
+        let canonical_kir = semantic_kir.canonical_kernel_ir_identity();
+        let formal_owner = ProductionFormalMemoryOwnerV1::try_admit(semantic_kir).unwrap();
+        let receipt = InertCanonicalFormalMemoryObligationReceiptV1::from_obligations(
+            formal_owner.obligations(),
+        )
+        .unwrap();
+        let evidence =
+            InertCanonicalFormalMemoryAdmissionEvidenceV4::from_live_owner(&formal_owner).unwrap();
+
+        assert_eq!(evidence.canonical_kernel_ir_identity(), canonical_kir);
+        assert_eq!(
+            evidence.formal_obligation_receipt_identity(),
+            receipt.identity().digest()
+        );
+        assert_eq!(
+            evidence.formal_obligation_receipt_bytes(),
+            receipt.canonical_bytes()
+        );
+        assert_eq!(
+            evidence.witness_invocation_count(),
+            formal_owner.witness_invocation_count()
+        );
+        assert_eq!(
+            evidence.completeness_policy(),
+            FormalMemoryCompletenessPolicyV4::RequireCompleteConflictFree
+        );
+        assert_eq!(
+            evidence.completeness_status(),
+            FormalMemoryCompletenessStatusV4::Complete
+        );
+        assert_eq!(evidence.static_conflict_count(), 0);
+        assert_eq!(evidence.inter_invocation_conflict_count(), 0);
+        assert!(!evidence.grants_authority());
+        evidence.revalidate().unwrap();
+        assert_eq!(
+            InertCanonicalFormalMemoryAdmissionEvidenceV4::decode(evidence.canonical_bytes())
+                .unwrap(),
+            evidence
+        );
+
+        for end in 0..evidence.canonical_bytes().len() {
+            assert!(
+                InertCanonicalFormalMemoryAdmissionEvidenceV4::decode(
+                    &evidence.canonical_bytes()[..end]
+                )
+                .is_err(),
+                "accepted V4 formal-memory truncation at {end}"
+            );
+        }
+        let mut trailing = evidence.canonical_bytes().to_vec();
+        trailing.push(0);
+        assert!(InertCanonicalFormalMemoryAdmissionEvidenceV4::decode(&trailing).is_err());
+
+        let mut unknown_kir_version = evidence.canonical_bytes().to_vec();
+        put_u16(&mut unknown_kir_version, 20, 7);
+        assert!(
+            InertCanonicalFormalMemoryAdmissionEvidenceV4::decode(&unknown_kir_version).is_err()
+        );
+
+        let mut zero_kir_length = evidence.canonical_bytes().to_vec();
+        put_u64(&mut zero_kir_length, 24, 0);
+        assert!(InertCanonicalFormalMemoryAdmissionEvidenceV4::decode(&zero_kir_length).is_err());
+
+        let mut wrong_receipt_identity = evidence.canonical_bytes().to_vec();
+        wrong_receipt_identity[64] ^= 1;
+        assert!(
+            InertCanonicalFormalMemoryAdmissionEvidenceV4::decode(&wrong_receipt_identity).is_err()
+        );
+
+        let mut wrong_witness = evidence.canonical_bytes().to_vec();
+        put_u64(
+            &mut wrong_witness,
+            96,
+            evidence.witness_invocation_count() + 1,
+        );
+        assert!(InertCanonicalFormalMemoryAdmissionEvidenceV4::decode(&wrong_witness).is_err());
+
+        let mut conflict = evidence.canonical_bytes().to_vec();
+        put_u32(&mut conflict, 108, 1);
+        assert!(InertCanonicalFormalMemoryAdmissionEvidenceV4::decode(&conflict).is_err());
     }
 
     #[test]

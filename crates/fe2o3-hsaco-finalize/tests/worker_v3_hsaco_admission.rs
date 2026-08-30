@@ -56,7 +56,7 @@ mod compiler_proof_inputs_v3;
 mod hsaco_fixture;
 
 use compiler_proof_inputs_v3::{
-    canonical_compiler_proof_inputs_v3, canonical_verus_execution_evidence_v1,
+    canonical_compiler_proof_inputs_v4, canonical_verus_execution_evidence_v1,
 };
 use hsaco_fixture::{
     ScalarAddFixtureMutation, scalar_add_fixture_with, slice_fixture_with_descriptor_table,
@@ -1208,7 +1208,7 @@ fn capsule_bytes(
             )
         })
         .collect::<Vec<_>>();
-    let proof_inputs = canonical_compiler_proof_inputs_v3(seed);
+    let proof_inputs = canonical_compiler_proof_inputs_v4(seed);
     receipts[2].0 = proof_inputs.semantic_mir().to_vec();
     receipts[3].0 = proof_inputs.middle_end().to_vec();
     receipts[4].0 = proof_inputs.kernel_ir().to_vec();

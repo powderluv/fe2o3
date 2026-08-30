@@ -14,14 +14,17 @@ use fe2o3_functional_proof::{
 use fe2o3_pliron::InertProductionMiddleEndEvidenceV5;
 use fe2o3_proof_contracts::DigestV1;
 use fe2o3_verifier::{
-    CanonicalProductionMirPlironVerusExecutionEvidenceV1, CompilerProofInputValidationErrorV4,
-    ProductionMirPlironVerusExecutionClaimsV1, ValidatedCompilerProofInputsV4,
-    validate_compiler_proof_inputs_v4,
+    CanonicalProductionMirPlironVerusExecutionEvidenceV1, CompilerProofInputValidationErrorV3,
+    CompilerProofInputValidationErrorV4, ProductionMirPlironVerusExecutionClaimsV1,
+    ValidatedCompilerProofInputsV4, validate_compiler_proof_inputs_v4,
 };
 
 #[path = "../../../tests/support/compiler_proof_inputs_v3.rs"]
 mod compiler_proof_inputs_v3;
-use compiler_proof_inputs_v3::canonical_compiler_proof_inputs_v3;
+use compiler_proof_inputs_v3::{
+    CanonicalCompilerProofInputsV3, canonical_compiler_proof_inputs_v4,
+    canonical_compiler_proof_inputs_v4_with_induction,
+};
 
 struct Receipts {
     semantic_mir: InertCanonicalSemanticMirReceiptV3,
@@ -31,8 +34,33 @@ struct Receipts {
     formal_memory: InertFormalMemoryReceiptV3,
 }
 
+const CORRESPONDENCE_HEADER_BYTES_V4: usize = 124;
+const BLOCK_RECORD_BYTES_V4: usize = 16;
+const STATEMENT_RECORD_BYTES_V4: usize = 24;
+const TERMINATOR_RECORD_BYTES_V4: usize = 20;
+const SYNTHETIC_RECORD_BYTES_V4: usize = 16;
+const PARAMETER_RECORD_BYTES_V4: usize = 12;
+
+#[derive(Clone, Copy)]
+struct CorrespondenceSectionsV4 {
+    statement_start: usize,
+    statement_count: usize,
+    synthetic_start: usize,
+    synthetic_count: usize,
+    parameter_start: usize,
+    parameter_count: usize,
+    induction_start: usize,
+}
+
 fn receipts(seed: u8) -> Receipts {
-    let inputs = canonical_compiler_proof_inputs_v3(seed);
+    receipts_from(canonical_compiler_proof_inputs_v4(seed))
+}
+
+fn induction_receipts(seed: u8) -> Receipts {
+    receipts_from(canonical_compiler_proof_inputs_v4_with_induction(seed))
+}
+
+fn receipts_from(inputs: CanonicalCompilerProofInputsV3) -> Receipts {
     Receipts {
         semantic_mir: InertCanonicalSemanticMirReceiptV3::from_canonical_preimage(
             inputs.semantic_mir().to_vec(),
@@ -51,6 +79,84 @@ fn receipts(seed: u8) -> Receipts {
         )
         .unwrap(),
     }
+}
+
+fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+}
+
+fn u64_at(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+}
+
+fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn put_u64(bytes: &mut [u8], offset: usize, value: u64) {
+    bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+fn correspondence_sections(bytes: &[u8]) -> CorrespondenceSectionsV4 {
+    assert!(bytes.len() >= CORRESPONDENCE_HEADER_BYTES_V4);
+    let block_count = u32_at(bytes, 100) as usize;
+    let statement_count = u32_at(bytes, 104) as usize;
+    let terminator_count = u32_at(bytes, 108) as usize;
+    let synthetic_count = u32_at(bytes, 112) as usize;
+    let parameter_count = u32_at(bytes, 116) as usize;
+    let statement_start = CORRESPONDENCE_HEADER_BYTES_V4 + block_count * BLOCK_RECORD_BYTES_V4;
+    let terminator_start = statement_start + statement_count * STATEMENT_RECORD_BYTES_V4;
+    let synthetic_start = terminator_start + terminator_count * TERMINATOR_RECORD_BYTES_V4;
+    let parameter_start = synthetic_start + synthetic_count * SYNTHETIC_RECORD_BYTES_V4;
+    let induction_start = parameter_start + parameter_count * PARAMETER_RECORD_BYTES_V4;
+    assert!(induction_start < bytes.len());
+    CorrespondenceSectionsV4 {
+        statement_start,
+        statement_count,
+        synthetic_start,
+        synthetic_count,
+        parameter_start,
+        parameter_count,
+        induction_start,
+    }
+}
+
+fn statement_record_offset(
+    bytes: &[u8],
+    sections: CorrespondenceSectionsV4,
+    function: u32,
+    block: u32,
+    statement: u32,
+) -> usize {
+    (0..sections.statement_count)
+        .map(|index| sections.statement_start + index * STATEMENT_RECORD_BYTES_V4)
+        .find(|offset| {
+            u32_at(bytes, *offset) == function
+                && u32_at(bytes, *offset + 4) == block
+                && u32_at(bytes, *offset + 8) == statement
+        })
+        .expect("fixture contains the requested statement span")
+}
+
+fn replace_correspondence(receipts: &mut Receipts, canonical_bytes: Vec<u8>) {
+    receipts.correspondence =
+        InertMirToKirCorrespondenceReceiptV3::from_canonical_preimage(canonical_bytes).unwrap();
+}
+
+fn replace_formal_memory(receipts: &mut Receipts, canonical_bytes: Vec<u8>) {
+    receipts.formal_memory =
+        InertFormalMemoryReceiptV3::from_canonical_preimage(canonical_bytes).unwrap();
+}
+
+fn assert_structural_failure(receipts: &Receipts, expected: &'static str) {
+    let evidence = signed_verus_evidence(exact_pliron_identity(receipts));
+    let proof_binding = proof_binding(receipts, None, evidence.canonical_bytes());
+    assert!(matches!(
+        validate(&proof_binding, receipts),
+        Err(CompilerProofInputValidationErrorV4::Stage(
+            CompilerProofInputValidationErrorV3::StructuralCorrespondence { detail }
+        )) if detail == expected
+    ));
 }
 
 fn digest(seed: u8) -> DigestV1 {
@@ -216,10 +322,135 @@ fn exact_current_inputs_reimport_the_signed_verus_receipt() {
         receipts.kernel_ir.canonical_preimage()
     );
     assert!(validated.has_exact_decoded_input_association());
+    assert!(validated.has_lossless_mir_to_kir_correspondence());
+    assert!(validated.semantic_u32_induction_kir_anchors().is_empty());
     assert!(validated.authenticates_signed_verus_receipt_under_embedded_key());
     assert!(!validated.authenticates_compiler_origin());
     assert!(!validated.establishes_llvm_or_machine_refinement());
     assert!(!validated.grants_runtime_authority());
+}
+
+#[test]
+fn exact_induction_certificate_is_anchored_to_one_checked_kir_addition() {
+    let receipts = induction_receipts(0);
+    let evidence = signed_verus_evidence(exact_pliron_identity(&receipts));
+    let proof_binding = proof_binding(&receipts, None, evidence.canonical_bytes());
+    let validated = validate(&proof_binding, &receipts).unwrap();
+
+    let [anchor] = validated.semantic_u32_induction_kir_anchors() else {
+        panic!("the exact induction fixture must retain one checked-add anchor");
+    };
+    assert_eq!(anchor.semantic_function(), 0);
+    assert_eq!(anchor.semantic_block(), 2);
+    assert_eq!(anchor.semantic_statement(), 1);
+    assert_eq!(anchor.kernel_ir_block(), 2);
+    assert_ne!(anchor.value_result(), anchor.overflow_result());
+    assert!(validated.has_lossless_mir_to_kir_correspondence());
+    assert!(!validated.establishes_llvm_or_machine_refinement());
+}
+
+#[test]
+fn checked_addition_cannot_be_reassigned_to_an_adjacent_nop_span() {
+    let mut receipts = induction_receipts(0);
+    let mut bytes = receipts.correspondence.canonical_preimage().to_vec();
+    let sections = correspondence_sections(&bytes);
+    let nop = statement_record_offset(&bytes, sections, 0, 2, 0);
+    let checked = statement_record_offset(&bytes, sections, 0, 2, 1);
+    let checked_first = u32_at(&bytes, checked + 16);
+    let checked_count = u32_at(&bytes, checked + 20);
+    assert_ne!(checked_count, 0);
+    put_u32(&mut bytes, nop + 16, checked_first);
+    put_u32(&mut bytes, nop + 20, checked_count);
+    put_u32(
+        &mut bytes,
+        checked + 16,
+        checked_first.checked_add(checked_count).unwrap(),
+    );
+    put_u32(&mut bytes, checked + 20, 0);
+    replace_correspondence(&mut receipts, bytes);
+
+    assert_structural_failure(
+        &receipts,
+        "induction statement span contains no checked KIR addition",
+    );
+}
+
+#[test]
+fn retained_induction_report_must_equal_deterministic_replay() {
+    let mut receipts = induction_receipts(0);
+    let mut bytes = receipts.correspondence.canonical_preimage().to_vec();
+    let sections = correspondence_sections(&bytes);
+    let work_units = sections.induction_start + 92;
+    let mutated_work_units = u64_at(&bytes, work_units).checked_add(1).unwrap();
+    put_u64(&mut bytes, work_units, mutated_work_units);
+    replace_correspondence(&mut receipts, bytes);
+
+    assert_structural_failure(
+        &receipts,
+        "retained semantic induction report differs from deterministic replay",
+    );
+}
+
+#[test]
+fn semantic_argument_cannot_be_rebound_to_another_kir_value() {
+    let mut receipts = induction_receipts(0);
+    let mut bytes = receipts.correspondence.canonical_preimage().to_vec();
+    let sections = correspondence_sections(&bytes);
+    assert_ne!(sections.parameter_count, 0);
+    let value = sections.parameter_start + 8;
+    let mutated_value = u32_at(&bytes, value).checked_add(1).unwrap();
+    put_u32(&mut bytes, value, mutated_value);
+    replace_correspondence(&mut receipts, bytes);
+
+    assert_structural_failure(
+        &receipts,
+        "semantic argument binding names a different KIR parameter",
+    );
+}
+
+#[test]
+fn runtime_assert_trap_requires_exact_synthetic_custody() {
+    let mut receipts = induction_receipts(0);
+    let mut bytes = receipts.correspondence.canonical_preimage().to_vec();
+    let sections = correspondence_sections(&bytes);
+    assert_ne!(sections.synthetic_count, 0);
+    let trap = (0..sections.synthetic_count)
+        .map(|index| sections.synthetic_start + index * SYNTHETIC_RECORD_BYTES_V4)
+        .find(|offset| u32_at(&bytes, *offset) == 2)
+        .expect("fixture contains the runtime-assert trap span");
+    put_u32(&mut bytes, trap + 12, 0);
+    replace_correspondence(&mut receipts, bytes);
+
+    assert_structural_failure(
+        &receipts,
+        "unmapped KIR block is not the canonical runtime-assert trap",
+    );
+}
+
+#[test]
+fn independently_well_formed_kir_custody_substitutions_fail_closed() {
+    for mutate_correspondence in [true, false] {
+        let mut receipts = induction_receipts(0);
+        if mutate_correspondence {
+            let mut bytes = receipts.correspondence.canonical_preimage().to_vec();
+            bytes[64] ^= 1;
+            replace_correspondence(&mut receipts, bytes);
+        } else {
+            let mut bytes = receipts.formal_memory.canonical_preimage().to_vec();
+            bytes[32] ^= 1;
+            replace_formal_memory(&mut receipts, bytes);
+        }
+        let evidence = signed_verus_evidence(exact_pliron_identity(&receipts));
+        let proof_binding = proof_binding(&receipts, None, evidence.canonical_bytes());
+        assert!(matches!(
+            validate(&proof_binding, &receipts),
+            Err(CompilerProofInputValidationErrorV4::Stage(
+                CompilerProofInputValidationErrorV3::NestedIdentityMismatch {
+                    field: "current production Kernel IR custody"
+                }
+            ))
+        ));
+    }
 }
 
 #[test]

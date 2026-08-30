@@ -1,6 +1,6 @@
 //! Lossless canonical semantic-proof and MIR-to-KIR correspondence custody.
 
-use std::{error::Error, fmt};
+use std::{collections::BTreeSet, error::Error, fmt};
 
 use fe2o3_mir_model::{
     InertCanonicalSemanticU32InductionEvidenceV1, SemanticU32InductionEvidenceErrorV1,
@@ -9,9 +9,9 @@ use fe2o3_mir_model::{
 use sha2::{Digest, Sha256};
 
 use crate::{
-    InertCanonicalMirToKirCorrespondenceEvidenceV3, MAX_MIR_TO_KIR_CORRESPONDENCE_BLOCKS_V3,
-    ProductionLineageEvidenceErrorV3, ProductionSemanticKirOwnerV1,
-    SemanticKirSyntheticOperationRuleV1,
+    MAX_MIR_TO_KIR_CORRESPONDENCE_BLOCKS_V3, MAX_MIR_TO_KIR_CORRESPONDENCE_FUNCTIONS_V3,
+    ProductionCanonicalKernelIrIdentityV1, ProductionCanonicalKernelIrVersionV1,
+    ProductionSemanticKirOwnerV1, SemanticKirSyntheticOperationRuleV1,
 };
 
 /// Current wire version for lossless semantic-proof and MIR-to-KIR custody.
@@ -29,11 +29,43 @@ pub const MAX_MIR_TO_KIR_PARAMETER_BINDINGS_V4: usize = 65_536;
 
 const MAGIC_V4: [u8; 8] = *b"F2M2K4\0\0";
 const IDENTITY_DOMAIN_V4: &[u8] = b"FE2O3/LOSSLESS-MIR-TO-KIR-CORRESPONDENCE-EVIDENCE/V4\0";
-const HEADER_BYTES_V4: usize = 44;
+const HEADER_BYTES_V4: usize = 124;
+const BLOCK_RECORD_BYTES_V4: usize = 16;
 const STATEMENT_RECORD_BYTES_V4: usize = 24;
 const TERMINATOR_RECORD_BYTES_V4: usize = 20;
 const SYNTHETIC_RECORD_BYTES_V4: usize = 16;
 const PARAMETER_RECORD_BYTES_V4: usize = 12;
+
+/// Exact semantic block to KIR block correspondence under the current versioned KIR owner.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct MirToKirBlockCorrespondenceEvidenceV4 {
+    semantic_function: u32,
+    semantic_block: u32,
+    kernel_ir_block: u32,
+    source_statement_count: u32,
+}
+
+impl MirToKirBlockCorrespondenceEvidenceV4 {
+    /// Returns the semantic function index.
+    pub const fn semantic_function(&self) -> u32 {
+        self.semantic_function
+    }
+
+    /// Returns the semantic block index.
+    pub const fn semantic_block(&self) -> u32 {
+        self.semantic_block
+    }
+
+    /// Returns the exact KIR block identity.
+    pub const fn kernel_ir_block(&self) -> u32 {
+        self.kernel_ir_block
+    }
+
+    /// Returns the exact number of statements in the semantic block.
+    pub const fn source_statement_count(&self) -> u32 {
+        self.source_statement_count
+    }
+}
 
 /// Exact Kernel IR operation span emitted by one semantic statement.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -186,7 +218,10 @@ impl MirToKirParameterBindingEvidenceV4 {
 pub struct InertCanonicalMirToKirCorrespondenceEvidenceV4 {
     canonical_bytes: Box<[u8]>,
     identity: [u8; 32],
-    block_correspondence: InertCanonicalMirToKirCorrespondenceEvidenceV3,
+    semantic_sha256: [u8; 32],
+    canonical_kernel_ir: ProductionCanonicalKernelIrIdentityV1,
+    function_count: u32,
+    blocks: Box<[MirToKirBlockCorrespondenceEvidenceV4]>,
     statements: Box<[MirToKirStatementSpanEvidenceV4]>,
     terminators: Box<[MirToKirTerminatorSpanEvidenceV4]>,
     synthetics: Box<[MirToKirSyntheticSpanEvidenceV4]>,
@@ -203,16 +238,31 @@ impl InertCanonicalMirToKirCorrespondenceEvidenceV4 {
         owner.verify_equivalence().map_err(|error| {
             ProductionCorrespondenceEvidenceErrorV4::LiveOwner(error.to_string())
         })?;
-        let block_correspondence =
-            InertCanonicalMirToKirCorrespondenceEvidenceV3::from_live_owner(owner)
-                .map_err(ProductionCorrespondenceEvidenceErrorV4::BlockCorrespondence)?;
         let induction = InertCanonicalSemanticU32InductionEvidenceV1::from_report(induction_report)
             .map_err(ProductionCorrespondenceEvidenceErrorV4::Induction)?;
-        if block_correspondence.semantic_sha256() != induction.semantic_mir_sha256() {
+        let semantic_sha256 = *owner.semantic().semantic().semantic_sha256().as_bytes();
+        if &semantic_sha256 != induction.semantic_mir_sha256() {
             return Err(ProductionCorrespondenceEvidenceErrorV4::NestedIdentityMismatch);
         }
 
         let correspondence = owner.correspondence();
+        let covered_functions = correspondence
+            .blocks()
+            .iter()
+            .map(|record| record.semantic_function().index())
+            .collect::<BTreeSet<_>>();
+        let function_count = u32::try_from(covered_functions.len())
+            .map_err(|_| ProductionCorrespondenceEvidenceErrorV4::Overflow)?;
+        let mut blocks = correspondence
+            .blocks()
+            .iter()
+            .map(|record| MirToKirBlockCorrespondenceEvidenceV4 {
+                semantic_function: record.semantic_function().index(),
+                semantic_block: record.semantic_block().index(),
+                kernel_ir_block: record.kernel_ir_block().0,
+                source_statement_count: record.source_statement_count(),
+            })
+            .collect::<Vec<_>>();
         let mut statements = correspondence
             .statement_operation_spans()
             .iter()
@@ -269,8 +319,12 @@ impl InertCanonicalMirToKirCorrespondenceEvidenceV4 {
         synthetics.sort_unstable();
         parameters
             .sort_unstable_by_key(|binding| (binding.semantic_function, binding.semantic_local));
+        blocks.sort_unstable_by_key(|record| (record.semantic_function, record.semantic_block));
         let bytes = encode(
-            &block_correspondence,
+            semantic_sha256,
+            owner.canonical_kernel_ir_identity(),
+            function_count,
+            &blocks,
             &statements,
             &terminators,
             &synthetics,
@@ -297,35 +351,59 @@ impl InertCanonicalMirToKirCorrespondenceEvidenceV4 {
         if declared != bytes.len() {
             return Err(ProductionCorrespondenceEvidenceErrorV4::InvalidLength);
         }
-        let block_bytes = reader.usize_u32()?;
+        let semantic_sha256 = reader.fixed::<32>()?;
+        let kernel_ir_version = match reader.u16()? {
+            8 => ProductionCanonicalKernelIrVersionV1::V8,
+            9 => ProductionCanonicalKernelIrVersionV1::V9,
+            _ => return Err(ProductionCorrespondenceEvidenceErrorV4::InvalidHeader),
+        };
+        if reader.u16()? != 0 {
+            return Err(ProductionCorrespondenceEvidenceErrorV4::InvalidHeader);
+        }
+        let kernel_ir_length = reader.u64()?;
+        let kernel_ir_digest = reader.fixed::<32>()?;
+        if semantic_sha256 == [0; 32] || kernel_ir_digest == [0; 32] || kernel_ir_length == 0 {
+            return Err(ProductionCorrespondenceEvidenceErrorV4::ZeroIdentity);
+        }
+        let canonical_kernel_ir = ProductionCanonicalKernelIrIdentityV1::from_canonical_parts(
+            kernel_ir_version,
+            kernel_ir_digest,
+            kernel_ir_length,
+        );
+        let function_count = reader.u32()?;
+        let block_count = reader.usize_u32()?;
         let statement_count = reader.usize_u32()?;
         let terminator_count = reader.usize_u32()?;
         let synthetic_count = reader.usize_u32()?;
         let parameter_count = reader.usize_u32()?;
         let induction_bytes = reader.usize_u32()?;
         validate_counts(
+            usize::try_from(function_count)
+                .map_err(|_| ProductionCorrespondenceEvidenceErrorV4::Overflow)?,
+            block_count,
             statement_count,
             terminator_count,
             synthetic_count,
             parameter_count,
         )?;
         let record_bytes = exact_record_bytes(
+            block_count,
             statement_count,
             terminator_count,
             synthetic_count,
             parameter_count,
         )?;
-        let exact_remaining = block_bytes
-            .checked_add(record_bytes)
-            .and_then(|bytes| bytes.checked_add(induction_bytes))
+        let exact_remaining = record_bytes
+            .checked_add(induction_bytes)
             .ok_or(ProductionCorrespondenceEvidenceErrorV4::Overflow)?;
         if reader.remaining() != exact_remaining {
             return Err(ProductionCorrespondenceEvidenceErrorV4::InvalidLength);
         }
 
-        let block_correspondence =
-            InertCanonicalMirToKirCorrespondenceEvidenceV3::decode(reader.take(block_bytes)?)
-                .map_err(ProductionCorrespondenceEvidenceErrorV4::BlockCorrespondence)?;
+        let mut blocks = Vec::with_capacity(block_count);
+        for _ in 0..block_count {
+            blocks.push(decode_block(&mut reader)?);
+        }
         let mut statements = Vec::with_capacity(statement_count);
         for _ in 0..statement_count {
             statements.push(decode_statement(&mut reader)?);
@@ -346,15 +424,19 @@ impl InertCanonicalMirToKirCorrespondenceEvidenceV4 {
             InertCanonicalSemanticU32InductionEvidenceV1::decode(reader.take(induction_bytes)?)
                 .map_err(ProductionCorrespondenceEvidenceErrorV4::Induction)?;
         reader.finish()?;
-        if block_correspondence.semantic_sha256() != induction.semantic_mir_sha256() {
+        if &semantic_sha256 != induction.semantic_mir_sha256() {
             return Err(ProductionCorrespondenceEvidenceErrorV4::NestedIdentityMismatch);
         }
+        validate_blocks(function_count, &blocks)?;
         validate_records(&statements, &terminators, &synthetics, &parameters)?;
-        if !synthetics.is_empty() && block_correspondence.function_count() != 1 {
+        if !synthetics.is_empty() && function_count != 1 {
             return Err(ProductionCorrespondenceEvidenceErrorV4::InvalidRecord);
         }
         let reencoded = encode(
-            &block_correspondence,
+            semantic_sha256,
+            canonical_kernel_ir,
+            function_count,
+            &blocks,
             &statements,
             &terminators,
             &synthetics,
@@ -368,7 +450,10 @@ impl InertCanonicalMirToKirCorrespondenceEvidenceV4 {
         Ok(Self {
             canonical_bytes: reencoded.into_boxed_slice(),
             identity,
-            block_correspondence,
+            semantic_sha256,
+            canonical_kernel_ir,
+            function_count,
+            blocks: blocks.into_boxed_slice(),
             statements: statements.into_boxed_slice(),
             terminators: terminators.into_boxed_slice(),
             synthetics: synthetics.into_boxed_slice(),
@@ -396,9 +481,24 @@ impl InertCanonicalMirToKirCorrespondenceEvidenceV4 {
         &self.identity
     }
 
-    /// Returns the independently decoded exact block correspondence.
-    pub const fn block_correspondence(&self) -> &InertCanonicalMirToKirCorrespondenceEvidenceV3 {
-        &self.block_correspondence
+    /// Returns the exact semantic MIR SHA-256.
+    pub const fn semantic_sha256(&self) -> &[u8; 32] {
+        &self.semantic_sha256
+    }
+
+    /// Returns the exact versioned canonical production-KIR identity.
+    pub const fn canonical_kernel_ir_identity(&self) -> ProductionCanonicalKernelIrIdentityV1 {
+        self.canonical_kernel_ir
+    }
+
+    /// Returns the number of covered semantic and defined KIR functions.
+    pub const fn function_count(&self) -> u32 {
+        self.function_count
+    }
+
+    /// Returns every exact semantic-to-KIR block record.
+    pub fn blocks(&self) -> &[MirToKirBlockCorrespondenceEvidenceV4] {
+        &self.blocks
     }
 
     /// Returns every exact semantic statement span.
@@ -437,8 +537,6 @@ impl InertCanonicalMirToKirCorrespondenceEvidenceV4 {
 pub enum ProductionCorrespondenceEvidenceErrorV4 {
     /// Live equivalence replay failed.
     LiveOwner(String),
-    /// Nested V3 block correspondence failed.
-    BlockCorrespondence(ProductionLineageEvidenceErrorV3),
     /// Nested semantic induction report evidence failed.
     Induction(SemanticU32InductionEvidenceErrorV1),
     /// Aggregate exceeds the outer receipt budget.
@@ -469,9 +567,6 @@ impl fmt::Display for ProductionCorrespondenceEvidenceErrorV4 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LiveOwner(error) => write!(formatter, "live semantic-KIR owner failed: {error}"),
-            Self::BlockCorrespondence(error) => {
-                write!(formatter, "block correspondence failed: {error}")
-            }
             Self::Induction(error) => {
                 write!(formatter, "semantic induction evidence failed: {error}")
             }
@@ -499,7 +594,6 @@ impl fmt::Display for ProductionCorrespondenceEvidenceErrorV4 {
 impl Error for ProductionCorrespondenceEvidenceErrorV4 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::BlockCorrespondence(error) => Some(error),
             Self::Induction(error) => Some(error),
             _ => None,
         }
@@ -507,12 +601,18 @@ impl Error for ProductionCorrespondenceEvidenceErrorV4 {
 }
 
 fn validate_counts(
+    functions: usize,
+    blocks: usize,
     statements: usize,
     terminators: usize,
     synthetics: usize,
     parameters: usize,
 ) -> Result<(), ProductionCorrespondenceEvidenceErrorV4> {
-    if statements > MAX_MIR_TO_KIR_STATEMENT_SPANS_V4
+    if functions == 0
+        || functions > MAX_MIR_TO_KIR_CORRESPONDENCE_FUNCTIONS_V3
+        || blocks == 0
+        || blocks > MAX_MIR_TO_KIR_CORRESPONDENCE_BLOCKS_V3
+        || statements > MAX_MIR_TO_KIR_STATEMENT_SPANS_V4
         || terminators > MAX_MIR_TO_KIR_CORRESPONDENCE_BLOCKS_V3
         || synthetics > MAX_MIR_TO_KIR_SYNTHETIC_SPANS_V4
         || parameters > MAX_MIR_TO_KIR_PARAMETER_BINDINGS_V4
@@ -523,6 +623,45 @@ fn validate_counts(
     }
 }
 
+fn validate_blocks(
+    function_count: u32,
+    blocks: &[MirToKirBlockCorrespondenceEvidenceV4],
+) -> Result<(), ProductionCorrespondenceEvidenceErrorV4> {
+    validate_counts(function_count as usize, blocks.len(), 0, 0, 0, 0)?;
+    let mut cursor = 0_usize;
+    let mut covered_functions = 0_u32;
+    let mut previous_function = None;
+    while let Some(first) = blocks.get(cursor) {
+        if previous_function.is_some_and(|previous| previous >= first.semantic_function) {
+            return Err(ProductionCorrespondenceEvidenceErrorV4::NonCanonical);
+        }
+        let function = first.semantic_function;
+        let mut semantic_block = 0_u32;
+        while let Some(record) = blocks.get(cursor) {
+            if record.semantic_function != function {
+                break;
+            }
+            if record.semantic_block != semantic_block
+                || record.kernel_ir_block != record.semantic_block
+            {
+                return Err(ProductionCorrespondenceEvidenceErrorV4::InvalidRecord);
+            }
+            semantic_block = semantic_block
+                .checked_add(1)
+                .ok_or(ProductionCorrespondenceEvidenceErrorV4::Overflow)?;
+            cursor += 1;
+        }
+        previous_function = Some(function);
+        covered_functions = covered_functions
+            .checked_add(1)
+            .ok_or(ProductionCorrespondenceEvidenceErrorV4::Overflow)?;
+    }
+    if cursor != blocks.len() || covered_functions != function_count {
+        return Err(ProductionCorrespondenceEvidenceErrorV4::InvalidRecord);
+    }
+    Ok(())
+}
+
 fn validate_records(
     statements: &[MirToKirStatementSpanEvidenceV4],
     terminators: &[MirToKirTerminatorSpanEvidenceV4],
@@ -530,6 +669,8 @@ fn validate_records(
     parameters: &[MirToKirParameterBindingEvidenceV4],
 ) -> Result<(), ProductionCorrespondenceEvidenceErrorV4> {
     validate_counts(
+        1,
+        1,
         statements.len(),
         terminators.len(),
         synthetics.len(),
@@ -587,13 +728,19 @@ fn require_strict_order<T: Ord>(
 }
 
 fn exact_record_bytes(
+    blocks: usize,
     statements: usize,
     terminators: usize,
     synthetics: usize,
     parameters: usize,
 ) -> Result<usize, ProductionCorrespondenceEvidenceErrorV4> {
-    statements
-        .checked_mul(STATEMENT_RECORD_BYTES_V4)
+    blocks
+        .checked_mul(BLOCK_RECORD_BYTES_V4)
+        .and_then(|bytes| {
+            statements
+                .checked_mul(STATEMENT_RECORD_BYTES_V4)
+                .and_then(|next| bytes.checked_add(next))
+        })
         .and_then(|bytes| {
             terminators
                 .checked_mul(TERMINATOR_RECORD_BYTES_V4)
@@ -613,35 +760,50 @@ fn exact_record_bytes(
 }
 
 fn encode(
-    blocks: &InertCanonicalMirToKirCorrespondenceEvidenceV3,
+    semantic_sha256: [u8; 32],
+    canonical_kernel_ir: ProductionCanonicalKernelIrIdentityV1,
+    function_count: u32,
+    blocks: &[MirToKirBlockCorrespondenceEvidenceV4],
     statements: &[MirToKirStatementSpanEvidenceV4],
     terminators: &[MirToKirTerminatorSpanEvidenceV4],
     synthetics: &[MirToKirSyntheticSpanEvidenceV4],
     parameters: &[MirToKirParameterBindingEvidenceV4],
     induction: &InertCanonicalSemanticU32InductionEvidenceV1,
 ) -> Result<Vec<u8>, ProductionCorrespondenceEvidenceErrorV4> {
-    blocks
-        .revalidate()
-        .map_err(ProductionCorrespondenceEvidenceErrorV4::BlockCorrespondence)?;
     induction
         .revalidate()
         .map_err(ProductionCorrespondenceEvidenceErrorV4::Induction)?;
-    if blocks.semantic_sha256() != induction.semantic_mir_sha256() {
+    if semantic_sha256 == [0; 32]
+        || canonical_kernel_ir.digest() == &[0; 32]
+        || canonical_kernel_ir.canonical_length() == 0
+    {
+        return Err(ProductionCorrespondenceEvidenceErrorV4::ZeroIdentity);
+    }
+    if &semantic_sha256 != induction.semantic_mir_sha256() {
         return Err(ProductionCorrespondenceEvidenceErrorV4::NestedIdentityMismatch);
     }
+    validate_blocks(function_count, blocks)?;
     validate_records(statements, terminators, synthetics, parameters)?;
-    if !synthetics.is_empty() && blocks.function_count() != 1 {
+    validate_counts(
+        function_count as usize,
+        blocks.len(),
+        statements.len(),
+        terminators.len(),
+        synthetics.len(),
+        parameters.len(),
+    )?;
+    if !synthetics.is_empty() && function_count != 1 {
         return Err(ProductionCorrespondenceEvidenceErrorV4::InvalidRecord);
     }
     let record_bytes = exact_record_bytes(
+        blocks.len(),
         statements.len(),
         terminators.len(),
         synthetics.len(),
         parameters.len(),
     )?;
     let exact_size = HEADER_BYTES_V4
-        .checked_add(blocks.canonical_bytes().len())
-        .and_then(|bytes| bytes.checked_add(record_bytes))
+        .checked_add(record_bytes)
         .and_then(|bytes| bytes.checked_add(induction.canonical_bytes().len()))
         .ok_or(ProductionCorrespondenceEvidenceErrorV4::Overflow)?;
     if exact_size > MAX_MIR_TO_KIR_CORRESPONDENCE_EVIDENCE_BYTES_V4 {
@@ -653,13 +815,34 @@ fn encode(
     push_u16(&mut bytes, MIR_TO_KIR_CORRESPONDENCE_EVIDENCE_POLICY_V4);
     push_u32(&mut bytes, 0);
     push_usize(&mut bytes, exact_size)?;
-    push_usize(&mut bytes, blocks.canonical_bytes().len())?;
+    bytes.extend_from_slice(&semantic_sha256);
+    push_u16(
+        &mut bytes,
+        match canonical_kernel_ir.version() {
+            ProductionCanonicalKernelIrVersionV1::V8 => 8,
+            ProductionCanonicalKernelIrVersionV1::V9 => 9,
+        },
+    );
+    push_u16(&mut bytes, 0);
+    push_u64(&mut bytes, canonical_kernel_ir.canonical_length());
+    bytes.extend_from_slice(canonical_kernel_ir.digest());
+    push_u32(&mut bytes, function_count);
+    push_usize(&mut bytes, blocks.len())?;
     push_usize(&mut bytes, statements.len())?;
     push_usize(&mut bytes, terminators.len())?;
     push_usize(&mut bytes, synthetics.len())?;
     push_usize(&mut bytes, parameters.len())?;
     push_usize(&mut bytes, induction.canonical_bytes().len())?;
-    bytes.extend_from_slice(blocks.canonical_bytes());
+    for block in blocks {
+        for value in [
+            block.semantic_function,
+            block.semantic_block,
+            block.kernel_ir_block,
+            block.source_statement_count,
+        ] {
+            push_u32(&mut bytes, value);
+        }
+    }
     for span in statements {
         for value in [
             span.semantic_function,
@@ -707,6 +890,17 @@ fn encode(
         return Err(ProductionCorrespondenceEvidenceErrorV4::InvalidLength);
     }
     Ok(bytes)
+}
+
+fn decode_block(
+    reader: &mut ReaderV4<'_>,
+) -> Result<MirToKirBlockCorrespondenceEvidenceV4, ProductionCorrespondenceEvidenceErrorV4> {
+    Ok(MirToKirBlockCorrespondenceEvidenceV4 {
+        semantic_function: reader.u32()?,
+        semantic_block: reader.u32()?,
+        kernel_ir_block: reader.u32()?,
+        source_statement_count: reader.u32()?,
+    })
 }
 
 fn decode_statement(
@@ -765,6 +959,10 @@ fn push_u16(bytes: &mut Vec<u8>, value: u16) {
 }
 
 fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u64(bytes: &mut Vec<u8>, value: u64) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
@@ -835,6 +1033,10 @@ impl<'a> ReaderV4<'a> {
 
     fn u32(&mut self) -> Result<u32, ProductionCorrespondenceEvidenceErrorV4> {
         Ok(u32::from_le_bytes(self.fixed()?))
+    }
+
+    fn u64(&mut self) -> Result<u64, ProductionCorrespondenceEvidenceErrorV4> {
+        Ok(u64::from_le_bytes(self.fixed()?))
     }
 
     fn usize_u32(&mut self) -> Result<usize, ProductionCorrespondenceEvidenceErrorV4> {

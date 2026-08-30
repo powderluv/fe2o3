@@ -642,10 +642,13 @@ Safe ownership of resources used by asynchronous copies is documented in
   crate-namespace axis, while the exact protected rustc invocation still
   retains the canonical flag. The scalar gfx942 vertical slice derives one
   identity-bound semantic induction certificate for its checked `u32` loop
-  increment while preserving the LLVM overflow guard. That certificate remains
-  inert: it does not authorize removing the guard until its exact report and
-  source-to-KIR-to-LLVM refinement are durably retained and independently
-  authenticated.
+  increment while preserving the LLVM overflow guard. The current proof-input
+  validator strictly decodes canonical KIR V8, deterministically replays the
+  exact induction report, and requires that certificate's precise MIR span to
+  contain exactly one checked KIR addition. Correspondence and formal-memory
+  evidence bind the same versioned KIR digest and byte length. This evidence
+  remains inert and does not establish KIR-to-LLVM or LLVM-to-machine
+  refinement or authorize removing the guard.
 - `fe2o3-core` provides HIP-backed contexts, streams, device buffers, pinned
   host buffers, events, synchronous transfers, and event-backed borrowed and
   owned asynchronous transfers. Its default/production surface exports no raw

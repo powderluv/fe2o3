@@ -153,6 +153,13 @@
     },
     {
       "from": "fe2o3-verifier",
+      "to": "dialect-amdgcn",
+      "kinds": [
+        "normal"
+      ]
+    },
+    {
+      "from": "fe2o3-verifier",
       "to": "dialect-kernel",
       "kinds": [
         "normal"

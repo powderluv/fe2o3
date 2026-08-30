@@ -29,6 +29,7 @@ mod monomorphization_dead_binding;
 mod multi_kernel_proof;
 mod persistent_freshness;
 mod plan;
+mod production_kir_to_llvm_replay_v1;
 mod proof_capsule;
 mod result;
 mod retained_functional_refinement_runtime_v1;
@@ -55,7 +56,8 @@ pub use authenticated_verus_execution_v2::{
 pub use compiler_proof_binding_v3::{
     CompilerProofInputValidationErrorV3, CompilerProofInputValidationErrorV4,
     ValidatedCompilerProofInputsV3, ValidatedCompilerProofInputsV4,
-    validate_compiler_proof_inputs_v3, validate_compiler_proof_inputs_v4,
+    VerifiedSemanticU32InductionKirAnchorV1, validate_compiler_proof_inputs_v3,
+    validate_compiler_proof_inputs_v4,
 };
 // Deprecated compatibility exports. Despite their Verus-oriented names, these
 // authenticate and execute only the recorder; they do not show that Verus or a
@@ -159,6 +161,10 @@ pub use persistent_freshness::{
 pub use plan::{
     CommandSpec, InvocationPaths, InvocationPlan, MAX_PATH_BYTES, MAX_TIMEOUT_SECONDS, PlanError,
     VerifierPolicy, build_invocation_plan,
+};
+pub use production_kir_to_llvm_replay_v1::{
+    CompilerKirToLlvmReplayValidationErrorV1, ValidatedCompilerKirToLlvmReplayV1,
+    validate_compiler_kir_to_llvm_replay_v1,
 };
 pub use proof_capsule::{
     MAX_PROCESS_LOCAL_PROOF_CAPSULE_RECORDS_V1, MAX_PROOF_CAPSULE_BYTES_V1,

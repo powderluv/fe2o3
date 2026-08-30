@@ -58,9 +58,17 @@ impl VerifiedCanonicalKernelIrV9 {
     pub fn from_canonical_bytes(
         canonical_bytes: Vec<u8>,
     ) -> Result<Self, VerifiedCanonicalKernelIrErrorV9> {
+        Self::from_canonical_bytes_with_module(canonical_bytes).map(|(owner, _)| owner)
+    }
+
+    /// Takes ownership of exact canonical V9 bytes and returns both their owner and the same
+    /// semantically verified decoded module without performing a second full decode.
+    pub fn from_canonical_bytes_with_module(
+        canonical_bytes: Vec<u8>,
+    ) -> Result<(Self, Module), VerifiedCanonicalKernelIrErrorV9> {
         let decoded = decode_exact_v9(&canonical_bytes)?;
         verify_module(&decoded).map_err(VerifiedCanonicalKernelIrErrorV9::Verification)?;
-        Ok(Self::from_validated_bytes(canonical_bytes))
+        Ok((Self::from_validated_bytes(canonical_bytes), decoded))
     }
 
     pub fn canonical_bytes(&self) -> &[u8] {
@@ -201,5 +209,15 @@ mod tests {
             VerifiedCanonicalKernelIrV9::from_canonical_bytes(bytes),
             Err(VerifiedCanonicalKernelIrErrorV9::NotExactV9 { version: 8 })
         ));
+    }
+
+    #[test]
+    fn exact_owner_returns_the_same_verified_v9_module() {
+        let module = Module::new("canonical-v9-module-custody");
+        let bytes = crate::encode_module_v9(&module).unwrap();
+        let (owner, decoded) =
+            VerifiedCanonicalKernelIrV9::from_canonical_bytes_with_module(bytes.clone()).unwrap();
+        assert_eq!(owner.canonical_bytes(), bytes);
+        assert_eq!(decoded, module);
     }
 }
