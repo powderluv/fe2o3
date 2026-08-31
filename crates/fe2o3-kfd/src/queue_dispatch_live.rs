@@ -699,16 +699,34 @@ fn patch_kernarg_pointers(
             .ok_or(ComputeAqlQueueSessionErrorV1::Contract(
                 "pointer-fixup target binding",
             ))?;
-        let end = fixup.kernarg_offset.checked_add(POINTER_BYTES).ok_or(
-            ComputeAqlQueueSessionErrorV1::Contract("pointer-fixup kernarg range"),
-        )?;
-        kernarg
-            .get_mut(fixup.kernarg_offset..end)
-            .ok_or(ComputeAqlQueueSessionErrorV1::Contract(
-                "pointer-fixup kernarg binding",
-            ))?
-            .copy_from_slice(&address.to_le_bytes());
+        patch_kernarg_pointer(kernarg, fixup, address)?;
     }
+    Ok(())
+}
+
+fn patch_kernarg_pointer(
+    kernarg: &mut [u8],
+    fixup: &Gfx942KfdDispatchPointerFixupV1,
+    address: u64,
+) -> Result<(), ComputeAqlQueueSessionErrorV1> {
+    if fixup.required_alignment == 0
+        || !fixup.required_alignment.is_power_of_two()
+        || address == 0
+        || !address.is_multiple_of(fixup.required_alignment)
+    {
+        return Err(ComputeAqlQueueSessionErrorV1::Contract(
+            "pointer-fixup non-null aligned address",
+        ));
+    }
+    let end = fixup.kernarg_offset.checked_add(POINTER_BYTES).ok_or(
+        ComputeAqlQueueSessionErrorV1::Contract("pointer-fixup kernarg range"),
+    )?;
+    kernarg
+        .get_mut(fixup.kernarg_offset..end)
+        .ok_or(ComputeAqlQueueSessionErrorV1::Contract(
+            "pointer-fixup kernarg binding",
+        ))?
+        .copy_from_slice(&address.to_le_bytes());
     Ok(())
 }
 
@@ -1094,6 +1112,23 @@ mod tests {
             ),
             Err(Gfx942KfdDispatchRequestErrorV1::DuplicatePointerFixup)
         );
+    }
+
+    #[test]
+    fn pointer_patch_writes_only_a_nonzero_address_at_each_required_alignment() {
+        for (alignment, address) in [(1, 0x20_001), (2, 0x20_002), (4, 0x20_004), (8, 0x20_008)] {
+            let fixup = Gfx942KfdDispatchPointerFixupV1::new(8, 0, 0, alignment);
+            let mut kernarg = [0_u8; 24];
+            patch_kernarg_pointer(&mut kernarg, &fixup, address).unwrap();
+            assert_eq!(&kernarg[8..16], &address.to_le_bytes());
+            assert_ne!(&kernarg[8..16], &[0; 8]);
+        }
+
+        let aligned = Gfx942KfdDispatchPointerFixupV1::new(0, 0, 0, 8);
+        assert!(patch_kernarg_pointer(&mut [0; 8], &aligned, 0).is_err());
+        assert!(patch_kernarg_pointer(&mut [0; 8], &aligned, 0x20_004).is_err());
+        let invalid_alignment = Gfx942KfdDispatchPointerFixupV1::new(0, 0, 0, 0);
+        assert!(patch_kernarg_pointer(&mut [0; 8], &invalid_alignment, 0x20_000).is_err());
     }
 
     #[test]

@@ -652,7 +652,11 @@ impl SharedGttMappedResourceFactsV1 {
         }
         let address = self.gpu_va.checked_add(offset)?;
         let end = offset.checked_add(byte_len)?;
-        if byte_len == 0 || end > self.gpu_va_bytes || !address.is_multiple_of(alignment) {
+        if byte_len == 0
+            || address == 0
+            || end > self.gpu_va_bytes
+            || !address.is_multiple_of(alignment)
+        {
             return None;
         }
         Some(address)
@@ -4421,6 +4425,19 @@ mod tests {
             ..facts
         };
         assert_eq!(overflowing.checked_gpu_subrange(4096, 8, 8), None);
+
+        let zero_address = SharedGttMappedResourceFactsV1 {
+            gpu_va: 0,
+            logical_bytes: 8192,
+            cpu_mapping_bytes: 8192,
+            gpu_va_bytes: 8192,
+            mapping,
+            publication: MemoryPublicationKeyV1 {
+                mapping,
+                id: MemoryPublicationIdV1(7),
+            },
+        };
+        assert_eq!(zero_address.checked_gpu_subrange(0, 1, 1), None);
     }
 
     #[test]

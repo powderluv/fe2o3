@@ -1,5 +1,6 @@
 use std::fmt;
 use std::marker::PhantomData;
+use std::mem::align_of;
 use std::ptr::NonNull;
 
 use fe2o3_aql::AqlDispatchGeometryV1;
@@ -137,20 +138,22 @@ impl<'allocation, T: GeneratedDeviceScalarV1> GeneratedKfdReadSlice<'allocation,
                 GeneratedArgumentBorrowV1::new(),
             )
             .map_err(GeneratedKfdArgumentError::Pack)?;
-        let buffer = (!self.values.is_empty())
-            .then(|| {
+        let storage = if self.values.is_empty() {
+            GeneratedKfdSliceStorageV1::NonNullEmptySlice
+        } else {
+            GeneratedKfdSliceStorageV1::LogicalBuffer(
                 Gfx942RuntimeDispatchBufferV1::new(
                     encode_values(self.values),
                     Gfx942RuntimeBufferAccessV1::ReadOnly,
                 )
-            })
-            .transpose()
-            .map_err(GeneratedKfdArgumentError::Buffer)?;
+                .map_err(GeneratedKfdArgumentError::Buffer)?,
+            )
+        };
         Ok(GeneratedKfdSliceBinding {
             argument_index,
             input,
-            buffer,
-            required_alignment: T::RUST_SCALAR_TYPE.size_bytes(),
+            storage,
+            required_alignment: generated_slice_required_alignment_v1::<T>(),
             writeback: None,
         })
     }
@@ -225,8 +228,8 @@ impl<'allocation, T: GeneratedDeviceScalarV1> GeneratedKfdWriteSlice<'allocation
             return Ok(GeneratedKfdSliceBinding {
                 argument_index,
                 input,
-                buffer: None,
-                required_alignment: T::RUST_SCALAR_TYPE.size_bytes(),
+                storage: GeneratedKfdSliceStorageV1::NonNullEmptySlice,
+                required_alignment: generated_slice_required_alignment_v1::<T>(),
                 writeback: None,
             });
         }
@@ -246,8 +249,8 @@ impl<'allocation, T: GeneratedDeviceScalarV1> GeneratedKfdWriteSlice<'allocation
         Ok(GeneratedKfdSliceBinding {
             argument_index,
             input,
-            buffer: Some(buffer),
-            required_alignment: T::RUST_SCALAR_TYPE.size_bytes(),
+            storage: GeneratedKfdSliceStorageV1::LogicalBuffer(buffer),
+            required_alignment: generated_slice_required_alignment_v1::<T>(),
             writeback: Some(writeback),
         })
     }
@@ -315,8 +318,8 @@ impl<'allocation, T: GeneratedDeviceScalarV1> GeneratedKfdReadWriteSlice<'alloca
             return Ok(GeneratedKfdSliceBinding {
                 argument_index,
                 input,
-                buffer: None,
-                required_alignment: T::RUST_SCALAR_TYPE.size_bytes(),
+                storage: GeneratedKfdSliceStorageV1::NonNullEmptySlice,
+                required_alignment: generated_slice_required_alignment_v1::<T>(),
                 writeback: None,
             });
         }
@@ -330,8 +333,8 @@ impl<'allocation, T: GeneratedDeviceScalarV1> GeneratedKfdReadWriteSlice<'alloca
         Ok(GeneratedKfdSliceBinding {
             argument_index,
             input,
-            buffer: Some(buffer),
-            required_alignment: T::RUST_SCALAR_TYPE.size_bytes(),
+            storage: GeneratedKfdSliceStorageV1::LogicalBuffer(buffer),
+            required_alignment: generated_slice_required_alignment_v1::<T>(),
             writeback: Some(writeback),
         })
     }
@@ -342,9 +345,14 @@ impl<'allocation, T: GeneratedDeviceScalarV1> GeneratedKfdReadWriteSlice<'alloca
 pub struct GeneratedKfdSliceBinding<'allocation> {
     argument_index: usize,
     input: GeneratedArgumentInputV1<'allocation>,
-    buffer: Option<Gfx942RuntimeDispatchBufferV1>,
+    storage: GeneratedKfdSliceStorageV1,
     required_alignment: u64,
     writeback: Option<GeneratedKfdWriteback<'allocation>>,
+}
+
+enum GeneratedKfdSliceStorageV1 {
+    LogicalBuffer(Gfx942RuntimeDispatchBufferV1),
+    NonNullEmptySlice,
 }
 
 /// Complete generated scalar/slice binding before deterministic ABI packing.
@@ -378,6 +386,7 @@ impl<'allocation> GeneratedKfdArgumentBinding<'allocation> {
         let mut buffers = Vec::new();
         let mut pointer_fixups = Vec::new();
         let mut completion = Vec::new();
+        let mut empty_slice_sentinel_buffer_index = None;
         for memory in self.memory_arguments {
             if !memory.input.is_address_free_slice_v1() {
                 return Err(GeneratedKfdArgumentError::AddressBearingInput {
@@ -385,14 +394,6 @@ impl<'allocation> GeneratedKfdArgumentBinding<'allocation> {
                 });
             }
             inputs.push(memory.input);
-            let Some(buffer) = memory.buffer else {
-                if memory.writeback.is_some() {
-                    return Err(GeneratedKfdArgumentError::WritebackWithoutBuffer {
-                        argument_index: memory.argument_index,
-                    });
-                }
-                continue;
-            };
             let component = plan
                 .address_free_slice_pointer_component_v1(memory.argument_index)
                 .map_err(GeneratedKfdArgumentError::Pack)?;
@@ -402,21 +403,51 @@ impl<'allocation> GeneratedKfdArgumentBinding<'allocation> {
                     offset: component.offset(),
                 }
             })?;
-            let buffer_index = buffers.len();
-            let access = buffer.access();
-            let byte_len = buffer.bytes().len();
+            let buffer_index = match memory.storage {
+                GeneratedKfdSliceStorageV1::LogicalBuffer(buffer) => {
+                    let buffer_index = buffers.len();
+                    let access = buffer.access();
+                    let byte_len = buffer.bytes().len();
+                    completion.push(GeneratedKfdCompletedBufferExpectation {
+                        access,
+                        byte_len,
+                        non_null_empty_slice_sentinel: false,
+                        writeback: memory.writeback,
+                    });
+                    buffers.push(buffer);
+                    buffer_index
+                }
+                GeneratedKfdSliceStorageV1::NonNullEmptySlice => {
+                    if memory.writeback.is_some() {
+                        return Err(GeneratedKfdArgumentError::WritebackWithoutBuffer {
+                            argument_index: memory.argument_index,
+                        });
+                    }
+                    match empty_slice_sentinel_buffer_index {
+                        Some(buffer_index) => buffer_index,
+                        None => {
+                            let buffer_index = buffers.len();
+                            let buffer = Gfx942RuntimeDispatchBufferV1::new_non_null_empty_slice_sentinel_v1()
+                                .map_err(GeneratedKfdArgumentError::Buffer)?;
+                            completion.push(GeneratedKfdCompletedBufferExpectation {
+                                access: buffer.access(),
+                                byte_len: 0,
+                                non_null_empty_slice_sentinel: true,
+                                writeback: None,
+                            });
+                            buffers.push(buffer);
+                            empty_slice_sentinel_buffer_index = Some(buffer_index);
+                            buffer_index
+                        }
+                    }
+                }
+            };
             pointer_fixups.push(Gfx942KfdDispatchPointerFixupV1::new(
                 kernarg_offset,
                 buffer_index,
                 0,
                 memory.required_alignment,
             ));
-            completion.push(GeneratedKfdCompletedBufferExpectation {
-                access,
-                byte_len,
-                writeback: memory.writeback,
-            });
-            buffers.push(buffer);
         }
         let packed = plan.pack(inputs).map_err(GeneratedKfdArgumentError::Pack)?;
         Ok(GeneratedKfdPackedArguments {
@@ -425,6 +456,7 @@ impl<'allocation> GeneratedKfdArgumentBinding<'allocation> {
             explicit_kernarg: packed.bytes().to_vec(),
             buffers,
             pointer_fixups,
+            empty_slice_sentinel_buffer_index,
             completion: GeneratedKfdCompletion {
                 buffers: completion,
             },
@@ -440,6 +472,7 @@ pub struct GeneratedKfdPackedArguments<'allocation> {
     explicit_kernarg: Vec<u8>,
     buffers: Vec<Gfx942RuntimeDispatchBufferV1>,
     pointer_fixups: Vec<Gfx942KfdDispatchPointerFixupV1>,
+    empty_slice_sentinel_buffer_index: Option<usize>,
     completion: GeneratedKfdCompletion<'allocation>,
 }
 
@@ -462,6 +495,12 @@ impl<'allocation> GeneratedKfdPackedArguments<'allocation> {
 
     pub fn pointer_fixups(&self) -> &[Gfx942KfdDispatchPointerFixupV1] {
         &self.pointer_fixups
+    }
+
+    /// Returns the transport-only buffer shared by zero-length slice fixups, when present.
+    #[doc(hidden)]
+    pub const fn empty_slice_sentinel_buffer_index_v1(&self) -> Option<usize> {
+        self.empty_slice_sentinel_buffer_index
     }
 
     pub fn into_runtime_inputs(
@@ -502,7 +541,13 @@ impl GeneratedKfdCompletion<'_> {
         let completed = result
             .buffers()
             .iter()
-            .map(|buffer| (buffer.access(), buffer.bytes()))
+            .map(|buffer| {
+                (
+                    buffer.access(),
+                    buffer.bytes(),
+                    buffer.is_non_null_empty_slice_sentinel_v1(),
+                )
+            })
             .collect::<Vec<_>>();
         self.apply_completed_buffers(&completed)?;
         Ok(result)
@@ -510,7 +555,7 @@ impl GeneratedKfdCompletion<'_> {
 
     fn apply_completed_buffers(
         self,
-        completed: &[(Gfx942RuntimeBufferAccessV1, &[u8])],
+        completed: &[(Gfx942RuntimeBufferAccessV1, &[u8], bool)],
     ) -> Result<(), GeneratedKfdCompletionError> {
         if self.buffers.len() != completed.len() {
             return Err(GeneratedKfdCompletionError::BufferCount {
@@ -518,9 +563,14 @@ impl GeneratedKfdCompletion<'_> {
                 actual: completed.len(),
             });
         }
-        for (index, (expected, (access, bytes))) in self.buffers.iter().zip(completed).enumerate() {
+        for (index, (expected, (access, bytes, sentinel))) in
+            self.buffers.iter().zip(completed).enumerate()
+        {
             if expected.access != *access {
                 return Err(GeneratedKfdCompletionError::Access { index });
+            }
+            if expected.non_null_empty_slice_sentinel != *sentinel {
+                return Err(GeneratedKfdCompletionError::BufferKind { index });
             }
             if expected.byte_len != bytes.len() {
                 return Err(GeneratedKfdCompletionError::ByteLength {
@@ -530,7 +580,7 @@ impl GeneratedKfdCompletion<'_> {
                 });
             }
         }
-        for (expected, (_, bytes)) in self.buffers.into_iter().zip(completed) {
+        for (expected, (_, bytes, _)) in self.buffers.into_iter().zip(completed) {
             if let Some(writeback) = expected.writeback {
                 writeback.apply(bytes);
             }
@@ -542,7 +592,18 @@ impl GeneratedKfdCompletion<'_> {
 struct GeneratedKfdCompletedBufferExpectation<'allocation> {
     access: Gfx942RuntimeBufferAccessV1,
     byte_len: usize,
+    non_null_empty_slice_sentinel: bool,
     writeback: Option<GeneratedKfdWriteback<'allocation>>,
+}
+
+fn generated_slice_required_alignment_v1<T: GeneratedDeviceScalarV1>() -> u64 {
+    let rust_alignment = u64::try_from(align_of::<T>()).expect("Rust alignment fits u64");
+    assert_eq!(
+        rust_alignment,
+        T::RUST_SCALAR_TYPE.size_bytes(),
+        "sealed generated scalar alignment differs from its authenticated layout"
+    );
+    rust_alignment
 }
 
 struct GeneratedKfdWriteback<'allocation> {
@@ -700,6 +761,9 @@ pub enum GeneratedKfdCompletionError {
     Access {
         index: usize,
     },
+    BufferKind {
+        index: usize,
+    },
     ByteLength {
         index: usize,
         expected: usize,
@@ -722,6 +786,10 @@ impl fmt::Display for GeneratedKfdCompletionError {
                     "KFD completed buffer {index} changed access class"
                 )
             }
+            Self::BufferKind { index } => write!(
+                formatter,
+                "KFD completed buffer {index} changed logical-buffer versus empty-sentinel kind"
+            ),
             Self::ByteLength {
                 index,
                 expected,
@@ -819,6 +887,17 @@ mod tests {
         let generated =
             CompilerGeneratedArgumentLayoutV1::new(40, 8, PointerWidth::Bits64, fields).unwrap();
         validate_argument_packing(KernelId::from_bytes([0x42; 32]), &manifest, &generated).unwrap()
+    }
+
+    fn mixed_empty_read_plan() -> GeneratedArgumentPackingPlanV1 {
+        let fields = vec![
+            slice_field::<u8>("bytes", 0, false),
+            slice_field::<u64>("words", 16, false),
+        ];
+        let manifest = AbiLayout::new(32, 8, PointerWidth::Bits64, fields.clone()).unwrap();
+        let generated =
+            CompilerGeneratedArgumentLayoutV1::new(32, 8, PointerWidth::Bits64, fields).unwrap();
+        validate_argument_packing(KernelId::from_bytes([0x45; 32]), &manifest, &generated).unwrap()
     }
 
     fn write_only_plan(
@@ -988,7 +1067,7 @@ mod tests {
         let seed = packed.buffers()[0].bytes().to_vec();
         let completion = packed.completion;
         completion
-            .apply_completed_buffers(&[(Gfx942RuntimeBufferAccessV1::WriteOnly, &seed)])
+            .apply_completed_buffers(&[(Gfx942RuntimeBufferAccessV1::WriteOnly, &seed, false)])
             .unwrap();
         assert_eq!(output, [11, 22]);
 
@@ -1001,8 +1080,11 @@ mod tests {
                 .unwrap();
         let completion = packed.completion;
         assert!(matches!(
-            completion
-                .apply_completed_buffers(&[(Gfx942RuntimeBufferAccessV1::ReadWrite, &[9; 8])]),
+            completion.apply_completed_buffers(&[(
+                Gfx942RuntimeBufferAccessV1::ReadWrite,
+                &[9; 8],
+                false,
+            )]),
             Err(GeneratedKfdCompletionError::Access { index: 0 })
         ));
         assert_eq!(output, [11, 22]);
@@ -1087,7 +1169,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_slices_use_null_placeholders_without_runtime_buffers() {
+    fn empty_read_and_read_write_slices_share_one_non_null_transport_sentinel() {
         let plan = plan();
         let input = [];
         let mut output = [];
@@ -1105,9 +1187,116 @@ mod tests {
         .pack(&plan)
         .unwrap();
 
-        assert!(packed.buffers().is_empty());
-        assert!(packed.pointer_fixups().is_empty());
+        assert_eq!(packed.buffers().len(), 1);
+        assert!(packed.buffers()[0].is_non_null_empty_slice_sentinel_v1());
+        assert!(packed.buffers()[0].bytes().is_empty());
+        assert_eq!(
+            packed.buffers()[0].access(),
+            Gfx942RuntimeBufferAccessV1::ReadOnly
+        );
+        assert_eq!(packed.empty_slice_sentinel_buffer_index_v1(), Some(0));
+        assert_eq!(
+            packed.pointer_fixups(),
+            [
+                Gfx942KfdDispatchPointerFixupV1::new(0, 0, 0, 4),
+                Gfx942KfdDispatchPointerFixupV1::new(16, 0, 0, 4),
+            ]
+        );
         assert_eq!(&packed.explicit_kernarg()[..32], &[0; 32]);
+        assert_eq!(packed.completion.buffers.len(), 1);
+        assert_eq!(packed.completion.buffers[0].byte_len, 0);
+        assert!(packed.completion.buffers[0].non_null_empty_slice_sentinel);
+        let completion = packed.completion;
+        completion
+            .apply_completed_buffers(&[(Gfx942RuntimeBufferAccessV1::ReadOnly, &[], true)])
+            .unwrap();
+    }
+
+    #[test]
+    fn mixed_empty_scalar_types_share_sentinel_but_keep_each_required_alignment() {
+        let plan = mixed_empty_read_plan();
+        let bytes = [];
+        let words = [];
+        let bytes = GeneratedKfdReadSlice::<u8>::new(&bytes)
+            .bind_argument(&plan, 0)
+            .unwrap();
+        let words = GeneratedKfdReadSlice::<u64>::new(&words)
+            .bind_argument(&plan, 1)
+            .unwrap();
+        let packed = GeneratedKfdArgumentBinding::from_compiler_generated_parts(
+            Vec::new(),
+            vec![bytes, words],
+        )
+        .pack(&plan)
+        .unwrap();
+
+        assert_eq!(packed.buffers().len(), 1);
+        assert!(packed.buffers()[0].bytes().is_empty());
+        assert_eq!(
+            packed.pointer_fixups(),
+            [
+                Gfx942KfdDispatchPointerFixupV1::new(0, 0, 0, 1),
+                Gfx942KfdDispatchPointerFixupV1::new(16, 0, 0, 8),
+            ]
+        );
+        assert_eq!(packed.explicit_kernarg(), &[0; 32]);
+    }
+
+    fn assert_empty_write_only_sentinel(index_space: Option<RustDisjointIndexSpaceV1>) {
+        let plan = write_only_plan(index_space);
+        let mut canaries = [11_i32, 22];
+        let empty = &mut canaries[1..1];
+        let binding = match index_space {
+            Some(index_space) => GeneratedKfdWriteSlice::new(empty)
+                .bind_mapped_argument(&plan, 0, index_space)
+                .unwrap(),
+            None => GeneratedKfdWriteSlice::new(empty)
+                .bind_argument(&plan, 0)
+                .unwrap(),
+        };
+        let packed =
+            GeneratedKfdArgumentBinding::from_compiler_generated_parts(Vec::new(), vec![binding])
+                .pack(&plan)
+                .unwrap();
+        assert_eq!(packed.buffers().len(), 1);
+        assert!(packed.buffers()[0].is_non_null_empty_slice_sentinel_v1());
+        assert_eq!(packed.explicit_kernarg(), &[0; 16]);
+        assert_eq!(
+            packed.pointer_fixups(),
+            [Gfx942KfdDispatchPointerFixupV1::new(0, 0, 0, 4)]
+        );
+        packed
+            .completion
+            .apply_completed_buffers(&[(Gfx942RuntimeBufferAccessV1::ReadOnly, &[], true)])
+            .unwrap();
+        assert_eq!(canaries, [11, 22]);
+    }
+
+    #[test]
+    fn empty_write_only_mapped_and_unmapped_slices_have_no_writeback() {
+        assert_empty_write_only_sentinel(None);
+        assert_empty_write_only_sentinel(Some(
+            RustDisjointIndexSpaceV1::blocked_index_1d(1, 8).unwrap(),
+        ));
+
+        let plan = write_only_plan(None);
+        let mut canaries = [31_i32, 37];
+        let binding = GeneratedKfdWriteSlice::new(&mut canaries[1..1])
+            .bind_argument(&plan, 0)
+            .unwrap();
+        let packed =
+            GeneratedKfdArgumentBinding::from_compiler_generated_parts(Vec::new(), vec![binding])
+                .pack(&plan)
+                .unwrap();
+        assert!(matches!(
+            packed.completion.apply_completed_buffers(&[(
+                Gfx942RuntimeBufferAccessV1::ReadOnly,
+                &[],
+                false,
+            )]),
+            Err(GeneratedKfdCompletionError::BufferKind { index: 0 })
+        ));
+        assert_eq!(canaries, [31, 37]);
     }
 
     #[test]
@@ -1213,8 +1402,13 @@ mod tests {
             GeneratedKfdArgumentBinding::from_compiler_generated_parts(Vec::new(), vec![binding])
                 .pack(&plan)
                 .unwrap();
-        assert!(packed.buffers().is_empty());
-        assert!(packed.pointer_fixups().is_empty());
+        assert_eq!(packed.buffers().len(), 1);
+        assert!(packed.buffers()[0].is_non_null_empty_slice_sentinel_v1());
+        assert!(packed.buffers()[0].bytes().is_empty());
+        assert_eq!(
+            packed.pointer_fixups(),
+            [Gfx942KfdDispatchPointerFixupV1::new(0, 0, 0, 2)]
+        );
         assert_eq!(packed.explicit_kernarg(), &[0; 16]);
     }
 }

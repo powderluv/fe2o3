@@ -31,6 +31,8 @@ const GFX942_WAVEFRONT_SIZE_V1: u32 = 64;
 const GFX942_MAX_GROUP_SEGMENT_BYTES_V1: u64 = 64 * 1024;
 const GFX942_RUNTIME_DISPATCH_CONTRACT_DOMAIN_V1: &[u8] =
     b"fe2o3.runtime.gfx942-dispatch-contract.v1\0";
+const NON_NULL_EMPTY_SLICE_SENTINEL_DIGEST_LENGTH_V1: u64 = u64::MAX;
+const NON_NULL_EMPTY_SLICE_SENTINEL_ALLOCATION_BYTES_V1: usize = 1;
 
 #[derive(Clone, Copy)]
 struct Gfx942RuntimeKernelIdentityProjectionV1 {
@@ -77,12 +79,20 @@ impl Gfx942RuntimeBufferAccessV1 {
 pub struct Gfx942RuntimeDispatchBufferV1 {
     buffer: Gfx942KfdDispatchBufferV1,
     access: Gfx942RuntimeBufferAccessV1,
+    kind: Gfx942RuntimeDispatchBufferKindV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Gfx942RuntimeDispatchBufferKindV1 {
+    LogicalBytes,
+    NonNullEmptySliceSentinel,
 }
 
 pub(crate) struct Gfx942RuntimePreparedBufferPolicyV1 {
     access: Gfx942RuntimeBufferAccessV1,
-    byte_length: u64,
+    allocation_byte_length: u64,
     read_only_initial_bytes: Option<Vec<u8>>,
+    kind: Gfx942RuntimeDispatchBufferKindV1,
 }
 
 impl Gfx942RuntimePreparedBufferPolicyV1 {
@@ -91,11 +101,18 @@ impl Gfx942RuntimePreparedBufferPolicyV1 {
     }
 
     pub(crate) const fn byte_length(&self) -> u64 {
-        self.byte_length
+        self.allocation_byte_length
     }
 
     pub(crate) fn read_only_initial_bytes(&self) -> Option<&[u8]> {
         self.read_only_initial_bytes.as_deref()
+    }
+
+    pub(crate) const fn is_non_null_empty_slice_sentinel_v1(&self) -> bool {
+        matches!(
+            self.kind,
+            Gfx942RuntimeDispatchBufferKindV1::NonNullEmptySliceSentinel
+        )
     }
 }
 
@@ -107,15 +124,47 @@ impl Gfx942RuntimeDispatchBufferV1 {
         Ok(Self {
             buffer: Gfx942KfdDispatchBufferV1::new(bytes)?,
             access,
+            kind: Gfx942RuntimeDispatchBufferKindV1::LogicalBytes,
         })
     }
 
+    /// Creates the private transport allocation used to give a zero-length generated slice a
+    /// non-null device address. The allocation byte is not logical slice capacity and is always
+    /// read-only so any unexpected device write fails completion validation.
+    #[doc(hidden)]
+    pub fn new_non_null_empty_slice_sentinel_v1() -> Result<Self, Gfx942KfdDispatchRequestErrorV1> {
+        Ok(Self {
+            buffer: Gfx942KfdDispatchBufferV1::new(vec![
+                0;
+                NON_NULL_EMPTY_SLICE_SENTINEL_ALLOCATION_BYTES_V1
+            ])?,
+            access: Gfx942RuntimeBufferAccessV1::ReadOnly,
+            kind: Gfx942RuntimeDispatchBufferKindV1::NonNullEmptySliceSentinel,
+        })
+    }
+
+    /// Returns only logical buffer bytes. A non-null empty-slice sentinel has no logical bytes.
     pub fn bytes(&self) -> &[u8] {
-        self.buffer.bytes()
+        match self.kind {
+            Gfx942RuntimeDispatchBufferKindV1::LogicalBytes => self.buffer.bytes(),
+            Gfx942RuntimeDispatchBufferKindV1::NonNullEmptySliceSentinel => &[],
+        }
     }
 
     pub const fn access(&self) -> Gfx942RuntimeBufferAccessV1 {
         self.access
+    }
+
+    #[doc(hidden)]
+    pub const fn is_non_null_empty_slice_sentinel_v1(&self) -> bool {
+        matches!(
+            self.kind,
+            Gfx942RuntimeDispatchBufferKindV1::NonNullEmptySliceSentinel
+        )
+    }
+
+    fn allocation_bytes(&self) -> &[u8] {
+        self.buffer.bytes()
     }
 
     fn into_kfd_buffer(self) -> Gfx942KfdDispatchBufferV1 {
@@ -397,10 +446,11 @@ pub fn prepare_gfx942_runtime_dispatch_v1(
         .iter()
         .map(|buffer| Gfx942RuntimePreparedBufferPolicyV1 {
             access: buffer.access(),
-            byte_length: u64::try_from(buffer.bytes().len())
+            allocation_byte_length: u64::try_from(buffer.allocation_bytes().len())
                 .expect("validated runtime buffer length fits u64"),
             read_only_initial_bytes: (buffer.access() == Gfx942RuntimeBufferAccessV1::ReadOnly)
-                .then(|| buffer.bytes().to_vec()),
+                .then(|| buffer.allocation_bytes().to_vec()),
+            kind: buffer.kind,
         })
         .collect();
     let buffers = inputs
@@ -471,7 +521,12 @@ fn derive_dispatch_contract_sha256_v1(
     );
     for buffer in buffers {
         digest.update([buffer.access().canonical_tag()]);
-        update_length_delimited_v1(&mut digest, buffer.bytes());
+        if buffer.is_non_null_empty_slice_sentinel_v1() {
+            digest.update(NON_NULL_EMPTY_SLICE_SENTINEL_DIGEST_LENGTH_V1.to_le_bytes());
+            digest.update(buffer.allocation_bytes());
+        } else {
+            update_length_delimited_v1(&mut digest, buffer.bytes());
+        }
     }
     digest.update(
         u64::try_from(pointer_fixups.len())
@@ -738,6 +793,48 @@ mod tests {
 
     fn geometry() -> AqlDispatchGeometryV1 {
         AqlDispatchGeometryV1::new([130, 4, 1], [64, 2, 1]).unwrap()
+    }
+
+    #[test]
+    fn empty_slice_sentinel_owns_physical_storage_but_exposes_no_logical_bytes() {
+        let sentinel =
+            Gfx942RuntimeDispatchBufferV1::new_non_null_empty_slice_sentinel_v1().unwrap();
+        assert_eq!(sentinel.access(), Gfx942RuntimeBufferAccessV1::ReadOnly);
+        assert!(sentinel.is_non_null_empty_slice_sentinel_v1());
+        assert!(sentinel.bytes().is_empty());
+        assert_eq!(sentinel.allocation_bytes(), &[0]);
+
+        let ordinary =
+            Gfx942RuntimeDispatchBufferV1::new(vec![0], Gfx942RuntimeBufferAccessV1::ReadOnly)
+                .unwrap();
+        assert!(!ordinary.is_non_null_empty_slice_sentinel_v1());
+        assert_eq!(ordinary.bytes(), &[0]);
+    }
+
+    #[test]
+    fn empty_slice_sentinel_kind_is_bound_into_dispatch_identity() {
+        let mut case = DispatchContractCaseV1::baseline();
+        case.buffers = vec![(Gfx942RuntimeBufferAccessV1::ReadOnly, vec![0])];
+        case.pointer_fixups = vec![Gfx942KfdDispatchPointerFixupV1::new(0, 0, 0, 8)];
+        let ordinary_identity = case.identity();
+        let sentinel =
+            Gfx942RuntimeDispatchBufferV1::new_non_null_empty_slice_sentinel_v1().unwrap();
+        let sentinel_identity = derive_dispatch_contract_sha256_v1(
+            case.finalized_hsaco_length,
+            case.identity,
+            &case.kernel_name,
+            &case.image,
+            case.descriptor_offset,
+            &case.kernarg,
+            case.kernarg_alignment,
+            &[sentinel],
+            &case.pointer_fixups,
+            case.geometry,
+            case.group_segment_bytes,
+            case.timeout_milliseconds,
+        );
+
+        assert_ne!(ordinary_identity, sentinel_identity);
     }
 
     #[test]

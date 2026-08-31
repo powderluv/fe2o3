@@ -14,6 +14,8 @@ use fe2o3_kfd::{
 };
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+use crate::Gfx942RuntimeDispatchBufferKindV1;
 use crate::{
     Gfx942RuntimeBufferAccessV1, Gfx942RuntimePreparedBufferPolicyV1,
     PreparedGfx942RuntimeDispatchV1,
@@ -195,6 +197,7 @@ impl AuthorizedRuntimeDebugTelemetrySessionV1 {
 pub struct Gfx942AuthorizedRuntimeCompletedBufferV1 {
     bytes: Vec<u8>,
     access: Gfx942RuntimeBufferAccessV1,
+    non_null_empty_slice_sentinel: bool,
 }
 
 impl Gfx942AuthorizedRuntimeCompletedBufferV1 {
@@ -208,6 +211,12 @@ impl Gfx942AuthorizedRuntimeCompletedBufferV1 {
 
     pub const fn access(&self) -> Gfx942RuntimeBufferAccessV1 {
         self.access
+    }
+
+    /// Reports a retained transport allocation for a logical zero-length generated slice.
+    #[doc(hidden)]
+    pub const fn is_non_null_empty_slice_sentinel_v1(&self) -> bool {
+        self.non_null_empty_slice_sentinel
     }
 }
 
@@ -645,8 +654,9 @@ fn validate_completed_buffers_v1(
             return Err(CompletedBufferValidationErrorV1::ReadOnlyModified { index });
         }
         completed.push(Gfx942AuthorizedRuntimeCompletedBufferV1 {
-            bytes,
+            bytes: completed_buffer_logical_bytes_v1(&policy, bytes),
             access: policy.access(),
+            non_null_empty_slice_sentinel: policy.is_non_null_empty_slice_sentinel_v1(),
         });
     }
     Ok(Gfx942AuthorizedRuntimeDispatchResultV1 {
@@ -655,6 +665,17 @@ fn validate_completed_buffers_v1(
         queue_id,
         completion_elapsed,
     })
+}
+
+fn completed_buffer_logical_bytes_v1(
+    policy: &Gfx942RuntimePreparedBufferPolicyV1,
+    allocation_bytes: Vec<u8>,
+) -> Vec<u8> {
+    if policy.is_non_null_empty_slice_sentinel_v1() {
+        Vec::new()
+    } else {
+        allocation_bytes
+    }
 }
 
 fn completed_buffer_satisfies_policy_v1(
@@ -824,8 +845,9 @@ mod tests {
     fn completed_read_only_buffers_must_preserve_every_byte() {
         let read_only = Gfx942RuntimePreparedBufferPolicyV1 {
             access: Gfx942RuntimeBufferAccessV1::ReadOnly,
-            byte_length: 4,
+            allocation_byte_length: 4,
             read_only_initial_bytes: Some(vec![1, 2, 3, 4]),
+            kind: Gfx942RuntimeDispatchBufferKindV1::LogicalBytes,
         };
         assert!(completed_buffer_satisfies_policy_v1(
             &read_only,
@@ -850,8 +872,9 @@ mod tests {
         ] {
             let writable = Gfx942RuntimePreparedBufferPolicyV1 {
                 access,
-                byte_length: 3,
+                allocation_byte_length: 3,
                 read_only_initial_bytes: None,
+                kind: Gfx942RuntimeDispatchBufferKindV1::LogicalBytes,
             };
             assert!(completed_buffer_satisfies_policy_v1(&writable, &[9, 8, 7]));
             assert!(!completed_buffer_has_expected_length_v1(&writable, &[9, 8]));
@@ -864,6 +887,23 @@ mod tests {
             error,
             Gfx942AuthorizedRuntimeExecutionErrorV1::CompletedBufferLengthMismatch { index: 2 }
         ));
+    }
+
+    #[test]
+    fn empty_slice_sentinel_policy_has_no_logical_capacity_and_rejects_mutation() {
+        let sentinel = Gfx942RuntimePreparedBufferPolicyV1 {
+            access: Gfx942RuntimeBufferAccessV1::ReadOnly,
+            allocation_byte_length: 1,
+            read_only_initial_bytes: Some(vec![0]),
+            kind: Gfx942RuntimeDispatchBufferKindV1::NonNullEmptySliceSentinel,
+        };
+
+        assert!(sentinel.is_non_null_empty_slice_sentinel_v1());
+        assert!(completed_buffer_has_expected_length_v1(&sentinel, &[0]));
+        assert!(completed_buffer_satisfies_policy_v1(&sentinel, &[0]));
+        assert!(!completed_buffer_satisfies_policy_v1(&sentinel, &[1]));
+        assert!(!completed_buffer_has_expected_length_v1(&sentinel, &[]));
+        assert!(completed_buffer_logical_bytes_v1(&sentinel, vec![0]).is_empty());
     }
 
     fn telemetry_digest_for_test(seed: u8) -> KfdTargetDebugTelemetryDigestV1 {
