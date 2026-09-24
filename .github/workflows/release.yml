@@ -31,7 +31,7 @@ jobs:
 
     steps:
       - name: Check out exact tag
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: refs/tags/${{ inputs.tag }}
           fetch-depth: 0
@@ -323,7 +323,7 @@ jobs:
           )
 
       - name: Upload validated source artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: fe2o3-source-release-${{ inputs.tag }}
           path: dist/
@@ -349,14 +349,14 @@ jobs:
 
     steps:
       - name: Check out exact tag
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: refs/tags/${{ inputs.tag }}
           fetch-depth: 1
           persist-credentials: false
 
       - name: Download validated source artifacts
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: fe2o3-source-release-${{ inputs.tag }}
           path: dist
@@ -462,7 +462,7 @@ jobs:
 
       - name: Attest source artifacts
         id: attest
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-path: |
             dist/*.tar.gz
