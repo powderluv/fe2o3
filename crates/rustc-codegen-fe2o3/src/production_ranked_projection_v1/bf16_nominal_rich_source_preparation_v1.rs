@@ -16,8 +16,16 @@ struct RichPreparedSourceV1 {
 pub(in crate::production_ranked_projection_v1) struct RichNominalSourceTablesV1<'a> {
     function: &'a SemanticFunctionDeclV1,
     prepared: &'a RichPreparedSourceV1,
+    // Equality only within this original HRTB loan; never dereferenced or exported.
+    original_ledger: (usize, CanonicalKernelIrWorkLedgerIdentityV1),
 }
 impl RichNominalSourceTablesV1<'_> {
+    pub(in crate::production_ranked_projection_v1) fn belongs_to_original_ledger_v1(
+        &self,
+        expected: (usize, CanonicalKernelIrWorkLedgerIdentityV1),
+    ) -> bool {
+        self.original_ledger == expected
+    }
     pub(in crate::production_ranked_projection_v1) fn function(&self) -> &SemanticFunctionDeclV1 {
         self.function
     }
@@ -196,6 +204,7 @@ where
         let view = RichNominalSourceTablesV1 {
             function,
             prepared: &prepared,
+            original_ledger: (before.slot, before.ledger),
         };
         let result = inspect(&view, budget);
         drop(prepared);

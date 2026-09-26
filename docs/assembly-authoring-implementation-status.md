@@ -5,6 +5,19 @@ refreshes the current supported/pending matrix and identifies the missing owner
 and measured-budget decisions. It is proposed, not accepted; broad exits remain
 **M1/V1/V2/U1/U2/U3 (6/18)**.
 
+## Source-use and borrowed-local components — 2026-09-26
+
+The [component checkpoint](bf16-source-use-local-contract-components-20260926.md)
+adds source-occurrence selection and original-ledger borrowed local contracts.
+Regression passed 331 model and 2,723 backend tests (189 ignored), builds and
+17 telemetry controls. All 38 ordinary observation bodies and 52 artifacts are
+byte-identical to the source-origin checkpoint. The two new actual-source
+factories still require their separate real-source qualification; these are
+private component foundations, not complete operation streams or admission.
+The private diagnostic debugger build/static checks and 153 captured-evidence
+decoder controls also passed, without debugger startup or target execution.
+Accepted broad exits remain **M1/V1/V2/U1/U2/U3 (6/18)**.
+
 ## Actual source-call reference origins — 2026-09-26
 
 The [source-origin checkpoint](bf16-actual-root-reference-origins-qualification-20260926.md)

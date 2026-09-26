@@ -49,11 +49,14 @@ fn immutable_local_array_candidates_v1(
         .locals()
         .iter()
         .enumerate()
-        .map(|(local, declaration)| {
-            !declaration.role().is_entry_argument()
-                && inventory.counts[local] == 1
-                && inventory.assignments[local].is_some()
-                && !inventory.address_escaped[local]
+        .map(|(local, _declaration)| {
+            root_local_contracts_v1::immutable_candidate_v1(
+                function,
+                local,
+                &inventory.counts,
+                &inventory.assignments,
+                &inventory.address_escaped,
+            )
         })
         .collect()
 }

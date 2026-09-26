@@ -53,6 +53,12 @@ mod bf16_nominal_final_candidate_v1;
 mod canonical_assertion_facts_v1;
 mod capability_state_access_v1;
 mod root_checked_references_v1;
+// Borrowed local DATA; actual block-stream traversal and admission remain pending.
+#[allow(dead_code)]
+mod root_local_contracts_v1;
+// Source-use DATA and paid site components, not a complete nominal stream.
+#[allow(dead_code)]
+mod root_checked_reference_use_preparation_v1;
 // Paid reference-origin data still lacks its actual guarded-access roster join.
 mod root_entry_prefix_preparation_v1;
 mod root_guarded_access_preparation_v1;
@@ -19599,21 +19605,12 @@ fn bind_projected_access_site(
     guarded_sites: &mut [GuardedAccessSiteV1],
     site: ProjectedSemanticAccessSiteV1,
 ) -> Result<(), ProductionRankedProjectionErrorV1> {
-    for source in sources {
-        if source.semantic_site.replace(site).is_some() {
-            return Err(ProductionRankedProjectionErrorV1::Unsupported(
-                "a projected access was attributed to multiple semantic sites",
-            ));
-        }
-    }
-    for guarded in guarded_sites {
-        if guarded.access.semantic_site.replace(site).is_some() {
-            return Err(ProductionRankedProjectionErrorV1::Unsupported(
-                "a guarded access was attributed to multiple semantic sites",
-            ));
-        }
-    }
-    Ok(())
+    root_checked_reference_use_preparation_v1::bind_projected_access_site_with_resources_v1(
+        sources,
+        guarded_sites,
+        site,
+        &mut PreparationResourcesV1::unmetered(),
+    )
 }
 
 fn order_projected_block_effects(
@@ -23484,45 +23481,18 @@ fn project_place_access_with_atomic(
             "an atomic access whose ordering/scope contract is missing or attached to a non-atomic access",
         ));
     }
-    if let Some(origin) =
-        checked_reference_origin(place, block_index, &local_contracts.checked_references)?
-    {
-        match origin {
-            CheckedReferenceSourceV1::GuardedAccess(origin) => {
-                if atomic.is_some() {
-                    return Err(ProductionRankedProjectionErrorV1::Incomplete(
-                        "an atomic access through a checked disjoint reference before exact atomic capability projection",
-                    ));
-                }
-                let mut guarded = guarded_accesses.get(origin).cloned().ok_or(
-                    ProductionRankedProjectionErrorV1::Unsupported(
-                        "a checked disjoint reference whose access origin is out of range",
-                    ),
-                )?;
-                guarded.access = access;
-                guarded.source = source;
-                guarded_sites.try_reserve(1).map_err(|_| {
-                    ProductionRankedProjectionErrorV1::Unsupported(
-                        "checked disjoint access-site storage cannot be reserved",
-                    )
-                })?;
-                guarded_sites.push(GuardedAccessSiteV1 {
-                    insertion_operation: operations.len(),
-                    access: guarded,
-                });
-                return Ok(());
-            }
-            CheckedReferenceSourceV1::ProjectedSharedBorrow
-                if atomic.is_none() && access == AccessKindAttr::Read =>
-            {
-                return Ok(());
-            }
-            CheckedReferenceSourceV1::ProjectedSharedBorrow => {
-                return Err(ProductionRankedProjectionErrorV1::Unsupported(
-                    "a projected shared reference used for a non-read memory effect",
-                ));
-            }
-        }
+    let local_view = root_local_contracts_v1::BorrowedLocalContractsV1::legacy(local_contracts);
+    if let Some(origin) = local_view.origin(place, block_index)? {
+        return root_checked_reference_use_preparation_v1::append_checked_reference_site_v1(
+            origin,
+            access,
+            atomic,
+            source,
+            guarded_accesses,
+            guarded_sites,
+            operations,
+            &mut PreparationResourcesV1::unmetered(),
+        );
     }
     let private_borrow = projected_views.scalar_private_borrow(
         types,
@@ -23594,10 +23564,7 @@ fn project_place_access_with_atomic(
                                 || access != AccessKindAttr::Read
                                 || atomic.is_some()
                                 || place.projections().len() != 1
-                                || local_contracts
-                                    .immutable_locals
-                                    .get(place.local().index() as usize)
-                                    != Some(&true)
+                                || !local_view.immutable(place.local().index() as usize)
                             {
                                 return Err(ProductionRankedProjectionErrorV1::Incomplete(
                                     "a dynamic array index requires an immutable local scalar array",
@@ -23637,10 +23604,9 @@ fn project_place_access_with_atomic(
                             || place.projections().iter().any(|projection| {
                                 matches!(projection.kind(), SemanticProjectionKindV1::Field(_))
                             })
-                            || local_contracts
-                                .allocations
-                                .get(place.local().index() as usize)
-                                .is_none_or(Option::is_none);
+                            || local_view
+                                .allocation(place.local().index() as usize)
+                                .is_none();
                         let check = if needs_canonical {
                             if access != AccessKindAttr::Read
                                 || atomic.is_some()
@@ -23730,11 +23696,8 @@ fn project_place_access_with_atomic(
     }
     if indices.is_empty() && crosses_memory_boundary {
         let singleton = matches!(dereferenced_memory_space, Some(MemorySpaceAttr::Global))
-            && local_contracts
-                .allocations
-                .get(place.local().index() as usize)
-                .copied()
-                .flatten()
+            && local_view
+                .allocation(place.local().index() as usize)
                 .is_some_and(|contract| contract.singleton_object);
         if !singleton {
             return Err(ProductionRankedProjectionErrorV1::Incomplete(
@@ -23785,13 +23748,9 @@ fn project_place_access_with_atomic(
             ));
         }
         let allocation_origin = u64::from(input.source_argument) + 1;
-        let established = input.direct_local.and_then(|local| {
-            local_contracts
-                .allocations
-                .get(local.index() as usize)
-                .copied()
-                .flatten()
-        });
+        let established = input
+            .direct_local
+            .and_then(|local| local_view.allocation(local.index() as usize));
         if established.is_some_and(|contract| contract.allocation_origin != allocation_origin) {
             return Err(ProductionRankedProjectionErrorV1::Unsupported(
                 "canonical slice input disagrees with its source allocation",
@@ -23805,11 +23764,8 @@ fn project_place_access_with_atomic(
         }
     } else {
         match memory_space {
-            MemorySpaceAttr::Global => local_contracts
-                .allocations
-                .get(place.local().index() as usize)
-                .copied()
-                .flatten()
+            MemorySpaceAttr::Global => local_view
+                .allocation(place.local().index() as usize)
                 .ok_or(ProductionRankedProjectionErrorV1::Incomplete(
                     "an indexed global allocation lacks authenticated Rust pointer provenance",
                 ))?,
@@ -24513,6 +24469,8 @@ mod tests {
     include!("production_ranked_projection_v1/canonical_assertion_graph_v1_tests.rs");
     include!("production_ranked_projection_v1/root_recipe_core_v1_tests.rs");
     include!("production_ranked_projection_v1/root_checked_references_v1_tests.rs");
+    include!("production_ranked_projection_v1/root_checked_reference_use_preparation_v1_tests.rs");
+    include!("production_ranked_projection_v1/root_local_contracts_v1_tests.rs");
     include!("production_ranked_projection_v1/root_initial_capability_graph_v1_tests.rs");
     include!("production_ranked_projection_v1/root_reference_origin_preparation_v1_tests.rs");
     include!("production_ranked_projection_v1/root_invocation_index_preparation_v1_tests.rs");

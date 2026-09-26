@@ -155,6 +155,97 @@ impl ActualRootReferenceOriginsV1<'_> {
     }
 }
 
+/// Borrowed local-contract DATA inside the actual S5A source/owner loan.
+/// This is not a completed block stream, emitted access or ready capability.
+/// The ledger pair is compared only while its original lexical loan is live.
+pub(in crate::production_ranked_projection_v1) struct ActualRootLocalContractsV1<'a> {
+    origins: ActualRootReferenceOriginsV1<'a>,
+    local:
+        crate::production_ranked_projection_v1::root_local_contracts_v1::BorrowedLocalContractsV1<
+            'a,
+        >,
+    ledger: (usize, CanonicalKernelIrWorkLedgerIdentityV1),
+}
+impl ActualRootLocalContractsV1<'_> {
+    pub(in crate::production_ranked_projection_v1) fn origins(
+        &self,
+    ) -> &ActualRootReferenceOriginsV1<'_> {
+        &self.origins
+    }
+    /// Raw coordinates produce only DATA; they do not authenticate a source
+    /// occurrence, assign a semantic site or manufacture an operation cursor.
+    pub(in crate::production_ranked_projection_v1) fn query(
+        &self,
+        place: &SemanticPlaceV1,
+        block: usize,
+        resources: &mut PreparationResourcesV1<'_, '_>,
+    ) -> Result<
+        crate::production_ranked_projection_v1::root_local_contracts_v1::LocalContractDecisionV1,
+    > {
+        self.local.query_on_ledger(
+            self.origins.guarded.prefix.function,
+            place,
+            block,
+            self.ledger,
+            resources,
+        )
+    }
+}
+
+/// One source-derived checked-reference decision inside the actual S5A loan.
+/// This has no operation cursor or block-stream completion/ready authority.
+pub(in crate::production_ranked_projection_v1) struct ActualRootReferenceUseV1<'a> {
+    origins: ActualRootReferenceOriginsV1<'a>,
+    occurrence: crate::production_ranked_projection_v1::root_checked_reference_use_preparation_v1::SourceUseOccurrenceV1<'a>,
+    origin: Option<CheckedReferenceSourceV1>,
+}
+impl ActualRootReferenceUseV1<'_> {
+    pub(in crate::production_ranked_projection_v1) fn origins(
+        &self,
+    ) -> &ActualRootReferenceOriginsV1<'_> {
+        &self.origins
+    }
+    pub(in crate::production_ranked_projection_v1) fn place(&self) -> &SemanticPlaceV1 {
+        self.occurrence.place
+    }
+    pub(in crate::production_ranked_projection_v1) fn site(&self) -> ProjectedSemanticAccessSiteV1 {
+        self.occurrence.site
+    }
+    pub(in crate::production_ranked_projection_v1) fn ordinal(&self) -> usize {
+        self.occurrence.ordinal
+    }
+    pub(in crate::production_ranked_projection_v1) fn access(&self) -> AccessKindAttr {
+        self.occurrence.access
+    }
+    pub(in crate::production_ranked_projection_v1) fn origin(
+        &self,
+    ) -> Option<CheckedReferenceSourceV1> {
+        self.origin
+    }
+}
+
+/// Separate lexical query frame, prepaid before constructing the wrapper's
+/// captured consumer. No runtime owner field or detached pending use container.
+fn actual_use_frame<R, F>() -> Result<usize> {
+    let mut frame = 4096usize;
+    for amount in [
+        size_of::<ActualRootReferenceUseV1<'static>>(),
+        size_of::<ProjectedSemanticAccessSiteV1>(),
+        size_of::<usize>(),
+        size_of::<F>()
+            .checked_mul(2)
+            .ok_or_else(|| resource(Resource::Arithmetic))?,
+        size_of::<Result<R>>()
+            .checked_mul(2)
+            .ok_or_else(|| resource(Resource::Arithmetic))?,
+    ] {
+        frame = frame
+            .checked_add(amount)
+            .ok_or_else(|| resource(Resource::Arithmetic))?;
+    }
+    Ok(frame)
+}
+
 struct ActualSelectedInputsV1<'a> {
     input: &'a ProductionRankedRootInputV1,
     source_root: ProductionSourceLaunchRootV1,
@@ -490,6 +581,157 @@ impl NominalRecipeResourcesV1<'_, '_, '_, '_, '_, '_> {
                     },
                     context,
                 )
+            },
+        )
+    }
+
+    /// Extend the original same-owner origin loan with borrowed rich local DATA.
+    /// No new source visit, ledger, owner, table clone or completed-stream flag.
+    pub(in crate::production_ranked_projection_v1) fn with_actual_root_local_contracts_v1<R, F>(
+        &mut self,
+        checked: &CheckedBf16NominalCallV1<'_>,
+        rich: &RichNominalSourceTablesV1<'_>,
+        actual_inputs: &crate::production_pipeline::ActualRetainedRankedInputsV1<'_>,
+        pending: &mut PendingActualRootPrefixIndicesV1,
+        inspect: F,
+    ) -> Result<R>
+    where
+        F: for<'a> FnOnce(ActualRootLocalContractsV1<'a>, &mut Self) -> Result<R>,
+    {
+        use crate::production_ranked_projection_v1::root_local_contracts_v1::{
+            BorrowedLocalContractsV1, SourceLocalContractPartsV1, local_contract_frame_v1,
+            require_local_contract_ledger_v1,
+        };
+        let expected = (self.state.slot, self.state.ledger);
+        let owner = self.facts.owner;
+        let function = self.function;
+        self.with_resources(|resources| {
+            require_local_contract_ledger_v1(expected, resources)?;
+            resources.work(64)?;
+            if !std::ptr::eq(owner, checked.emission().owner())
+                || !actual_inputs.belongs_to(owner)
+                || !rich.belongs_to_original_ledger_v1(expected)
+            {
+                return Err(resource(Resource::Accounting));
+            }
+            require_same_source_v1(function, rich.function())?;
+            let frame =
+                local_contract_frame_v1::<R, F>(size_of::<ActualRootLocalContractsV1<'static>>())?;
+            resources.work(frame)?;
+            resources.reserve_storage(frame)
+        })?;
+        // The captured consumer is constructed only after its frame was paid.
+        self.with_actual_root_reference_origins_v1(
+            checked,
+            rich,
+            actual_inputs,
+            pending,
+            |origins, context| {
+                // Copy references to owned rows, never borrow the movable loan
+                // wrapper itself while moving that wrapper into the result.
+                let payload = origins.origins;
+                let function = origins.guarded.prefix.function;
+                let local = context.with_resources(|resources| {
+                    require_local_contract_ledger_v1(expected, resources)?;
+                    resources.work(64)?;
+                    if !rich.belongs_to_original_ledger_v1(expected) {
+                        return Err(resource(Resource::Accounting));
+                    }
+                    BorrowedLocalContractsV1::source_data(
+                        SourceLocalContractPartsV1 {
+                            function,
+                            table_function: rich.function(),
+                            counts: rich.scalar_counts(),
+                            assignments: rich.scalar_assignments(),
+                            address_escaped: rich.address_escaped(),
+                            allocations: rich.allocations(),
+                            allocation_provenance: rich.allocation_provenance(),
+                            origins: &payload.origins,
+                            option_dominance: rich.option_dominance(),
+                            enum_payload_dominance: rich.enum_payload_dominance(),
+                        },
+                        resources,
+                    )
+                })?;
+                inspect(
+                    ActualRootLocalContractsV1 {
+                        origins,
+                        local,
+                        ledger: expected,
+                    },
+                    context,
+                )
+            },
+        )
+    }
+
+    /// Read-only source-site query under the existing actual S5A factory.
+    /// The selector takes coordinates only; it obtains the place/kind/provenance
+    /// from the retained source. No projected operation vector is fabricated.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::production_ranked_projection_v1) fn with_actual_root_reference_use_v1<R, F>(
+        &mut self,
+        checked: &CheckedBf16NominalCallV1<'_>,
+        rich: &RichNominalSourceTablesV1<'_>,
+        actual_inputs: &crate::production_pipeline::ActualRetainedRankedInputsV1<'_>,
+        pending: &mut PendingActualRootPrefixIndicesV1,
+        site: ProjectedSemanticAccessSiteV1,
+        ordinal: usize,
+        inspect: F,
+    ) -> Result<R>
+    where
+        F: for<'a> FnOnce(ActualRootReferenceUseV1<'a>, &mut Self) -> Result<R>,
+    {
+        self.with_resources(|resources| {
+            if resources.has_denial() || resources.original_ledger_v1().is_none() {
+                return Err(resource(Resource::Accounting));
+            }
+            let frame = actual_use_frame::<R, F>()?;
+            resources.work(frame)?;
+            resources.reserve_storage(frame)
+        })?;
+        self.with_actual_root_reference_origins_v1(
+            checked, rich, actual_inputs, pending,
+            |origins, context| {
+                let function = origins.guarded.prefix.function;
+                let (occurrence, origin) = context.with_resources(|resources| {
+                    let occurrence = crate::production_ranked_projection_v1::root_checked_reference_use_preparation_v1::select_source_use_v1(
+                        function, site, ordinal, resources,
+                    )?;
+                    let origin = crate::production_ranked_projection_v1::root_checked_references_v1::origin_for_actual_borrowed_v1(
+                        function, rich.function(), occurrence.place, site.block, origins.origins(),
+                        rich.option_dominance(), rich.enum_payload_dominance(), resources,
+                    )?;
+                    resources.work(32)?;
+                    if occurrence.access.is_atomic() != occurrence.atomic.is_some() {
+                        return Err(Error::Unsupported(
+                            "an atomic access whose ordering/scope contract is missing or attached to a non-atomic access",
+                        ));
+                    }
+                    match origin {
+                        Some(CheckedReferenceSourceV1::GuardedAccess(index)) => {
+                            if occurrence.atomic.is_some() {
+                                return Err(Error::Incomplete(
+                                    "an atomic access through a checked disjoint reference before exact atomic capability projection",
+                                ));
+                            }
+                            if origins.guarded.accesses.get(index).is_none() {
+                                return Err(Error::Unsupported(
+                                    "a checked disjoint reference whose access origin is out of range",
+                                ));
+                            }
+                        }
+                        Some(CheckedReferenceSourceV1::ProjectedSharedBorrow)
+                            if occurrence.atomic.is_none() && occurrence.access == AccessKindAttr::Read => {}
+                        Some(CheckedReferenceSourceV1::ProjectedSharedBorrow) =>
+                            return Err(Error::Unsupported(
+                                "a projected shared reference used for a non-read memory effect",
+                            )),
+                        None => {} // Explicitly NOT a checked access; ordinary fallback remains pending.
+                    }
+                    Ok((occurrence, origin))
+                })?;
+                inspect(ActualRootReferenceUseV1 { origins, occurrence, origin }, context)
             },
         )
     }

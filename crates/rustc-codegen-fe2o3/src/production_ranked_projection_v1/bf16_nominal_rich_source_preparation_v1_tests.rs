@@ -297,4 +297,64 @@ mod rich_source_preparation_tests {
         assert!(dropped.load(Ordering::SeqCst));
         assert_eq!(budget.storage(), 0);
     }
+
+    #[test]
+    fn rich_lexical_ledger_pair_matches_original_and_refuses_foreign_same_source() {
+        let function = fixture(false, false);
+        let types = projection_types();
+        let mut work = Work::new(LIMIT);
+        let mut budget = Budget::new(&mut work, LIMIT);
+        with_rich_tables_for_test_v1(&[], &types, &function, &mut budget, |rich, budget| {
+            let original = (
+                budget as *const Budget<'_> as usize,
+                budget.work_ledger_identity_v1(),
+            );
+            assert!(std::ptr::eq(rich.function(), &function));
+            assert!(rich.belongs_to_original_ledger_v1(original));
+            let mut other_work = Work::new(LIMIT);
+            let other = Budget::new(&mut other_work, LIMIT);
+            let foreign = (
+                &other as *const Budget<'_> as usize,
+                other.work_ledger_identity_v1(),
+            );
+            assert!(!rich.belongs_to_original_ledger_v1(foreign));
+            assert!(!rich.belongs_to_original_ledger_v1((foreign.0, original.1)));
+            assert!(!rich.belongs_to_original_ledger_v1((original.0, foreign.1)));
+            assert!(rich.belongs_to_original_ledger_v1(original));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(budget.storage(), 0);
+    }
+
+    #[test]
+    fn rich_lexical_ledger_pair_refuses_replacement_before_existing_postflight() {
+        let function = fixture(false, false);
+        let types = projection_types();
+        let mut original_work = Work::new(LIMIT);
+        let mut replacement_work = Work::new(LIMIT);
+        let mut budget = Budget::new(&mut original_work, LIMIT);
+        let replacement = Budget::new(&mut replacement_work, LIMIT);
+        let result =
+            with_rich_tables_for_test_v1(&[], &types, &function, &mut budget, |rich, budget| {
+                let before = (
+                    budget as *const Budget<'_> as usize,
+                    budget.work_ledger_identity_v1(),
+                );
+                assert!(rich.belongs_to_original_ledger_v1(before));
+                *budget = replacement;
+                let after = (
+                    budget as *const Budget<'_> as usize,
+                    budget.work_ledger_identity_v1(),
+                );
+                assert!(before.0 == after.0 && before.1 != after.1);
+                assert!(!rich.belongs_to_original_ledger_v1(after));
+                Ok(())
+            });
+        assert_eq!(result, Err(Error::Resource(Resource::Accounting)));
+        assert_eq!(
+            (budget.storage(), budget.work(), budget.peak_storage()),
+            (0, 0, 0)
+        );
+    }
 }
