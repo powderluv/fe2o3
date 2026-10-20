@@ -221,6 +221,57 @@ fn rejects_nonexact_destination_lengths_without_mutation() {
 }
 
 #[test]
+fn owned_materialization_preserves_sources_and_guards_after_owner_drop() {
+    const GUARD: usize = 32;
+    for profile in [
+        AdmittedProfile::Gfx942XnackOffCov6,
+        AdmittedProfile::Gfx950XnackOffCov6,
+    ] {
+        let mut bytes = fixture();
+        write_u32(&mut bytes, 48, profile.elf_flags());
+        bytes[0x2ff] = 0x31;
+        bytes[0x10ff] = 0x72;
+        bytes[0x207f] = 0xb4;
+        let object_pointer = bytes.as_ptr();
+        let mut expected = vec![0; 0x5000];
+        expected[..0x300].copy_from_slice(&bytes[..0x300]);
+        expected[0x2000..0x2100].copy_from_slice(&bytes[0x1000..0x1100]);
+        expected[0x4000..0x4080].copy_from_slice(&bytes[0x2000..0x2080]);
+
+        let first = validate_owned(bytes, profile).unwrap();
+        let intermediate = first.clone();
+        let retained = intermediate.clone();
+        drop(first);
+        drop(intermediate);
+        assert_eq!(retained.bytes().as_ptr(), object_pointer);
+        assert_eq!(retained.plan().profile(), profile);
+        let envelope = retained.validated();
+
+        for actual in [0, expected.len() - 1, expected.len() + 1] {
+            let mut arena = vec![0xa7; actual + 2 * GUARD];
+            assert_eq!(
+                envelope.materialize_into(&mut arena[GUARD..GUARD + actual]),
+                Err(MaterializationError::DestinationLengthMismatch {
+                    expected: expected.len() as u64,
+                    actual: actual as u64,
+                })
+            );
+            assert!(arena.iter().all(|byte| *byte == 0xa7));
+        }
+
+        let mut arena = vec![0xa7; expected.len() + 2 * GUARD];
+        envelope
+            .materialize_into(&mut arena[GUARD..GUARD + expected.len()])
+            .unwrap();
+        assert_eq!(&arena[..GUARD], &[0xa7; GUARD]);
+        assert_eq!(&arena[GUARD + expected.len()..], &[0xa7; GUARD]);
+        assert_eq!(&arena[GUARD..GUARD + expected.len()], expected);
+        drop(retained);
+        assert_eq!(&arena[GUARD..GUARD + expected.len()], expected);
+    }
+}
+
+#[test]
 fn copy_destination_accounts_for_a_nonzero_mapping_prefix() {
     let mut bytes = fixture();
     write_phdr_u64(&mut bytes, 2, 8, 0x1100);

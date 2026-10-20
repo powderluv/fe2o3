@@ -12,6 +12,7 @@ use fe2o3_compiler_execution_protocol::{
     NATIVE_PROOF_CUSTODIAN_CONFIGURATION_BYTES_V1 as CONFIG_BYTES,
 };
 use fe2o3_kernel_ir::{
+    CanonicalKernelIrOwnedVerificationResourceBudgetV1 as OwnedBudget,
     CanonicalKernelIrVerificationResourceBudgetV1 as Budget, CanonicalKernelIrWorkBudgetV1 as Work,
 };
 use fe2o3_runtime_protocol::{
@@ -34,6 +35,10 @@ mod content;
 const CONTROLLER_WORK: usize = 1_000_000_000_000;
 const CONTROLLER_STORAGE: usize = 2 * 1024 * 1024 * 1024;
 
+fn controller_account() -> OwnedBudget {
+    OwnedBudget::new(Work::new(CONTROLLER_WORK), CONTROLLER_STORAGE)
+}
+
 /// Sole fixed native secure-entry. The one initial child account lasts until
 /// process termination; exhaustion never renews it. This logical account is not
 /// the root account or an aggregate RSS guarantee for analyzer/solver processes.
@@ -45,8 +50,14 @@ const CONTROLLER_STORAGE: usize = 2 * 1024 * 1024 * 1024;
 /// independent root-sealed policy. No prior Rust owner/borrow may exist.
 #[doc(hidden)]
 pub unsafe fn run_inherited_native_application_proof_controller_v1() -> io::Result<()> {
-    let mut work = Work::new(CONTROLLER_WORK);
-    let mut budget = Budget::new(&mut work, CONTROLLER_STORAGE);
+    let mut account = controller_account();
+    account.with_budget(|budget| {
+        // SAFETY: the sole entry forwards the unchanged original descriptors.
+        unsafe { run_inherited_controller(budget) }
+    })
+}
+
+unsafe fn run_inherited_controller(mut budget: &mut Budget<'_>) -> io::Result<()> {
     budget.charge_work(64 * 1024).map_err(other)?;
     budget.reserve_storage(64 * 1024).map_err(other)?;
     let mut args = std::env::args_os();
@@ -348,6 +359,63 @@ fn serve<'work>(
 mod tests {
     use super::*;
     use fe2o3_runtime_protocol::NativeApplicationSessionTranscriptV1 as Transcript;
+
+    #[test]
+    fn native_controller_has_one_owned_account_for_composed_codecs() {
+        let mut account = controller_account();
+        let floor = 37 + Budget::STORAGE_WINDOW_SCRATCH_V1;
+        account.with_budget(|budget| {
+            budget.charge_work(17).unwrap();
+            budget.reserve_storage(floor).unwrap();
+            let identity = budget.storage_account_identity_v1().unwrap();
+            let ledger = budget.work_ledger_identity_v1();
+            budget
+                .with_additional_storage_window_v1(23, |budget| {
+                    assert_eq!(budget.storage_account_identity_v1(), Some(identity));
+                    assert!(budget.work_ledger_identity_v1() == ledger);
+                    budget.reserve_storage(23)?;
+                    Ok::<_, fe2o3_kernel_ir::CanonicalKernelIrVerificationResourceErrorV1>(())
+                })
+                .unwrap();
+            assert_eq!(budget.storage_limit(), CONTROLLER_STORAGE);
+            assert_eq!(budget.storage(), floor + 23);
+            assert_eq!(budget.work(), 17 + Budget::STORAGE_WINDOW_WORK_V1);
+            assert_eq!(budget.storage_account_identity_v1(), Some(identity));
+            assert!(budget.work_ledger_identity_v1() == ledger);
+        });
+        account.with_budget(|budget| {
+            assert_eq!(budget.storage(), floor + 23);
+            assert_eq!(budget.work(), 17 + Budget::STORAGE_WINDOW_WORK_V1);
+        });
+    }
+
+    #[test]
+    fn native_controller_account_keeps_window_denials_across_borrows() {
+        let mut account = controller_account();
+        let floor = 37 + Budget::STORAGE_WINDOW_SCRATCH_V1;
+        account.with_budget(|budget| {
+            budget.reserve_storage(floor).unwrap();
+            assert!(
+                budget
+                    .with_additional_storage_window_v1(23, |budget| budget.reserve_storage(24))
+                    .is_err()
+            );
+            assert_eq!(budget.storage(), floor);
+            assert_eq!(budget.failed_storage(), Some(floor + 24));
+            assert!(budget.charge_work(CONTROLLER_WORK).is_err());
+        });
+        account.with_budget(|budget| {
+            assert_eq!(budget.storage(), floor);
+            assert_eq!(budget.failed_storage(), Some(floor + 24));
+            assert_eq!(budget.work(), Budget::STORAGE_WINDOW_WORK_V1);
+            assert_eq!(
+                budget.failed_work(),
+                Some(CONTROLLER_WORK + Budget::STORAGE_WINDOW_WORK_V1),
+            );
+            assert_eq!(budget.storage_limit(), CONTROLLER_STORAGE);
+        });
+    }
+
     #[test]
     fn native_retained_phase_refuses_repeat_and_non_probe_without_advancing() {
         let mut work = Work::new(1_000_000);

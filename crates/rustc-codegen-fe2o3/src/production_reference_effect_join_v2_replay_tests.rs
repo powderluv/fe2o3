@@ -124,7 +124,9 @@ fn fixture(reads: bool) -> AuthenticatedReferenceEffectBindingV1 {
         rustc_mir_body_sha256: [7; 32],
     };
     AuthenticatedReferenceEffectBindingV1 {
-        registration_path: "inert-replay".into(),
+        origin: crate::reference_effect_v1::ReferenceBindingOriginV1::SourceRegistration(
+            "inert-replay".into(),
+        ),
         logical_kernel_name: "inert-replay".into(),
         kernel: identity,
         reference: identity,

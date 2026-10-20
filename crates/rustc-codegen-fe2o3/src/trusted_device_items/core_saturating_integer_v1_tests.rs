@@ -112,21 +112,142 @@ fn unsupported_types_and_mismatched_signature_are_closed() {
     }
 }
 
+fn is_saturating_source_exception(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Binary(expr) if matches!(expr.op, syn::BinOp::Or(_)) => {
+            is_saturating_source_exception(&expr.left)
+                || is_saturating_source_exception(&expr.right)
+        }
+        syn::Expr::Call(call) => {
+            let syn::Expr::Path(function) = call.func.as_ref() else {
+                return false;
+            };
+            function.qself.is_none()
+                && function.path.leading_colon.is_none()
+                && function.path.segments.len() == 2
+                && function
+                    .path
+                    .segments
+                    .iter()
+                    .zip([
+                        "trusted",
+                        "authenticate_reviewed_safe_core_saturating_integer_helper_v1",
+                    ])
+                    .all(|(segment, name)| {
+                        segment.ident == name
+                            && matches!(segment.arguments, syn::PathArguments::None)
+                    })
+                && call.args.len() == 2
+                && call
+                    .args
+                    .iter()
+                    .zip(["tcx", "instance"])
+                    .all(|(arg, name)| {
+                        matches!(arg, syn::Expr::Path(path)
+                        if path.qself.is_none() && path.path.is_ident(name))
+                    })
+        }
+        _ => false,
+    }
+}
+
+fn returns_authentication_decision(block: &syn::Block, expected: bool) -> bool {
+    let [syn::Stmt::Expr(syn::Expr::Return(result), Some(_))] = block.stmts.as_slice() else {
+        return false;
+    };
+    let Some(syn::Expr::Call(result)) = result.expr.as_deref() else {
+        return false;
+    };
+    matches!(result.func.as_ref(), syn::Expr::Path(path)
+        if path.qself.is_none() && path.path.is_ident("Ok"))
+        && result.args.len() == 1
+        && matches!(result.args.first(), Some(syn::Expr::Lit(value))
+            if matches!(&value.lit, syn::Lit::Bool(value) if value.value == expected))
+}
+
 #[test]
 fn exemption_does_not_claim_a_compiler_terminal_or_body_elision() {
-    let source = include_str!("../collector.rs");
-    let start = source
-        .find("authenticate_reviewed_safe_core_saturating_integer_helper_v1")
-        .unwrap();
-    let before = &source[..start];
-    assert!(before.rfind("let Some(local_def_id)").is_some());
-    assert!(
-        source[start..]
-            .split("authenticate_reviewed_safe_core_f32_is_finite_helper_v1")
-            .next()
-            .unwrap()
-            .contains("continue;")
-    );
+    let source = syn::parse_file(include_str!("../collector/inlined_source_safety_v1.rs"))
+        .expect("shared source-safety policy must parse");
+    let policy = source
+        .items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Fn(function) if function.sig.ident == "reviewed_external_source" => {
+                Some(function)
+            }
+            _ => None,
+        })
+        .expect("shared external-source policy");
+    let local_guard = policy
+        .block
+        .stmts
+        .iter()
+        .find_map(|stmt| match stmt {
+            syn::Stmt::Expr(syn::Expr::If(branch), _) => Some(branch),
+            _ => None,
+        })
+        .expect("local owners must be excluded before source exceptions");
+    let syn::Expr::Binary(condition) = local_guard.cond.as_ref() else {
+        panic!("expected local-owner or unsupported-instance refusal");
+    };
+    assert!(matches!(condition.op, syn::BinOp::Or(_)));
+    let syn::Expr::MethodCall(local) = condition.left.as_ref() else {
+        panic!("expected local-owner check");
+    };
+    assert!(local.method == "is_local" && local.args.is_empty());
+    let syn::Expr::MethodCall(definition) = local.receiver.as_ref() else {
+        panic!("expected the original instance definition");
+    };
+    assert!(definition.method == "def_id" && definition.args.is_empty());
+    assert!(matches!(definition.receiver.as_ref(), syn::Expr::Path(path)
+        if path.qself.is_none() && path.path.is_ident("instance")));
+    assert!(returns_authentication_decision(
+        &local_guard.then_branch,
+        false
+    ));
+    let admission = policy
+        .block
+        .stmts
+        .iter()
+        .find_map(|stmt| match stmt {
+            syn::Stmt::Expr(syn::Expr::If(branch), _)
+                if is_saturating_source_exception(&branch.cond) =>
+            {
+                Some(branch)
+            }
+            _ => None,
+        })
+        .expect("saturation must remain an external-source exception");
+    assert!(returns_authentication_decision(
+        &admission.then_branch,
+        true
+    ));
     let terminal = include_str!("../production_semantic_terminal_v1.rs");
     assert!(!terminal.contains("authenticate_reviewed_safe_core_saturating_integer_helper_v1"));
+}
+
+#[test]
+fn source_exception_guard_requires_the_actual_call_and_original_arguments() {
+    let call =
+        "trusted::authenticate_reviewed_safe_core_saturating_integer_helper_v1(tcx, instance)";
+    for expression in [call.to_owned(), format!("other || {call} || atomic")] {
+        assert!(is_saturating_source_exception(
+            &syn::parse_str(&expression).unwrap()
+        ));
+    }
+    for expression in [
+        format!("/* {call} */ false"),
+        format!("\"{call}\""),
+        call.replace("trusted::", "untrusted::"),
+        call.replace("(tcx, instance)", "(tcx, replacement)"),
+        call.replace("(tcx, instance)", "(tcx)"),
+        format!("!{call}"),
+        format!("false && {call}"),
+    ] {
+        assert!(
+            !is_saturating_source_exception(&syn::parse_str(&expression).unwrap()),
+            "{expression}"
+        );
+    }
 }

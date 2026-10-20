@@ -25,6 +25,7 @@ POLICY = [
     "run_format",
     "run_check",
     "run_backend_build",
+    "compiler-map-evidence-tests",
     "simulation-expectation-tests",
     "tutorial-scalar-gemm-corpus-tests",
     "tutorial-default-cargo-harness-tests",
@@ -69,7 +70,8 @@ run_step() { observe "$1"; }
 
 
 class GenericCoreGroupTests(unittest.TestCase):
-    def invoke(self, *arguments: str, failure: str = "") -> subprocess.CompletedProcess[str]:
+    def invoke(self, *arguments: str, failure: str = "",
+               harness: str = HARNESS) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory(prefix="fe2o3-core-group-test-") as directory:
             environment = {
                 "PATH": os.environ["PATH"],
@@ -79,7 +81,7 @@ class GenericCoreGroupTests(unittest.TestCase):
                 "FAIL_AT": failure,
             }
             return subprocess.run(
-                ["bash", "-c", HARNESS, "bash", str(CI_LOCAL), *arguments],
+                ["bash", "-c", harness, "bash", str(CI_LOCAL), *arguments],
                 cwd=ROOT, env=environment, text=True, capture_output=True,
                 check=False, timeout=30,
             )
@@ -106,6 +108,25 @@ class GenericCoreGroupTests(unittest.TestCase):
     def test_generic_still_includes_all_core_and_codegen_shards(self) -> None:
         self.assert_trace(self.invoke("main", "generic"), ALL + ["run_all_rustc_codegen_shards"])
 
+    def test_compiler_map_diagnostics_dispatch_exact_command_once(self) -> None:
+        harness = HARNESS.replace('run_step() { observe "$1"; }', r'''
+run_step() {
+  printf '%s' "$1"
+  shift
+  printf '\t%s' "$@"
+  printf '\n'
+}
+''')
+        expected = ["compiler-map-evidence-tests", "python3", "-I", "-B",
+                    "scripts/tests/compiler_map_evidence_test.py"]
+        for arguments in (("main", "generic-core", "policy"),
+                          ("run_generic_core",), ("main", "generic")):
+            with self.subTest(arguments=arguments):
+                result = self.invoke(*arguments, harness=harness)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                rows = [line.split("\t") for line in result.stdout.splitlines()]
+                self.assertEqual([row for row in rows if row[0] == expected[0]], [expected])
+
     def test_unknown_empty_or_extra_group_fails_before_any_work(self) -> None:
         for arguments in [("unknown",), ("",), ("--cpu",), ("policy", "cpu"), ("all", "all")]:
             for entry in [("run_generic_core",), ("main", "generic-core")]:
@@ -122,7 +143,8 @@ class GenericCoreGroupTests(unittest.TestCase):
                 self.assertEqual(result.stdout.splitlines(), expected[:1])
 
     def test_full_core_stops_before_later_groups_after_failure(self) -> None:
-        for failed in ["tutorial-default-cargo-harness-tests", "tutorial-production-census-tests",
+        for failed in ["compiler-map-evidence-tests",
+                       "tutorial-default-cargo-harness-tests", "tutorial-production-census-tests",
                        "tutorial-current-simulation-tests", POLICY[-1], "run_cpu_tests",
                        "run_rustc_codegen_lib_tests"]:
             with self.subTest(failed=failed):

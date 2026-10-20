@@ -105,26 +105,16 @@ pub(super) fn execute<'work>(
     let readiness = Arc::new(readiness.into_vec());
     let handoff = Handoff::decode_shared_vec(readiness.clone(), range)
         .map_err(|_| io::Error::other("native V5 outer handoff refused"))?;
+    let claimed = carriage.request().subject();
+    // Authenticate all raw content before interpreting its semantic evidence.
+    let (raw_subject, raw_charge) = join_raw_subject(&handoff, claimed, budget)?;
+    drop(raw_subject);
+    budget.release_storage(raw_charge).map_err(other)?;
     let (owner, s) = policy.recover(handoff, budget)?;
     budget
         .reserve_storage(s.retained_storage())
         .map_err(other)?;
-    let claimed = carriage.request().subject();
-    let (subject, s) = Subject::from_replay_evidence(
-        claimed.attempt(),
-        claimed.slot(),
-        claimed.transaction_identity(),
-        owner.handoff(),
-        budget,
-    )
-    .map_err(other)?;
-    budget
-        .reserve_storage(s.retained_storage())
-        .map_err(other)?;
-    require(
-        subject.canonical_bytes() == claimed.canonical_bytes(),
-        "native V5 subject differs",
-    )?;
+    let (subject, _) = join_raw_subject(owner.handoff(), claimed, budget)?;
     let (program, s) = check_native_conditional_fill_program_v1(&owner, budget)
         .map_err(|_| io::Error::other("native closed-fill program refused"))?;
     budget
@@ -247,6 +237,53 @@ pub(super) fn execute<'work>(
         &*budget,
     ))
 }
+
+/// The caller has already authenticated the claimed subject under the pinned
+/// policy. This joins content only; the returned owner is fully charged.
+fn join_raw_subject(
+    handoff: &Handoff,
+    claimed: &Subject,
+    budget: &mut Budget<'_>,
+) -> io::Result<(Subject, usize)> {
+    let coordinates = size_of::<(
+        fe2o3_artifact_transaction::BuildAttempt,
+        fe2o3_artifact_transaction::CompilerModuleHandoffSlotV5,
+        fe2o3_artifact_transaction::CompilerModuleHandoffTransactionIdentityV5,
+    )>();
+    budget.reserve_storage(coordinates).map_err(other)?;
+    let (subject, charge) = Subject::from_replay_evidence_in_original_account_v3(
+        claimed.attempt(),
+        claimed.slot(),
+        claimed.transaction_identity(),
+        handoff,
+        budget,
+    )
+    .map_err(other)?;
+    let retained = charge.retained_storage();
+    budget.reserve_storage(retained).map_err(other)?;
+    require_same_subject(&subject, claimed, budget)?;
+    budget.release_storage(coordinates).map_err(other)?;
+    Ok((subject, retained))
+}
+
+fn require_same_subject(
+    subject: &Subject,
+    claimed: &Subject,
+    budget: &mut Budget<'_>,
+) -> io::Result<()> {
+    budget
+        .charge_work(subject.canonical_bytes().len())
+        .map_err(other)?;
+    require(
+        subject.canonical_bytes() == claimed.canonical_bytes(),
+        "native V5 subject differs",
+    )
+}
+
 fn digest(bytes: &[u8]) -> ([u8; 32], u64) {
     (Sha256::digest(bytes).into(), bytes.len() as u64)
 }
+
+#[cfg(test)]
+#[path = "content_tests.rs"]
+mod tests;

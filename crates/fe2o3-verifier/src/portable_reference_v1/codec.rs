@@ -19,8 +19,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 mod decode;
 mod encode;
+mod policy_v2;
 mod tags;
 mod validate;
+
+pub use policy_v2::*;
 use tags::*;
 
 pub const MAX_NATIVE_CPU_INPUT_BYTES_V1: usize = crate::MAX_NATIVE_COMPILER_SOURCE_PACKET_BYTES_V1;
@@ -44,6 +47,37 @@ pub struct NativeCpuInputV1<'a> {
     pub kernel: &'a ReferenceFunctionIdentityV1,
     pub reference: &'a ReferenceFunctionIdentityV1,
     pub replay: ReferenceReplayInputV1<'a>,
+}
+
+struct CpuSubject<'a> {
+    semantic_mir_sha256: [u8; 32],
+    semantic_root: u32,
+    logical_kernel_name: &'a str,
+    kernel: &'a ReferenceFunctionIdentityV1,
+    reference: &'a ReferenceFunctionIdentityV1,
+    replay: &'a ReferenceReplayInputV1<'a>,
+}
+
+impl NativeCpuInputV1<'_> {
+    fn subject(&self) -> CpuSubject<'_> {
+        CpuSubject {
+            semantic_mir_sha256: self.association.semantic_mir_sha256,
+            semantic_root: self.association.semantic_root,
+            logical_kernel_name: self.association.logical_kernel_name,
+            kernel: self.kernel,
+            reference: self.reference,
+            replay: &self.replay,
+        }
+    }
+}
+
+struct DecodedCpuSubject {
+    logical_kernel_name: String,
+    kernel: ReferenceFunctionIdentityV1,
+    reference: ReferenceFunctionIdentityV1,
+    signature: ReferenceLogicalSignaturePreimageV1,
+    effect_ir_sha256: [u8; 32],
+    ir: ReferenceEffectIrV1,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

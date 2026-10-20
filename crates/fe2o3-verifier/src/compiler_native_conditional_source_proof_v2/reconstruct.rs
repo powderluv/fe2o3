@@ -58,22 +58,61 @@ pub(super) fn reconstruct(
     ),
     E,
 > {
+    reconstruct_with_origins(
+        packet,
+        accepted,
+        cpu_origin::CpuReplayMode::RegistrationOnly,
+        budget,
+    )
+}
+
+pub(super) fn reconstruct_with_origins(
+    packet: NativeConditionalSourcePacketInputV2<'_>,
+    accepted: &[NativeConditionalRootPolicyV2<'_>],
+    origins: cpu_origin::CpuReplayMode<'_>,
+    budget: &mut Budget<'_>,
+) -> Result<
+    (
+        ReplayedNativeConditionalSourceV2,
+        NativeConditionalSourceStorageV2,
+    ),
+    E,
+> {
+    reconstruct_selected(packet, accepted, origins.into(), budget)
+}
+
+pub(super) fn reconstruct_selected(
+    packet: NativeConditionalSourcePacketInputV2<'_>,
+    accepted: &[NativeConditionalRootPolicyV2<'_>],
+    origins: cpu_mapping::ReplaySelection<'_>,
+    budget: &mut Budget<'_>,
+) -> Result<
+    (
+        ReplayedNativeConditionalSourceV2,
+        NativeConditionalSourceStorageV2,
+    ),
+    E,
+> {
+    origins.require_roster(packet.roots, accepted, budget)?;
     reconstruct_using(
         packet,
         accepted,
         budget,
         |source, packet, roots, retained, budget| {
-            reconstruct_roots(
-                source,
-                packet,
-                accepted,
-                roots,
-                retained,
-                budget,
-                |source, row, policy, _, budget| {
-                    root::reconstruct_root(source, row, policy, budget)
-                },
-            )
+            origins.with_projection(source, packet, budget, |origins, budget| {
+                reconstruct_roots(
+                    source,
+                    packet,
+                    accepted,
+                    roots,
+                    retained,
+                    budget,
+                    |ordinal, source, row, policy, _, budget| {
+                        let origin = origins.at(ordinal, row.semantic_root, budget)?;
+                        root::reconstruct_root(source, row, policy, origin, budget)
+                    },
+                )
+            })
         },
     )
 }
@@ -172,6 +211,7 @@ pub(super) fn reconstruct_roots<Failure: From<E> + From<Resource>>(
     retained: &mut usize,
     budget: &mut Budget<'_>,
     mut visit: impl FnMut(
+        usize,
         &ReplayedNativeSourceV1,
         &NativeConditionalSourceRootV2<'_>,
         &NativeConditionalRootPolicyV2<'_>,
@@ -181,7 +221,7 @@ pub(super) fn reconstruct_roots<Failure: From<E> + From<Resource>>(
 ) -> Result<(), Failure> {
     for (ordinal, (row, policy)) in packet.roots.iter().zip(accepted).enumerate() {
         let body = check_source_root(source, ordinal, row, budget)?;
-        let root = visit(source, row, policy, body, budget)?;
+        let root = visit(ordinal, source, row, policy, body, budget)?;
         let payload = root
             .input
             .retained_storage_v1()?

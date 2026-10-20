@@ -48,6 +48,16 @@ fn late(bounds: CustodyBounds) -> Result<LateRetainedQuotaV2> {
 }
 
 impl RootPublicationCustodyV3 {
+    pub(crate) fn maximum_enrollment_revalidation_quota(
+        maximum_handoff_bytes: usize,
+    ) -> Result<RootPublicationQuotaV3> {
+        let base = Self::maximum_revalidation_quota(maximum_handoff_bytes)?;
+        Ok(RootPublicationQuotaV3 {
+            work: sum(&[base.work(), enrollment::WORK])?,
+            scratch: sum(&[base.scratch(), enrollment::SCRATCH])?,
+        })
+    }
+
     /// Exact-slot retirement preparation bound. This is only resource planning;
     /// the closed root dispatcher must independently establish durable authority.
     pub fn maximum_retirement_quota(

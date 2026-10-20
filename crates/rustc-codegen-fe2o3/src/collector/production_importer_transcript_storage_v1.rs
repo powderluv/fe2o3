@@ -5,9 +5,10 @@ use super::{AuthenticatedRustcIdentityInventoryV3, AuthenticatedRustcPreflightPl
 fn fixed<T: Copy>(_: &T) {}
 
 impl AuthenticatedRustcIdentityInventoryV3 {
-    /// Visits the one retained transcript Box as (length, byte width).
+    /// Visits the transcript Box and optional original-root Vec backing.
     ///
-    /// The callback is invoked exactly once, including an empty Box. The caller
+    /// The transcript always has one visit; enrolled inventories add one actual
+    /// root-capacity visit. The caller
     /// charges one callback visit and checked count*width bytes on its shared
     /// bounded ledger. Its enclosing owner pays this inline header/root once;
     /// this method does not pay either again. There is no variable traversal,
@@ -23,17 +24,22 @@ impl AuthenticatedRustcIdentityInventoryV3 {
         let Self {
             sha256,
             canonical_transcript,
+            original_root_associations,
         } = self;
         fixed(sha256);
         // Do not silently use Vec length if the representation changes.
         let _: &Box<[u8]> = canonical_transcript;
-        visit(canonical_transcript.len(), size_of::<u8>())
+        visit(canonical_transcript.len(), size_of::<u8>())?;
+        if let Some(associations) = original_root_associations {
+            associations.visit_retained_heap_storage_v1(visit)?;
+        }
+        Ok(())
     }
 }
 
 impl AuthenticatedRustcPreflightPlanV3 {
-    /// Same one-Box, shared-ledger and header-exclusion contract as the identity
-    /// inventory visitor. The inventory digest is inline, not another owner.
+    /// One-Box, shared-ledger and header-exclusion contract. The inventory
+    /// digest is inline, not another owner.
     /// No original source/function roster is retained by this wrapper.
     pub(crate) fn visit_retained_heap_storage_v1<E>(
         &self,

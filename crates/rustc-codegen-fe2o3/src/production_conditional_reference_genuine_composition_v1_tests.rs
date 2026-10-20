@@ -724,7 +724,7 @@ pub(super) fn on_replay(
     };
     // Exercise the live V2 assembler against the actual authenticated row. This
     // borrows only; it adds no codec/JOIN replay or report-schema field.
-    let input = native_cpu_input_v1(request, binding, root);
+    let input = native_cpu_input_v1(request, binding, root).unwrap();
     assert_eq!(input.association.semantic_root, root);
     assert_eq!(
         input.association.semantic_mir_sha256,
@@ -741,7 +741,7 @@ pub(super) fn on_replay(
     );
     assert_eq!(
         input.association.registration_path,
-        binding.registration_path
+        binding.origin.source_registration_v1().unwrap()
     );
     assert_eq!(
         input.association.logical_kernel_name,
@@ -749,7 +749,7 @@ pub(super) fn on_replay(
     );
     assert!(std::ptr::eq(
         input.association.registration_path,
-        binding.registration_path.as_str()
+        binding.origin.source_registration_v1().unwrap()
     ));
     assert!(std::ptr::eq(
         input.association.logical_kernel_name,

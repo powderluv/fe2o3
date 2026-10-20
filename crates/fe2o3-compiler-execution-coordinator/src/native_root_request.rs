@@ -27,6 +27,9 @@ mod quota;
 #[path = "native_root_request_runtime.rs"]
 mod execution;
 
+#[path = "native_root_request_enrollment.rs"]
+mod enrollment;
+
 #[cfg(test)]
 #[path = "native_root_request_fault_tests.rs"]
 mod faults;
@@ -68,6 +71,8 @@ pub(crate) struct RootCompilerRequest<'work> {
     attempt: Option<compiler_attempt::Attempt<'work>>,
     terminal: Option<execution::Termination>,
     completion: Option<execution::Completion>,
+    // Outer None is unjoined; inner None is the original no-enrollment case.
+    enrollment: Option<Option<fe2o3_compiler_lineage::NativeConditionalCpuMappingExpectationV1>>,
     state: State,
     ledger: Ledger,
     address: usize,
@@ -128,6 +133,7 @@ impl<'work> RootCompilerRequest<'work> {
             attempt: None,
             terminal: None,
             completion: None,
+            enrollment: None,
             state: State::Received,
             ledger: b.work_ledger_identity_v1(),
             address: b as *const Budget<'_> as usize,

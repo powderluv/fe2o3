@@ -12,6 +12,7 @@ use fe2o3_artifact_transaction::{
 use fe2o3_compiler_execution_protocol::{
     CompilerExecutionReceiptCarriageV3 as Carriage, CompilerExecutionRootControlKindV3 as Kind,
 };
+use fe2o3_compiler_lineage::NativeConditionalCpuMappingExpectationV1 as Enrollment;
 use fe2o3_protected_service_spawn::{
     ProtectedServiceCleanupServiceV2 as Cleanup, native_spawn::RootRuntimeTraceV1 as Runtime,
 };
@@ -113,6 +114,9 @@ impl<'work> RootControlSessionV3<'work> {
     /// original runtime, measured retained issuer and root-created connection are
     /// accepted. No observation, status, policy provider or retirement receipt
     /// supplied by the compiler can construct this transition.
+    /// Enrollment comes from the retained original request; None records joined
+    /// original absence. The actual locked capsule must contain a canonical
+    /// inventory. Matching coordinates do not establish source/root equivalence.
     ///
     /// A successful Observe installs the sole late publication holder. Retire is
     /// accepted only from the measured issuer after its closed durable join and
@@ -133,6 +137,7 @@ impl<'work> RootControlSessionV3<'work> {
         manifest: &Manifest,
         cleanup: &mut Cleanup,
         maximum_handoff_bytes: usize,
+        enrollment: &Option<Enrollment>,
         b: &mut Budget<'_>,
     ) -> Result<RootConnectionStorageV3> {
         start_publication_call(&mut self.publication_failed, b)?;
@@ -145,6 +150,7 @@ impl<'work> RootControlSessionV3<'work> {
             connection.retained,
             runtime.retained_storage(),
             inputs,
+            size_of::<Option<Enrollment>>(),
         ])?;
         let step = b.with_prepaid_scope(floor, 0, RPC_WORK - ENTRY, RPC_FRAME, |b| {
             self.prepare_publication_step(
@@ -155,6 +161,7 @@ impl<'work> RootControlSessionV3<'work> {
                 manifest,
                 cleanup,
                 maximum_handoff_bytes,
+                enrollment,
                 b,
             )
         })?;
@@ -203,6 +210,7 @@ impl<'work> RootControlSessionV3<'work> {
         manifest: &Manifest,
         cleanup: &mut Cleanup,
         maximum_handoff_bytes: usize,
+        enrollment: &Option<Enrollment>,
         b: &mut Budget<'_>,
     ) -> Result<Step<'a>> {
         self.check_account(b)?;
@@ -214,7 +222,7 @@ impl<'work> RootControlSessionV3<'work> {
                 .replay
                 .request(b)?
                 .ok_or(Error::Refused("root reply has no retained request"))?;
-            self.validate_completed_request(request, runtime, b)?;
+            self.validate_completed_request(request, runtime, enrollment, b)?;
             let reply = connection
                 .replay
                 .reply(b)?
@@ -255,6 +263,7 @@ impl<'work> RootControlSessionV3<'work> {
                         .request(b)?
                         .ok_or(Error::Refused("missing replay request"))?,
                     runtime,
+                    enrollment,
                     b,
                 )?;
                 return Ok(Step::Replay);
@@ -277,7 +286,7 @@ impl<'work> RootControlSessionV3<'work> {
                     ));
                 }
                 if let Some(publication) = &self.publication {
-                    publication.revalidate_runtime(runtime, b)?;
+                    publication.revalidate_runtime_with_enrollment(runtime, enrollment, b)?;
                     let payload = observed_payload(publication);
                     let (reply, charge) = Record::reply(&request, &payload, b)?;
                     b.reserve_storage(charge.additional_storage())?;
@@ -294,7 +303,7 @@ impl<'work> RootControlSessionV3<'work> {
                     b,
                 )?;
                 b.reserve_storage(growth)?;
-                publication.revalidate_runtime(runtime, b)?;
+                publication.revalidate_runtime_with_enrollment(runtime, enrollment, b)?;
                 let retained = sum(&[self.retained, growth])?;
                 let payload = observed_payload(&publication);
                 let (reply, charge) = Record::reply(&request, &payload, b)?;
@@ -314,7 +323,7 @@ impl<'work> RootControlSessionV3<'work> {
                         "root validation changed original occurrence",
                     ));
                 }
-                publication.revalidate_runtime(runtime, b)?;
+                publication.revalidate_runtime_with_enrollment(runtime, enrollment, b)?;
                 let (reply, charge) = Record::reply(&request, request.payload(), b)?;
                 b.reserve_storage(charge.additional_storage())?;
                 Ok(Step::Complete(
@@ -337,7 +346,7 @@ impl<'work> RootControlSessionV3<'work> {
                 let growth = charge.additional_storage();
                 b.reserve_storage(growth)?;
                 require_retirement_join(publication, &carriage, policy)?;
-                publication.revalidate_runtime(runtime, b)?;
+                publication.revalidate_runtime_with_enrollment(runtime, enrollment, b)?;
                 let retained = sum(&[self.retained, growth])?;
                 let (reply, charge) = Record::reply(&request, carriage.identity().as_bytes(), b)?;
                 b.reserve_storage(charge.additional_storage())?;
@@ -380,6 +389,7 @@ impl<'work> RootControlSessionV3<'work> {
         &self,
         request: &Record,
         runtime: &Runtime<'_>,
+        enrollment: &Option<Enrollment>,
         b: &mut Budget<'_>,
     ) -> Result<()> {
         if !runtime.matches_original_identity(&self.original, b)? {
@@ -388,7 +398,7 @@ impl<'work> RootControlSessionV3<'work> {
         match request.kind() {
             Kind::Observe | Kind::Validate => self
                 .current_publication()?
-                .revalidate_runtime(runtime, b)
+                .revalidate_runtime_with_enrollment(runtime, enrollment, b)
                 .map_err(Into::into),
             Kind::Retire => require_same_retirement(
                 self.retirement
@@ -443,7 +453,7 @@ impl<'work> RootControlSessionV3<'work> {
     ) -> Result<RootConnectionQuotaV3> {
         let connection = RootConnectionV3::validation_quota(issuer_image_length)?;
         let observe = Publication::observation_quota(maximum_handoff_bytes)?;
-        let validate = Publication::maximum_revalidation_quota(maximum_handoff_bytes)?;
+        let validate = Publication::maximum_enrollment_revalidation_quota(maximum_handoff_bytes)?;
         let retire = Publication::maximum_retirement_quota(maximum_handoff_bytes)?;
         Ok(RootConnectionQuotaV3 {
             work: sum(&[

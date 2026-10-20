@@ -20,6 +20,9 @@ mod rows;
 #[path = "tests/selector.rs"]
 mod selector;
 
+#[path = "tests/cpu_origins.rs"]
+mod cpu_origins;
+
 const FLOOR: usize = 43;
 // RFC 8032 public key. No secret key, signature generation or successful proof.
 const KEY: [u8; 32] = [
@@ -47,7 +50,7 @@ fn commitment() -> Commitment {
         toolchain: [[4; 32]; 5],
     }
 }
-fn fixture<R>(
+pub(super) fn fixture<R>(
     run: impl FnOnce(
         NativeConditionalSourcePacketInputV2<'_>,
         &[NativeConditionalRootPolicyV2<'_>],

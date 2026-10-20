@@ -57,11 +57,19 @@ capacity mismatch is refused before storage is populated or retained.
 A record/snapshot/work/storage cutoff stops observation, not CPU execution; a
 completed execution with a stopped capture is not a complete transcript.
 
-This initial typed API does not add a CLI flag, source catalog, breakpoint
+This initial V20 typed API does not add a CLI flag, source catalog, breakpoint
 predicate path, persisted schedule replay, detailed execution diagnosis,
 hardware-register capture, or protected deployment. Legacy capture/transcript
 APIs remain refused for the physical-entry profile; they do not acquire this
-budgeted admission. KIR21 global-copy/pending-read capture remains refused.
+budgeted admission. This V20 API does not admit V21 global-copy/pending-read input.
+
+The separate [`PhysicalGlobalCopyDebugSessionV21`](src/physical_global_copy_v21.rs)
+API captures that V21 CPU profile. Its matching Linux CLI route and explicit
+capability limits are documented under
+[Physical-global-copy V21 CPU observations](../fe2o3-debug-cli/README.md#physical-global-copy-v21-cpu-observations).
+Use that versioned API/route rather than passing V21 input to the V20 API; it
+does not provide physical-register capture, native execution, or GPU authority.
+
 The existing serialized debugger value grammar is unchanged. Short-output and
 zero-EXEC CPU controls do not discharge the separate production/formal launch
 bounds or imply a deployable short-slice kernel.

@@ -24,7 +24,8 @@ use sha2::{Digest as _, Sha256};
 #[path = "reference_binding_auth_v1.rs"]
 mod reference_binding_auth_v1;
 pub(crate) use reference_binding_auth_v1::{
-    authenticate_reference_binding_v1, instantiated_signature,
+    authenticate_reference_binding_v1, authenticate_reference_binding_with_origin_v1,
+    instantiated_signature,
 };
 use reference_binding_auth_v1::{function_identity_v1, scalar_type_v1};
 
@@ -1855,9 +1856,40 @@ fn reference_scalar_mask_v2(scalar: ReferenceScalarTypeV1) -> Option<u128> {
     Some((1_u128 << bits) - 1)
 }
 
+/// Descriptive provenance only. Neither variant carries a live admission token.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ReferenceBindingOriginV1 {
+    SourceRegistration(String),
+    ReferenceEnrollment(fe2o3_verifier::portable_reference_v1::codec::ReferenceEnrollmentOriginV1),
+}
+
+impl ReferenceBindingOriginV1 {
+    pub(crate) fn source_registration_v1(&self) -> Option<&str> {
+        match self {
+            Self::SourceRegistration(path) => Some(path),
+            Self::ReferenceEnrollment(_) => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn source_registration_mut_v1(&mut self) -> Option<&mut String> {
+        match self {
+            Self::SourceRegistration(path) => Some(path),
+            Self::ReferenceEnrollment(_) => None,
+        }
+    }
+
+    pub(crate) fn retained_payload_bytes_v1(&self) -> usize {
+        match self {
+            Self::SourceRegistration(path) => path.len(),
+            Self::ReferenceEnrollment(_) => 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AuthenticatedReferenceEffectBindingV1 {
-    pub(crate) registration_path: String,
+    pub(crate) origin: ReferenceBindingOriginV1,
     pub(crate) logical_kernel_name: String,
     pub(crate) kernel: ReferenceFunctionIdentityV1,
     pub(crate) reference: ReferenceFunctionIdentityV1,

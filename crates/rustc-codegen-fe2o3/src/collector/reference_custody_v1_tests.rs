@@ -2,6 +2,7 @@
 //! These scalar fixtures establish no GPU execution, output coverage, or proof authority.
 
 use super::*;
+use crate::reference_effect_v1::authenticate_reference_binding_v1;
 use crate::reference_effect_v1::{ReferenceArgumentRelationV1, ReferenceScalarTypeV1};
 use crate::test_temp_dir::TestTempDir;
 use fe2o3_mir_model::semantic_mir_v1::{SemanticMirLimitsV1, SemanticMirResourceV1};
@@ -192,7 +193,7 @@ fn source_round_trip_retains_raw_signatures_and_ordered_occurrences() {
                 input.reference_signature,
                 instantiated_signature(tcx, input.reference)
             );
-            assert_eq!(input.registration_path, binding.registration_path);
+            assert_eq!(input.origin, binding.origin);
             assert_eq!(input.logical_kernel_name, binding.logical_kernel_name);
             assert_eq!(input.kernel_signature.output(), tcx.types.unit);
             assert_eq!(input.reference_signature.output(), tcx.types.unit);
@@ -385,7 +386,7 @@ fn source_rederive_rejects_mutated_retained_occurrence_order() {
                         reference: input.reference,
                         kernel_signature: input.kernel_signature,
                         reference_signature: input.reference_signature,
-                        registration_path: input.registration_path.clone(),
+                        origin: input.origin.clone(),
                         logical_kernel_name: input.logical_kernel_name.clone(),
                     });
                 }
@@ -438,12 +439,14 @@ fn source_rederive_rejects_instance_role_registration_and_name_mutations() {
                 }
                 "helper" => function.role = CollectedFunctionRole::InternalHelper,
                 "ffi" => function.role = CollectedFunctionRole::DeviceFfiExport,
-                "registration" => function
-                    .reference_effect_binding
-                    .as_mut()
-                    .unwrap()
-                    .registration_path
-                    .push_str("::changed"),
+                "registration" => {
+                    let ReferenceBindingOriginV1::SourceRegistration(path) =
+                        &mut function.reference_effect_binding.as_mut().unwrap().origin
+                    else {
+                        panic!("fixture must retain source registration");
+                    };
+                    path.push_str("::changed");
+                }
                 "binding name" => function
                     .reference_effect_binding
                     .as_mut()

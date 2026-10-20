@@ -17,11 +17,24 @@ use fe2o3_kernel_ir::{
 };
 use std::{fmt, io};
 
+#[path = "protected_reference_enrollment_loan_v1.rs"]
+mod reference_enrollment;
+use crate::protected_rustc_invocation::{
+    AdmittedProtectedRustcInvocationV1 as Invocation,
+    reference_enrollment_identity::Owner as EnrollmentOwner,
+};
+use crate::reference_effect_v1::ReferenceBindingErrorV1;
+pub(crate) use reference_enrollment::{
+    OriginalEnrollmentInventoryContextV1, ReferenceEnrollmentLoanV1,
+    ReferenceEnrollmentPreparationV1, RetainedReferenceEnrollmentStampV1,
+};
+
 /// The same exclusive account borrow covers preparation through receipt transport.
 /// The public policy is trust configuration; independent parent pinning is required.
 pub(crate) struct Admitted<'b, 'w> {
     policy: Policy,
     client: Client<'b, 'w>,
+    enrollment: Option<EnrollmentOwner>,
 }
 
 impl<'b, 'w> Admitted<'b, 'w> {
@@ -42,7 +55,11 @@ impl<'b, 'w> Admitted<'b, 'w> {
         b.reserve_storage(charge.additional_storage())?;
         policy.revalidate(b)?;
         let client = Client::admit(inputs.service, super::RECEIPT_ACQUISITION_TIMEOUT_V1, b)?;
-        Ok(Self { policy, client })
+        Ok(Self {
+            policy,
+            client,
+            enrollment: None,
+        })
     }
 
     /// Consumes both fixed inherited slots, even on resource/admission refusal.
@@ -77,7 +94,47 @@ impl<'b, 'w> Admitted<'b, 'w> {
         // before policy duplication, and the sole service closer is disarmed above.
         let client =
             unsafe { Client::admit_inherited_child(super::RECEIPT_ACQUISITION_TIMEOUT_V1, b) }?;
-        Ok(Self { policy, client })
+        Ok(Self {
+            policy,
+            client,
+            enrollment: None,
+        })
+    }
+
+    /// Collection borrows the same session/account that later publishes. Client
+    /// preparation consumes on refusal and never replaces its absolute deadline.
+    pub(crate) fn with_reference_enrollment<T, E>(
+        self,
+        invocation: &mut Invocation,
+        run: impl FnOnce(Option<&ReferenceEnrollmentLoanV1<'_>>) -> Result<T, E>,
+    ) -> Result<(Self, T), E>
+    where
+        E: From<Error> + From<ClientError>,
+    {
+        let Self {
+            policy,
+            client,
+            mut enrollment,
+        } = self;
+        let (client, value) = client.prepare(|budget| {
+            if enrollment.is_none() {
+                enrollment = Some(EnrollmentOwner::new(budget).map_err(Error::from)?);
+            }
+            ReferenceEnrollmentPreparationV1 {
+                policy: &policy,
+                owner: enrollment.as_ref(),
+                ledger: budget.work_ledger_identity_v1(),
+            }
+            .with_invocation(invocation, budget, |loan| run(Some(loan)))
+        })?;
+        Ok((
+            Self {
+                policy,
+                client,
+                enrollment,
+            },
+            value,
+        ))
     }
 
     pub(crate) fn prepare_and_acquire<P, R, T, E>(
@@ -89,12 +146,35 @@ impl<'b, 'w> Admitted<'b, 'w> {
     where
         E: From<Error> + From<ClientError>,
     {
-        let Self { policy, client } = self;
+        self.prepare_and_acquire_with_enrollment(|_, budget| prepare(budget), publish, finish)
+    }
+
+    pub(crate) fn prepare_and_acquire_with_enrollment<P, R, T, E>(
+        self,
+        prepare: impl FnOnce(ReferenceEnrollmentPreparationV1<'_>, &mut Budget<'w>) -> Result<P, E>,
+        publish: impl FnOnce(P, &mut Budget<'w>) -> Result<(Subject, R), E>,
+        finish: impl FnOnce(Carriage, R, &mut Budget<'w>) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<Error> + From<ClientError>,
+    {
+        let Self {
+            policy,
+            client,
+            enrollment,
+        } = self;
         client.prepare_and_acquire(
             policy.policy(),
             |b| {
                 policy.revalidate(b).map_err(Error::from)?;
-                prepare(b)
+                prepare(
+                    ReferenceEnrollmentPreparationV1 {
+                        policy: &policy,
+                        owner: enrollment.as_ref(),
+                        ledger: b.work_ledger_identity_v1(),
+                    },
+                    b,
+                )
             },
             |prepared, b| {
                 policy.revalidate(b).map_err(Error::from)?;
@@ -110,6 +190,7 @@ impl<'b, 'w> Admitted<'b, 'w> {
 
 #[derive(Debug)]
 pub(crate) enum Error {
+    Reference(ReferenceBindingErrorV1),
     Resource(Resource),
     Policy(PolicyError),
     Client(ClientError),
@@ -127,7 +208,7 @@ macro_rules! causes {
         } }
     };
 }
-causes!(Resource=>Resource, PolicyError=>Policy, ClientError=>Client, io::Error=>Descriptor,
+causes!(ReferenceBindingErrorV1=>Reference, Resource=>Resource, PolicyError=>Policy, ClientError=>Client, io::Error=>Descriptor,
     super::ProtectedCompilerExecutionErrorV1=>Startup);
 
 #[cfg(test)]

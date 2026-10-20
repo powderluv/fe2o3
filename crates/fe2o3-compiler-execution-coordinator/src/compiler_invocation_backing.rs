@@ -35,6 +35,10 @@ const ENTRY: usize = 8;
 const MEASURE_WORK: usize = ENTRY + 32;
 type Result<T> = std::result::Result<T, CompilerInvocationBackingError>;
 
+#[path = "compiler_invocation_enrollment.rs"]
+mod enrollment;
+pub(crate) use enrollment::OriginalInvocationEnrollment;
+
 #[derive(Debug)]
 pub(crate) enum CompilerInvocationBackingError {
     Resource(Resource),
@@ -42,6 +46,8 @@ pub(crate) enum CompilerInvocationBackingError {
     Runtime(RuntimeError),
     Staging(StagingError),
     Output(OutputError),
+    Enrollment(fe2o3_rustc_invocation::ReferenceEnrollmentDecodeErrorV1<Resource>),
+    Digest(fe2o3_rustc_invocation::DigestError),
     InvalidCount,
 }
 
@@ -82,6 +88,8 @@ impl fmt::Display for CompilerInvocationBackingError {
             Self::Runtime(error) => error.fmt(f),
             Self::Staging(error) => error.fmt(f),
             Self::Output(error) => error.fmt(f),
+            Self::Enrollment(error) => error.fmt(f),
+            Self::Digest(error) => error.fmt(f),
             Self::InvalidCount => f.write_str("compiler invocation exceeds count bound"),
         }
     }
@@ -95,6 +103,8 @@ impl std::error::Error for CompilerInvocationBackingError {
             Self::Runtime(error) => Some(error),
             Self::Staging(error) => Some(error),
             Self::Output(error) => Some(error),
+            Self::Enrollment(error) => Some(error),
+            Self::Digest(error) => Some(error),
             Self::InvalidCount => None,
         }
     }

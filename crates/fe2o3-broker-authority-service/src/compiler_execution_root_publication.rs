@@ -21,7 +21,11 @@ use fe2o3_protected_service_spawn::{
 
 #[path = "compiler_execution_root_publication_payload.rs"]
 mod payload;
+use fe2o3_compiler_lineage::NativeConditionalCpuMappingExpectationV1 as Enrollment;
 use payload::{Acquire, Owners, Validate};
+
+#[path = "compiler_execution_root_publication_enrollment.rs"]
+mod enrollment;
 
 #[path = "compiler_execution_root_publication_quota.rs"]
 mod quota;
@@ -235,9 +239,30 @@ impl RootPublicationCustodyV3 {
         self.revalidate_owned(trace, b)
     }
 
+    /// Compare the actual locked capsule with original request coordinates.
+    /// None means joined original absence, never a missing request join. This
+    /// establishes neither full root/source equivalence nor launch authority.
+    pub(crate) fn revalidate_runtime_with_enrollment(
+        &self,
+        trace: &fe2o3_protected_service_spawn::native_spawn::RootRuntimeTraceV1<'_>,
+        expected: &Option<Enrollment>,
+        b: &mut Budget<'_>,
+    ) -> Result<()> {
+        self.revalidate_selected(trace, Some(expected), b)
+    }
+
     fn revalidate_owned<'work>(
         &self,
         trace: &impl trace_owner::PublicationTrace<'work>,
+        b: &mut Budget<'_>,
+    ) -> Result<()> {
+        self.revalidate_selected(trace, None, b)
+    }
+
+    fn revalidate_selected<'work>(
+        &self,
+        trace: &impl trace_owner::PublicationTrace<'work>,
+        enrollment: Option<&Option<Enrollment>>,
         b: &mut Budget<'_>,
     ) -> Result<()> {
         let floor = self
@@ -254,6 +279,7 @@ impl RootPublicationCustodyV3 {
                         Validate {
                             root,
                             observation: &self.observation,
+                            enrollment,
                         },
                         b,
                     )

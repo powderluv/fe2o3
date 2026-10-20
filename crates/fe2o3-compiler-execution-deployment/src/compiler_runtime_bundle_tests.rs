@@ -536,6 +536,30 @@ fn file_directory_prefix_collision_is_not_an_additional_roster() {
 }
 
 #[test]
+fn final_source_content_revalidation_refuses_equal_metadata_snapshot() {
+    let fixture = Fixture::new();
+    let root = Root::open(&fixture.bundle).unwrap();
+    let original = b"inert rustc";
+    let (sealed, mut source) = copy_source(
+        &root,
+        "runtime/bin/rustc",
+        0o555,
+        Some(original.len() as u64),
+        MAX_FILE_BYTES,
+        digest(original),
+        Kind::ContentMismatch,
+    )
+    .unwrap();
+    write(&fixture.path("runtime/bin/rustc"), b"other rustc", 0o555);
+    // Model a coarse timestamp tick deterministically, without sleeping or
+    // constructing a public verified owner from the mutated source.
+    source.initial = file_snapshot(&source.file).unwrap();
+    source.revalidate(&root).unwrap();
+    assert!(source.revalidate_content(&root).is_err());
+    validate_sealed(&sealed, 0o555, original.len() as u64, digest(original)).unwrap();
+}
+
+#[test]
 fn source_path_and_directory_replacement_after_sealing_refuse() {
     for change in 0..5 {
         let fixture = Fixture::new();

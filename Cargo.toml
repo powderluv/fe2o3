@@ -187,3 +187,18 @@ strip = "debuginfo"
 
 [profile.test.package.fe2o3-debug-cli]
 strip = "debuginfo"
+
+# Real-image admission fixtures must stay within the production image bound.
+[profile.test.package.rustc-codegen-fe2o3]
+strip = "debuginfo"
+
+# Binding-only host tests pin the real executable within the normal image cap.
+[profile.test.package.fe2o3-vecadd]
+strip = "debuginfo"
+
+[profile.test.package.fe2o3-scalar-gemm-v1]
+strip = "debuginfo"
+
+# Admission tests remeasure real compiler images within production deadlines.
+[profile.test.package."sha2@0.11.0"]
+opt-level = 3

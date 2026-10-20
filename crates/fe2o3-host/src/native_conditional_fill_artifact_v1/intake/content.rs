@@ -3,19 +3,173 @@ use super::*;
 use fe2o3_artifact_transaction::{
     InertCompilerExecutionSubjectV3 as Subject, WorkerV3ExternalProviderPayloadsV1 as Providers,
 };
+use fe2o3_compiler_execution_protocol::CompilerExecutionIssuerPolicyV3 as Policy;
 use fe2o3_compiler_ffi::{
     INERT_SEMANTIC_COMPILER_MODULE_HANDOFF_DECODE_METADATA_STORAGE_V5 as METADATA,
     InertSemanticCompilerModuleHandoffV5 as Handoff,
     inert_semantic_compiler_module_handoff_decode_work_v5 as decode_work,
 };
+use fe2o3_compiler_lineage::NativeConditionalCpuMappingExpectationV1 as Expected;
 use fe2o3_hsaco_finalize::{
     derive_recovered_conditional_worker_publication_intent_in_original_account_v5 as derive_intent,
     revalidate_conditional_worker_finalizer_in_original_account_v5 as replay,
 };
 use fe2o3_verifier::recover_native_conditional_handoff_under_policy_file_v1 as recover_source;
+use fe2o3_verifier::recover_native_conditional_handoff_under_policy_file_with_cpu_mapping_v1 as recover_mapped_source;
+
+#[path = "content_enrollment.rs"]
+mod enrollment;
+
+// The enclosing intake owns the prepaid envelope and independently revalidated
+// profiles. This move-only intermediate preserves their original account/floor;
+// it is not publication custody, currentness, or launch authority.
+pub(super) struct AuthenticatedInput<'work> {
+    handoff: Handoff,
+    carriage: Carriage,
+    enrollment: Option<Expected>,
+    ledger: Ledger,
+    account: Account,
+    floor: usize,
+    _work: std::marker::PhantomData<&'work fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1>,
+}
+
+pub(super) fn authenticate<'work>(
+    wire: &Wire<'_>,
+    record: &Record,
+    compiler: &Compiler<'work>,
+    profile: &Profile<'work>,
+    budget: &mut Budget<'work>,
+) -> Result<AuthenticatedInput<'work>> {
+    budget.check_prior_denials_v1()?;
+    let account = budget
+        .storage_account_identity_v1()
+        .ok_or(Resource::Accounting)?;
+    let ledger = budget.work_ledger_identity_v1();
+    budget.reserve_storage(size_of::<AuthenticatedInput<'work>>())?;
+    let (carriage, charge) =
+        Carriage::decode_in_original_account_v3(wire.compiler_execution_bytes(), budget)
+            .map_err(failure)?;
+    budget.reserve_storage(charge.additional_storage())?;
+    require_same_policy(
+        compiler.policy(),
+        carriage.policy(),
+        &profile.configuration().parts().compiler_policy_identity,
+        budget,
+    )?;
+
+    exact(
+        wire.outer_handoff_bytes(),
+        record.outer_handoff_sha256(),
+        record.outer_handoff_length(),
+        budget,
+    )?;
+    budget.charge_work(
+        decode_work(wire.outer_handoff_bytes().len())
+            .map_err(|error| failure(format_args!("native V5 decode bound: {error:?}")))?,
+    )?;
+    budget.reserve_storage(METADATA)?;
+    let bytes = copy(wire.outer_handoff_bytes(), budget)?;
+    let handoff = Handoff::decode_owned(bytes)
+        .map_err(|error| failure(format_args!("native V5 handoff: {error:?}")))?;
+    authenticate_raw_subject(&handoff, carriage.request().subject(), budget)?;
+    let floor = budget.storage();
+    require_original_account(ledger, account, floor, budget)?;
+    let mut authenticated = AuthenticatedInput {
+        handoff,
+        carriage,
+        enrollment: None,
+        ledger,
+        account,
+        floor,
+        _work: std::marker::PhantomData,
+    };
+    authenticated.require_enrollment(compiler.policy(), budget)?;
+    Ok(authenticated)
+}
+
+fn require_same_policy(
+    independent: &Policy,
+    carried: &Policy,
+    configured_identity: &[u8; 32],
+    budget: &mut Budget<'_>,
+) -> Result<()> {
+    // Both nominal policies were strictly decoded, including their computed ID.
+    // Pay all comparisons even when the first mismatch would short-circuit.
+    let work = independent
+        .canonical_bytes()
+        .len()
+        .checked_add(2 * size_of::<[u8; 32]>() + size_of::<u64>())
+        .ok_or(Resource::Arithmetic)?;
+    budget.charge_work(work)?;
+    require(
+        independent.canonical_bytes() == carried.canonical_bytes()
+            && independent.identity() == carried.identity()
+            && independent.generation() == carried.generation()
+            && independent.identity().as_bytes() == configured_identity,
+        "native independently pinned compiler policy",
+    )
+}
+
+fn require_original_account(
+    ledger: Ledger,
+    account: Account,
+    floor: usize,
+    budget: &mut Budget<'_>,
+) -> Result<()> {
+    budget.check_prior_denials_v1()?;
+    budget.charge_work(4)?;
+    if budget.work_ledger_identity_v1() != ledger
+        || budget.storage_account_identity_v1() != Some(account)
+        || budget.storage() < floor
+    {
+        return Err(Resource::Accounting.into());
+    }
+    Ok(())
+}
+
+fn authenticate_raw_subject(
+    handoff: &Handoff,
+    claimed: &Subject,
+    budget: &mut Budget<'_>,
+) -> Result<()> {
+    // These are compiler receipt coordinates, not the Worker's publication attempt.
+    let coordinates = size_of::<(
+        fe2o3_artifact_transaction::BuildAttempt,
+        fe2o3_artifact_transaction::CompilerModuleHandoffSlotV5,
+        fe2o3_artifact_transaction::CompilerModuleHandoffTransactionIdentityV5,
+    )>();
+    budget.reserve_storage(coordinates)?;
+    let (subject, charge) = Subject::from_replay_evidence_in_original_account_v3(
+        claimed.attempt(),
+        claimed.slot(),
+        claimed.transaction_identity(),
+        handoff,
+        budget,
+    )
+    .map_err(failure)?;
+    budget.reserve_storage(charge.retained_storage())?;
+    require_same_subject(&subject, claimed, budget)?;
+    drop(subject);
+    budget.release_storage(charge.retained_storage())?;
+    budget.release_storage(coordinates)?;
+    Ok(())
+}
+
+fn require_same_subject(
+    subject: &Subject,
+    claimed: &Subject,
+    budget: &mut Budget<'_>,
+) -> Result<()> {
+    budget.charge_work(subject.canonical_bytes().len())?;
+    require(
+        subject.canonical_bytes() == claimed.canonical_bytes(),
+        "native raw V5 compiler-execution subject",
+    )
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn recover<'work>(
+    authenticated: AuthenticatedInput<'work>,
     wire: &Wire<'_>,
     record: &Record,
     claim: &Claim,
@@ -24,12 +178,18 @@ pub(super) fn recover<'work>(
     profile: &Profile<'work>,
     budget: &mut Budget<'work>,
 ) -> Result<(Finalized, Transcript, Carriage)> {
-    exact(
-        wire.outer_handoff_bytes(),
-        record.outer_handoff_sha256(),
-        record.outer_handoff_length(),
+    require_original_account(
+        authenticated.ledger,
+        authenticated.account,
+        authenticated.floor,
         budget,
     )?;
+    let AuthenticatedInput {
+        handoff,
+        carriage,
+        enrollment,
+        ..
+    } = authenticated;
     exact(
         wire.transcript_bytes(),
         record.transcript_sha256(),
@@ -43,30 +203,18 @@ pub(super) fn recover<'work>(
         budget,
     )?;
 
-    budget.charge_work(
-        decode_work(wire.outer_handoff_bytes().len())
-            .map_err(|error| failure(format_args!("native V5 decode bound: {error:?}")))?,
-    )?;
-    budget.reserve_storage(METADATA)?;
-    let bytes = copy(wire.outer_handoff_bytes(), budget)?;
-    let handoff = Handoff::decode_owned(bytes)
-        .map_err(|error| failure(format_args!("native V5 handoff: {error:?}")))?;
-    let (source, charge) =
-        recover_source(profile.semantic_policy_bytes(), handoff, budget).map_err(failure)?;
+    let (source, charge) = match enrollment {
+        None => recover_source(profile.semantic_policy_bytes(), handoff, budget),
+        Some(expected) => {
+            recover_mapped_source(profile.semantic_policy_bytes(), handoff, &expected, budget)
+        }
+    }
+    .map_err(failure)?;
     budget.reserve_storage(charge.retained_storage())?;
 
     let (transcript, charge) =
         Transcript::decode_canonical(wire.transcript_bytes(), budget).map_err(failure)?;
     budget.reserve_storage(charge.retained_storage())?;
-    let (carriage, charge) =
-        Carriage::decode_in_original_account_v3(wire.compiler_execution_bytes(), budget)
-            .map_err(failure)?;
-    budget.reserve_storage(charge.additional_storage())?;
-    require(
-        *carriage.policy().identity().as_bytes()
-            == profile.configuration().parts().compiler_policy_identity,
-        "native independently pinned compiler policy",
-    )?;
 
     let count = wire.providers().len();
     budget.reserve_storage(
@@ -180,3 +328,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "content_gate_tests.rs"]
+mod gate_tests;

@@ -551,3 +551,6 @@ mod resources;
 
 #[path = "compiler_execution_subject_v3_occurrence_tests.rs"]
 mod occurrence;
+
+#[path = "compiler_execution_subject_v3_replay_original_account_tests.rs"]
+mod replay_original_account;

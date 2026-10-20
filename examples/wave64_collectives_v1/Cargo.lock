@@ -560,6 +560,7 @@ dependencies = [
  "fe2o3-runtime",
  "fe2o3-runtime-model",
  "fe2o3-runtime-protocol",
+ "fe2o3-rustc-invocation",
  "fe2o3-service-host",
  "fe2o3-verifier",
  "libc",
@@ -866,6 +867,8 @@ dependencies = [
  "fe2o3-amd-target",
  "fe2o3-build-authority",
  "libc",
+ "serde",
+ "serde_json",
  "sha2 0.11.0",
 ]
 

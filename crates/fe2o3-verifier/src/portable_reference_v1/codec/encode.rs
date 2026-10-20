@@ -13,6 +13,24 @@ pub(super) fn frame(
     output: Output<'_>,
     s: &mut Scope<'_, '_>,
 ) -> Result<usize, Error> {
+    subject_frame(
+        &input.subject(),
+        input.origin_v2(),
+        alternate,
+        length,
+        output,
+        s,
+    )
+}
+
+pub(super) fn subject_frame(
+    input: &CpuSubject<'_>,
+    origin: NativeCpuOriginV2<'_>,
+    alternate: bool,
+    length: usize,
+    output: Output<'_>,
+    s: &mut Scope<'_, '_>,
+) -> Result<usize, Error> {
     let signature = input.replay.signature_preimage;
     let axes = signature
         .reference_inputs()
@@ -28,7 +46,7 @@ pub(super) fn frame(
     require(!ir.blocks.is_empty(), "empty blocks")?;
     require(ir.loop_summaries.is_empty(), "loop summaries unsupported")?;
     require(
-        u64::from(input.association.semantic_root) < HARD_MAX_FUNCTIONS_V1,
+        u64::from(input.semantic_root) < HARD_MAX_FUNCTIONS_V1,
         "semantic root",
     )?;
     let mut w = Writer {
@@ -40,15 +58,35 @@ pub(super) fn frame(
         kernel_count: signature.kernel_inputs().len(),
         nodes: 0,
     };
-    w.put(MAGIC)?;
-    w.put(&1u16.to_le_bytes())?;
+    let (magic, version) = match origin {
+        NativeCpuOriginV2::SourceRegistration { .. } => (MAGIC, 1u16),
+        NativeCpuOriginV2::AdmittedPolicy(_) => (policy_v2::POLICY_MAGIC, 2u16),
+    };
+    w.put(magic)?;
+    w.put(&version.to_le_bytes())?;
     w.put(&0u16.to_le_bytes())?;
     w.u32(u32::try_from(length).map_err(|_| Resource::Arithmetic)?)?;
     w.u8(64)?;
-    w.put(&input.association.semantic_mir_sha256)?;
-    w.u32(input.association.semantic_root)?;
-    w.text(input.association.registration_path)?;
-    w.text(input.association.logical_kernel_name)?;
+    w.put(&input.semantic_mir_sha256)?;
+    w.u32(input.semantic_root)?;
+    match origin {
+        NativeCpuOriginV2::SourceRegistration { registration_path } => {
+            w.text(registration_path)?;
+        }
+        NativeCpuOriginV2::AdmittedPolicy(origin) => {
+            require(
+                origin.mapping_ordinal < MAX_REFERENCE_ENROLLMENT_BINDINGS_V1,
+                "mapping ordinal",
+            )?;
+            w.u8(policy_v2::ADMITTED_POLICY_TAG)?;
+            w.put(&policy_v2::REFERENCE_ENROLLMENT_DOMAIN_V1.to_le_bytes())?;
+            w.put(&origin.rustc_invocation_sha256)?;
+            w.put(&origin.native_policy_sha256)?;
+            w.u64(origin.policy_generation)?;
+            w.u32(origin.mapping_ordinal)?;
+        }
+    }
+    w.text(input.logical_kernel_name)?;
     w.identity(input.kernel)?;
     w.identity(input.reference)?;
     w.put(&[0; 4])?;

@@ -45,3 +45,15 @@ The only final frame is either an empty generic rejection or at most 64 KiB of o
 application-owned response bytes. Those bytes are hashed and session-bound, but the protocol does
 not interpret or authenticate them. No V2 frame is verification evidence by itself, and no frame
 grants theorem, load, launch, currentness, key-custody, or application authority.
+# V3 Readiness Codec
+
+## Explicit Pathname Readiness V3
+
+V3 is an opt-in bootstrap; no V2 framing or negotiation behavior changes. Ready is exactly
+64 bytes: magic `F3WVRD3\\0` (8), little-endian version3 (2), zero reserved6,
+nonzero per-connection nonce32, zero reserved16. Begin is a 64-byte prefix with
+magic `F3WVBG3\\0` and the same layout/nonce, followed by the canonical V1 request.
+It carries the same two payload descriptors. All later challenge/current/terminal frames
+remain V2. Unknown versions, noncanonical reserved bytes, stale/cross-connection nonce
+echoes and mixed-version packets fail closed. These inert codec values grant no authority;
+they alone establish neither nonce freshness nor service authentication.

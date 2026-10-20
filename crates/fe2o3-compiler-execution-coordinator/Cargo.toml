@@ -16,6 +16,7 @@ fe2o3-compiler-closure-capability.workspace = true
 fe2o3-compiler-execution-lifecycle.workspace = true
 fe2o3-compiler-execution-protocol.workspace = true
 fe2o3-compiler-execution-supervisor.workspace = true
+fe2o3-compiler-lineage.workspace = true
 fe2o3-external-anchor-coordinator.workspace = true
 fe2o3-kernel-ir.workspace = true
 fe2o3-protected-service-profile.workspace = true
@@ -32,7 +33,6 @@ zeroize = "=1.9.0"
 
 [dev-dependencies]
 fe2o3-compiler-ffi.workspace = true
-fe2o3-compiler-lineage.workspace = true
 fe2o3-protected-service-spawn = { workspace = true, features = ["test-support"] }
 tempfile = "=3.21.0"
 

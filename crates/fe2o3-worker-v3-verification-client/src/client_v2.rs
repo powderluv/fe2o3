@@ -175,15 +175,55 @@ impl WorkerV3VerificationClientV2 {
         request: WorkerV3VerificationRequestV1,
         snapshots: WorkerV3VerificationPayloadSnapshotsV1,
     ) -> Result<WorkerV3VerificationBeginOutcomeV2, WorkerV3VerificationClientErrorV2> {
+        self.begin_with_readiness(request, snapshots, None)
+    }
+
+    pub(crate) fn receive_readiness(&self) -> Result<Vec<u8>, WorkerV3VerificationClientErrorV2> {
+        receive_packet(
+            &self.peer,
+            64,
+            64,
+            self.deadline,
+            self.expected_response_credentials,
+        )
+    }
+
+    pub(crate) fn require_readiness_quiet(&self) -> Result<(), WorkerV3VerificationClientErrorV2> {
+        loop {
+            require_deadline(self.deadline)?;
+            let mut fds = [PollFd::new(
+                &self.peer,
+                PollFlags::IN | PollFlags::RDHUP | PollFlags::ERR | PollFlags::HUP,
+            )];
+            match poll(
+                &mut fds,
+                Some(&Timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                }),
+            ) {
+                Ok(0) => return Ok(()),
+                Ok(_) => return Err(WorkerV3VerificationClientErrorV2::TrailingTransfer),
+                Err(rustix::io::Errno::INTR) => {}
+                Err(e) => return Err(WorkerV3VerificationClientErrorV2::Poll(e.into())),
+            }
+        }
+    }
+
+    pub(crate) fn begin_with_readiness(
+        self,
+        request: WorkerV3VerificationRequestV1,
+        snapshots: WorkerV3VerificationPayloadSnapshotsV1,
+        ready: Option<fe2o3_worker_v3_verification_protocol::WorkerV3VerificationReadyFrameV3>,
+    ) -> Result<WorkerV3VerificationBeginOutcomeV2, WorkerV3VerificationClientErrorV2> {
         snapshots
             .revalidate(&request)
             .map_err(WorkerV3VerificationClientErrorV2::Snapshot)?;
-        send_begin(
-            &self.peer,
-            request.encode_canonical(),
-            snapshots.borrowed_fds(),
-            self.deadline,
-        )?;
+        let bytes: std::borrow::Cow<'_, [u8]> = match ready {
+            Some(ready) => std::borrow::Cow::Owned(ready.encode_begin(&request)),
+            None => std::borrow::Cow::Borrowed(request.encode_canonical()),
+        };
+        send_begin(&self.peer, &bytes, snapshots.borrowed_fds(), self.deadline)?;
         snapshots
             .revalidate(&request)
             .map_err(WorkerV3VerificationClientErrorV2::Snapshot)?;

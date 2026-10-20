@@ -946,6 +946,9 @@
   "crates/fe2o3-host/src/compiler_execution_current_record_audit/tests.rs": {
     "block": 4
   },
+  "crates/fe2o3-host/src/compiler_execution_current_record_audit/tests/owned_input.rs": {
+    "block": 1
+  },
   "crates/fe2o3-host/src/compiler_execution_current_record_audit/tests/production.rs": {
     "block": 6
   },
@@ -1384,8 +1387,8 @@
     "function": 1
   },
   "crates/fe2o3-proof-custodian/src/native_application/worker.rs": {
-    "block": 3,
-    "function": 1
+    "block": 4,
+    "function": 2
   },
   "crates/fe2o3-proof-custodian/src/native_manager_entrypoint.rs": {
     "block": 6,
@@ -1716,6 +1719,11 @@
     "block": 9,
     "impl": 1
   },
+  "crates/fe2o3-rustc-invocation/tests/reference_enrollment_count_no_alloc.rs": {
+    "block": 4,
+    "function": 4,
+    "impl": 1
+  },
   "crates/fe2o3-verifier/src/authenticated_execution.rs": {
     "block": 3,
     "extern_block": 1
@@ -1814,6 +1822,9 @@
   },
   "crates/rustc-codegen-fe2o3/src/protected_compiler_execution_tests.rs": {
     "block": 9
+  },
+  "crates/rustc-codegen-fe2o3/src/protected_reference_enrollment_loan_v1_flow_fixture.rs": {
+    "block": 3
   },
   "crates/rustc-codegen-fe2o3/src/protected_rustc_invocation.rs": {
     "block": 2

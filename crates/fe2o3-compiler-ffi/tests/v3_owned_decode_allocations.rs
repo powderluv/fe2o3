@@ -451,7 +451,7 @@ fn assert_hostile_declared_length_rejected_without_allocation(
     let (result, snapshot) =
         measure_allocations(|| InertSemanticCompilerModuleHandoffV3::decode_owned(wire));
     assert_eq!(result, Err(expected));
-    assert_eq!(snapshot.sizes, []);
+    assert_eq!(snapshot.sizes, [] as [usize; 0]);
     assert_eq!(snapshot.unrecorded_events, 0);
 }
 
@@ -566,7 +566,7 @@ fn native_v4_wire(
         )
         .unwrap();
     });
-    assert_eq!(trace.sizes, []);
+    assert_eq!(trace.sizes, [] as [usize; 0]);
     assert_eq!(trace.unrecorded_events, 0);
     let (cap_identity, trace) = measure_allocations(|| {
         let identity =
@@ -581,7 +581,7 @@ fn native_v4_wire(
         assert_eq!(view.identity(), identity);
         identity
     });
-    assert_eq!(trace.sizes, []);
+    assert_eq!(trace.sizes, [] as [usize; 0]);
     assert_eq!(trace.unrecorded_events, 0);
     bytes[outer.module_handoff_range()].copy_from_slice(old.module_handoff().canonical_bytes());
     let (_, trace) = measure_allocations(|| {
@@ -594,7 +594,7 @@ fn native_v4_wire(
         )
         .unwrap();
     });
-    assert_eq!(trace.sizes, []);
+    assert_eq!(trace.sizes, [] as [usize; 0]);
     assert_eq!(trace.unrecorded_events, 0);
     bytes
 }
@@ -660,7 +660,7 @@ fn assert_native_v4_has_no_payload_copies() {
     let (rejected, trace) =
         measure_allocations(|| InertSemanticCompilerModuleHandoffV4::decode_owned(bad));
     assert!(rejected.is_err());
-    assert_eq!(trace.sizes, []);
+    assert_eq!(trace.sizes, [] as [usize; 0]);
     assert_eq!(trace.unrecorded_events, 0);
     let good = native_v4_wire(1024, 512, 128, 64);
     for (offset, declared, expected) in [
@@ -697,7 +697,7 @@ fn assert_native_v4_has_no_payload_copies() {
         assert!(
             matches!(result, Err(InertSemanticCompilerModuleHandoffErrorV4::Framing(error)) if error == expected)
         );
-        assert_eq!(trace.sizes, []);
+        assert_eq!(trace.sizes, [] as [usize; 0]);
         assert_eq!(trace.unrecorded_events, 0);
     }
 }
@@ -716,11 +716,11 @@ fn assert_native_carrier_has_no_payload_copies() {
         let mut bytes = vec![0x37; layout.encoded_len()];
         let (identity, allocations) =
             measure_allocations(|| seal(layout, &mut bytes, LIMIT, |_| Ok::<_, ()>(())).unwrap());
-        assert_eq!(allocations.sizes, []);
+        assert_eq!(allocations.sizes, [] as [usize; 0]);
         assert_eq!(allocations.unrecorded_events, 0);
         let (frame, allocations) =
             measure_allocations(|| read(&bytes, LIMIT, |_| Ok::<_, ()>(())).unwrap());
-        assert_eq!(allocations.sizes, []);
+        assert_eq!(allocations.sizes, [] as [usize; 0]);
         assert_eq!(allocations.unrecorded_events, 0);
         assert_eq!(frame.identity(), identity);
         assert_eq!(

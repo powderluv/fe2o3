@@ -134,9 +134,11 @@ impl CompilerRuntimePackagePlanV1 {
         let bytes =
             usize::try_from(self.manifest.total_file_bytes()).map_err(|_| Resource::Arithmetic)?;
         // Covers copying, full verifier reads/seals, all descriptor/path rechecks,
-        // and bounded retirement. Four full backings include verifier overlap.
+        // final origin-content revalidation and bounded retirement. Eight extra
+        // work units per code byte fund that additional streaming read/hash.
+        // Four full backings include verifier overlap; hashing adds no backing.
         let local_work = bytes
-            .checked_mul(64)
+            .checked_mul(72)
             .and_then(|n| n.checked_add(64 * 1024 * 1024))
             .ok_or(Resource::Arithmetic)?;
         let local_storage = bytes

@@ -59,4 +59,6 @@ pub use consuming::application_supervisor::{
 pub use consuming::root_issuer::application_currentness::{
     ApplicationCurrentnessCleanupQuotaV3, ApplicationCurrentnessIssuerV3,
 };
-pub(crate) use consuming::root_issuer::{IssuerCleanupQuota, NativeAttempt};
+pub(crate) use consuming::root_issuer::{
+    IssuerCleanupQuota, NativeAttempt, OriginalCompilerEnrollment,
+};

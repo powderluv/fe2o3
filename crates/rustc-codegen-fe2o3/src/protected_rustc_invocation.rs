@@ -26,6 +26,10 @@ use fe2o3_process_identity::{
 };
 use fe2o3_rustc_invocation::{CompileEnvironmentV2, RustcInvocationDescriptorV3};
 
+#[path = "protected_reference_invocation_identity_v1.rs"]
+pub(crate) mod reference_enrollment_identity;
+pub(crate) use reference_enrollment_identity::Stamp as ReferenceEnrollmentInvocationStampV1;
+
 #[cfg(test)]
 const BASELINE_PROTECTED_TARGET_V1: &str = fe2o3_amd_target::PRODUCTION_GFX942_DEVICE_TARGET_V1;
 const QUALIFICATION_CODEGEN_BACKEND_SHA256_ENV_V1: &str =
@@ -36,6 +40,7 @@ const RUNNING_RUSTC_PATH: &str = "/proc/self/exe";
 pub(crate) struct AdmittedProtectedRustcInvocationV1 {
     capability: RustcInvocationCapabilityV1,
     proof_runtime: CompilerProofRuntimeCustody,
+    reference_enrollment: Option<reference_enrollment_identity::Owner>,
 }
 
 enum CompilerProofRuntimeCustody {
@@ -102,6 +107,100 @@ impl CompilerProofRuntimeCustody {
 }
 
 impl AdmittedProtectedRustcInvocationV1 {
+    pub(crate) const REFERENCE_ENROLLMENT_HASH_SCRATCH: usize =
+        std::mem::size_of::<sha2::Sha256>() + 32;
+
+    pub(crate) fn reference_enrollment_requested(
+        &self,
+        budget: &mut Budget<'_>,
+    ) -> Result<bool, crate::reference_effect_v1::ReferenceBindingErrorV1> {
+        use crate::reference_effect_v1::ReferenceBindingErrorV1 as Error;
+        for entry in self.descriptor().compile_environment().entries() {
+            budget
+                .charge_work(entry.key().len().saturating_add(1))
+                .map_err(|error| Error::new(error.to_string()))?;
+            if entry.key() == crate::reference_enrollment_policy_v1::ENV {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    pub(crate) fn retain_reference_enrollment_identity(
+        &mut self,
+        budget: &mut Budget<'_>,
+    ) -> Result<
+        ReferenceEnrollmentInvocationStampV1,
+        crate::reference_effect_v1::ReferenceBindingErrorV1,
+    > {
+        use crate::reference_effect_v1::ReferenceBindingErrorV1 as Error;
+        self.revalidate_for_publication_with_image_budget(budget)
+            .map_err(|error| Error::new(error.to_string()))?;
+        if self.reference_enrollment.is_none() {
+            self.reference_enrollment = Some(
+                reference_enrollment_identity::Owner::new(budget)
+                    .map_err(|error| Error::new(error.to_string()))?,
+            );
+        }
+        self.reference_enrollment_stamp()
+    }
+
+    pub(crate) fn reference_enrollment_stamp(
+        &self,
+    ) -> Result<
+        ReferenceEnrollmentInvocationStampV1,
+        crate::reference_effect_v1::ReferenceBindingErrorV1,
+    > {
+        self.reference_enrollment
+            .as_ref()
+            .map(|owner| owner.stamp())
+            .ok_or_else(|| {
+                crate::reference_effect_v1::ReferenceBindingErrorV1::new(
+                    "reference enrollment invocation identity was not retained",
+                )
+            })
+    }
+
+    pub(crate) fn reference_enrollment_invocation_sha256(
+        &self,
+        budget: &mut Budget<'_>,
+    ) -> Result<[u8; 32], crate::reference_effect_v1::ReferenceBindingErrorV1> {
+        use crate::reference_effect_v1::ReferenceBindingErrorV1 as Error;
+        use sha2::{Digest as _, Sha256};
+        let bytes = self.capability.canonical_bytes();
+        budget
+            .with_prepaid_scope(
+                0,
+                1,
+                bytes.len().saturating_add(1),
+                Self::REFERENCE_ENROLLMENT_HASH_SCRATCH,
+                |_| Ok::<_, Resource>(Sha256::digest(bytes).into()),
+            )
+            .map_err(|error| Error::new(error.to_string()))
+    }
+
+    pub(crate) fn revalidate_reference_enrollment_identity(
+        &self,
+        stamp: &ReferenceEnrollmentInvocationStampV1,
+        budget: &mut Budget<'_>,
+    ) -> Result<(), crate::reference_effect_v1::ReferenceBindingErrorV1> {
+        use crate::reference_effect_v1::ReferenceBindingErrorV1 as Error;
+        budget
+            .charge_work(1)
+            .map_err(|error| Error::new(error.to_string()))?;
+        if !self
+            .reference_enrollment
+            .as_ref()
+            .is_some_and(|owner| owner.matches(stamp))
+        {
+            return Err(Error::new(
+                "reference enrollment original invocation changed",
+            ));
+        }
+        self.revalidate_for_publication_with_image_budget(budget)
+            .map_err(|error| Error::new(error.to_string()))
+    }
+
     pub(crate) fn select_legacy_proof_runtime(
         &mut self,
     ) -> Result<(), ProtectedRustcInvocationErrorV1> {
@@ -162,6 +261,7 @@ impl AdmittedProtectedRustcInvocationV1 {
         Ok(FinishedProtectedRustcInvocationV3 {
             capability: self.capability,
             proof_runtime: self.proof_runtime,
+            reference_enrollment: self.reference_enrollment,
         })
     }
 
@@ -222,6 +322,7 @@ impl AdmittedProtectedRustcInvocationV1 {
         Ok(FinishedProtectedRustcInvocationV3 {
             capability: self.capability,
             proof_runtime: self.proof_runtime,
+            reference_enrollment: self.reference_enrollment,
         })
     }
 }
@@ -231,6 +332,7 @@ impl AdmittedProtectedRustcInvocationV1 {
 pub(crate) struct FinishedProtectedRustcInvocationV3 {
     capability: RustcInvocationCapabilityV1,
     proof_runtime: CompilerProofRuntimeCustody,
+    reference_enrollment: Option<reference_enrollment_identity::Owner>,
 }
 
 impl FinishedProtectedRustcInvocationV3 {
@@ -508,6 +610,7 @@ fn validate_capability(
     Ok(AdmittedProtectedRustcInvocationV1 {
         capability,
         proof_runtime: CompilerProofRuntimeCustody::Unselected,
+        reference_enrollment: None,
     })
 }
 
@@ -597,6 +700,10 @@ fn measure_image_with_budget(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "protected_reference_publication_owner_tests.rs"]
+mod reference_publication_owner_tests;
 
 #[cfg(test)]
 #[path = "protected_rustc_invocation/image_budget_tests.rs"]

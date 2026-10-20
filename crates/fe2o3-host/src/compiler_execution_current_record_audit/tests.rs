@@ -223,6 +223,9 @@ mod tests {
     #[path = "production.rs"]
     mod production;
 
+    #[path = "owned_input.rs"]
+    mod owned_input;
+
     fn canonical_current_record_evidence(
         fixture: &Fixture,
         verification_challenge: [u8; 32],
@@ -394,8 +397,11 @@ mod tests {
             .unwrap();
             send_response(&service, response.canonical_bytes());
         });
-        let client = CompilerExecutionClientV1::admit(client, Duration::from_secs(2)).unwrap();
-        let mut auditor = InheritedWorkerV3CompilerCurrentRecordAuditorV1::from_client(client);
+        let mut auditor =
+            InheritedWorkerV3CompilerCurrentRecordAuditorV1::admit_owned_application_service(
+                client,
+            )
+            .unwrap();
         let evidence = auditor
             .audit_exact_with_challenge(
                 &fixture.subject,

@@ -130,6 +130,7 @@ unsafe impl Build<Acquire<'_, '_, '_>> for Owners {
 pub(super) struct Validate<'a, 'trace, 'work> {
     pub root: &'a RootObservation<'trace, 'work>,
     pub observation: &'a NativeObservation,
+    pub enrollment: Option<&'a Option<Enrollment>>,
 }
 
 // SAFETY: this operation never mutates the concrete payload or exports a view.
@@ -147,6 +148,20 @@ unsafe impl Build<Validate<'_, '_, '_>> for Owners {
         self.resources
             .revalidate(publication, token, b)
             .map_err(NativeOccurrenceError::from)?;
+        if let Some(expected) = op.enrollment {
+            // The original quote covers the full token capacity and metadata,
+            // not just this borrowed inventory's visible length.
+            enrollment::require(
+                token
+                    .handoff()
+                    .capsule()
+                    .rustc_identity_inventory()
+                    .canonical_preimage(),
+                self.resources.quote().retained_storage(),
+                expected,
+                b,
+            )?;
+        }
         Ok(())
     }
 }

@@ -105,6 +105,8 @@ impl StoreWorker {
                         }
                     }
                 }
+                // Normal completion retires the ledger, not just its command loop.
+                drop(store);
                 let _ = stopped_tx.send(true);
             })
             .map_err(|_| PublisherError::Store)?;
@@ -207,5 +209,45 @@ fn reject(command: Command) {
         Command::Break(response) => {
             drop(response);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::test_support::secure_tempdir;
+
+    #[tokio::test]
+    async fn normal_shutdown_signals_only_after_store_retirement() {
+        let temp = secure_tempdir();
+        let path = temp.path().join("retirement.ledger");
+        let mut store = DurableStore::open(&path).unwrap();
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        store.set_before_unlock(move || {
+            let _ = entered_tx.send(());
+            let _ = release_rx.recv();
+        });
+        let worker = Arc::new(StoreWorker::spawn(store, 1).unwrap());
+        let stopping = worker.clone();
+        let shutdown = tokio::spawn(async move {
+            stopping
+                .shutdown_until(Instant::now() + Duration::from_secs(5))
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!*worker.stopped.borrow());
+        assert!(DurableStore::open(&path).is_err());
+        release_tx.send(()).unwrap();
+        assert!(shutdown.await.unwrap());
+        assert!(*worker.stopped.borrow());
+        let reopened = DurableStore::open(&path).unwrap();
+        assert_eq!(reopened.count(), 0);
     }
 }

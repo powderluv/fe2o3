@@ -102,7 +102,9 @@ fn native_loader_copies_enter_the_same_account_without_consuming_caller_slots() 
         let Admitted {
             policy: retained,
             client,
+            enrollment,
         } = admitted;
+        assert!(enrollment.is_none());
         let (client, ()) = client
             .prepare::<_, Error>(|budget| {
                 assert!(budget.work_ledger_identity_v1() == ledger);
@@ -114,6 +116,7 @@ fn native_loader_copies_enter_the_same_account_without_consuming_caller_slots() 
             })
             .unwrap();
         drop(client);
+        drop(enrollment);
         retained
     };
     assert_eq!(
@@ -179,11 +182,13 @@ fn selected_native_session_keeps_the_original_budget_and_consumes_once() {
         let dispatch::Admitted::Native(Admitted {
             policy: retained,
             client,
+            enrollment,
         }) = selected
         else {
             panic!("native image selected legacy");
         };
         assert_eq!(retained.policy(), policy.policy());
+        assert!(enrollment.is_none());
         let (client, ()) = client
             .prepare::<_, Error>(|budget| {
                 assert!(budget.work_ledger_identity_v1() == ledger);
@@ -195,6 +200,7 @@ fn selected_native_session_keeps_the_original_budget_and_consumes_once() {
             })
             .unwrap();
         drop(client);
+        drop(enrollment);
     }
     assert!(b.work_ledger_identity_v1() == ledger && b.work() > 26);
     assert!(matches!(

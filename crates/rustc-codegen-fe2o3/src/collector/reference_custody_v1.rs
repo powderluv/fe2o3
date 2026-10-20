@@ -4,11 +4,16 @@
 use super::{CollectedFunction, CollectedFunctionRole};
 use crate::reference_effect_v1::{
     AuthenticatedReferenceEffectBindingV1, AuthenticatedReferenceEffectBindingsV1,
-    ReferenceBindingErrorV1, authenticate_reference_binding_v1, equivalent_bindings_v1,
-    instantiated_signature,
+    ReferenceBindingErrorV1, ReferenceBindingOriginV1,
+    authenticate_reference_binding_with_origin_v1, equivalent_bindings_v1, instantiated_signature,
 };
 use crate::rustc_semantic_plan_v1::SourceClosureWorkV1;
 use rustc_middle::ty::{FnSig, Instance, TyCtxt};
+
+#[path = "original_root_associations_v1.rs"]
+mod original_roots;
+pub(super) use original_roots::PendingOriginalRootAssociationsV1;
+pub(crate) use original_roots::RetainedOriginalRootAssociationsV1;
 
 struct ReferenceInputV1<'tcx> {
     function: usize,
@@ -16,13 +21,15 @@ struct ReferenceInputV1<'tcx> {
     reference: Instance<'tcx>,
     kernel_signature: FnSig<'tcx>,
     reference_signature: FnSig<'tcx>,
-    registration_path: String,
+    origin: ReferenceBindingOriginV1,
     logical_kernel_name: String,
 }
 
 pub(super) struct RetainedReferenceInputsV1<'tcx> {
+    session: &'tcx rustc_session::Session,
     function_count: usize,
     inputs: Box<[ReferenceInputV1<'tcx>]>,
+    enrollment: Option<super::reference_enrollment_v1::RetainedEnrollmentV1<'tcx>>,
 }
 
 fn error(reason: &'static str) -> ReferenceBindingErrorV1 {
@@ -48,13 +55,13 @@ fn charge_storage<T>(
 
 fn charge_names(
     work: &mut SourceClosureWorkV1,
-    registration: &str,
+    origin: &ReferenceBindingOriginV1,
     name: &str,
 ) -> Result<(), ReferenceBindingErrorV1> {
     charge(
         work,
-        registration
-            .len()
+        origin
+            .retained_payload_bytes_v1()
             .checked_add(name.len())
             .ok_or_else(|| error("reference name work overflow"))?,
     )
@@ -87,7 +94,7 @@ fn retained_bytes<'tcx>(
             .ok_or_else(|| error("reference input count overflow"))?;
         bytes = bytes
             .checked_add(std::mem::size_of::<ReferenceInputV1<'tcx>>())
-            .and_then(|bytes| bytes.checked_add(binding.registration_path.len()))
+            .and_then(|bytes| bytes.checked_add(binding.origin.retained_payload_bytes_v1()))
             .and_then(|bytes| bytes.checked_add(binding.logical_kernel_name.len()))
             .ok_or_else(|| error("reference input storage overflow"))?;
     }
@@ -100,6 +107,30 @@ impl<'tcx> RetainedReferenceInputsV1<'tcx> {
         functions: &[CollectedFunction<'tcx>],
         work: &mut SourceClosureWorkV1,
     ) -> Result<Self, ReferenceBindingErrorV1> {
+        Self::capture_with_enrollment(tcx, functions, work, None, None)
+    }
+
+    pub(super) fn capture_with_enrollment(
+        tcx: TyCtxt<'tcx>,
+        functions: &[CollectedFunction<'tcx>],
+        work: &mut SourceClosureWorkV1,
+        enrollment: Option<super::reference_enrollment_v1::RetainedEnrollmentV1<'tcx>>,
+        loan: Option<
+            &crate::protected_compiler_execution::native_v3::ReferenceEnrollmentLoanV1<'_>,
+        >,
+    ) -> Result<Self, ReferenceBindingErrorV1> {
+        match (&enrollment, loan) {
+            (Some(retained), Some(loan)) => {
+                retained.revalidate(tcx, loan, work)?;
+                retained.validate_inputs(functions, work)?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(error(
+                    "reference enrollment capture has no original live owner",
+                ));
+            }
+        }
         let (count, bytes) = retained_bytes(functions, work)?;
         // SourceClosureWork is cumulative work, not the later canonical byte
         // ledger. Charging retained bytes here also bounds this new allocation.
@@ -117,24 +148,29 @@ impl<'tcx> RetainedReferenceInputsV1<'tcx> {
                 .reference_effect_binding
                 .as_ref()
                 .ok_or_else(|| error("retained reference has no binding"))?;
-            charge_names(
-                work,
-                &binding.registration_path,
-                &binding.logical_kernel_name,
-            )?;
+            if matches!(
+                binding.origin,
+                ReferenceBindingOriginV1::ReferenceEnrollment(_)
+            ) && enrollment.is_none()
+            {
+                return Err(error("reference enrollment has no original live owner"));
+            }
+            charge_names(work, &binding.origin, &binding.logical_kernel_name)?;
             inputs.push(ReferenceInputV1 {
                 function,
                 kernel: collected.instance,
                 reference,
                 kernel_signature: instantiated_signature(tcx, collected.instance),
                 reference_signature: instantiated_signature(tcx, reference),
-                registration_path: binding.registration_path.clone(),
+                origin: binding.origin.clone(),
                 logical_kernel_name: binding.logical_kernel_name.clone(),
             });
         }
         Ok(Self {
+            session: tcx.sess,
             function_count: functions.len(),
             inputs: inputs.into_boxed_slice(),
+            enrollment,
         })
     }
 
@@ -144,6 +180,33 @@ impl<'tcx> RetainedReferenceInputsV1<'tcx> {
         functions: &[CollectedFunction<'tcx>],
         work: &mut SourceClosureWorkV1,
     ) -> Result<AuthenticatedReferenceEffectBindingsV1, ReferenceBindingErrorV1> {
+        self.rederive_with_enrollment(tcx, functions, work, None)
+    }
+
+    pub(super) fn rederive_with_enrollment(
+        &self,
+        tcx: TyCtxt<'tcx>,
+        functions: &[CollectedFunction<'tcx>],
+        work: &mut SourceClosureWorkV1,
+        loan: Option<
+            &crate::protected_compiler_execution::native_v3::ReferenceEnrollmentLoanV1<'_>,
+        >,
+    ) -> Result<AuthenticatedReferenceEffectBindingsV1, ReferenceBindingErrorV1> {
+        match (&self.enrollment, loan) {
+            (Some(retained), Some(loan)) => {
+                retained.revalidate(tcx, loan, work)?;
+                // A fresh scoped loan must establish descriptor membership
+                // before origin access, even when the retained roster is empty.
+                let _ = loan.request(work)?;
+                retained.validate_inputs(functions, work)?;
+            }
+            (None, None) => {}
+            _ => return Err(error("reference enrollment live owner presence changed")),
+        }
+        charge(work, 1)?;
+        if !std::ptr::eq(self.session, tcx.sess) {
+            return Err(error("reference input compiler session changed"));
+        }
         if self.function_count != functions.len() {
             return Err(error("reference input function roster changed"));
         }
@@ -174,17 +237,13 @@ impl<'tcx> RetainedReferenceInputsV1<'tcx> {
             };
             retained.next();
             // String equality and the later name clones each receive a debit.
-            charge_names(
-                work,
-                &expected.registration_path,
-                &expected.logical_kernel_name,
-            )?;
+            charge_names(work, &expected.origin, &expected.logical_kernel_name)?;
             charge(work, expected.logical_kernel_name.len())?;
             if function.role != CollectedFunctionRole::KernelEntry
                 || function.instance != expected.kernel
                 || reference != expected.reference
                 || function.logical_name.as_deref() != Some(expected.logical_kernel_name.as_str())
-                || binding.registration_path != expected.registration_path
+                || binding.origin != expected.origin
                 || binding.logical_kernel_name != expected.logical_kernel_name
             {
                 return Err(error(
@@ -199,19 +258,19 @@ impl<'tcx> RetainedReferenceInputsV1<'tcx> {
                 return Err(error("reference input instantiated signature changed"));
             }
             // Charge both allocation and copying before cloning owned names.
-            charge_names(
-                work,
-                &expected.registration_path,
-                &expected.logical_kernel_name,
-            )?;
-            charge_names(
-                work,
-                &expected.registration_path,
-                &expected.logical_kernel_name,
-            )?;
-            let fresh = authenticate_reference_binding_v1(
+            charge_names(work, &expected.origin, &expected.logical_kernel_name)?;
+            charge_names(work, &expected.origin, &expected.logical_kernel_name)?;
+            if let ReferenceBindingOriginV1::ReferenceEnrollment(origin) = &expected.origin {
+                charge(work, std::mem::size_of_val(origin))?;
+                let loan =
+                    loan.ok_or_else(|| error("reference enrollment replay has no live owner"))?;
+                if loan.origin(origin.mapping_ordinal)? != *origin {
+                    return Err(error("reference enrollment descriptive origin changed"));
+                }
+            }
+            let fresh = authenticate_reference_binding_with_origin_v1(
                 tcx,
-                expected.registration_path.clone(),
+                expected.origin.clone(),
                 expected.logical_kernel_name.clone(),
                 expected.kernel,
                 expected.reference,

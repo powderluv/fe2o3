@@ -302,6 +302,55 @@ impl InertCompilerExecutionSubjectV3 {
         })
     }
 
+    /// Same inert replay reconstruction on the original owned account. The
+    /// complete handoff backing/metadata and fixed occurrence coordinates must
+    /// be prepaid and are counted again inside an additional <=256 MiB window.
+    /// Returns the full result charge unreserved; legacy replay stays capped.
+    ///
+    /// This binds no input to a ledger and authenticates neither the occurrence
+    /// nor execution. A separately prepaid account may reconstruct the same
+    /// inert bytes; protected callers must retain their original owners/account
+    /// and independently join the complete subject to authenticated evidence.
+    pub fn from_replay_evidence_in_original_account_v3(
+        attempt: BuildAttempt,
+        slot: CompilerModuleHandoffSlotV5,
+        transaction: CompilerModuleHandoffTransactionIdentityV5,
+        handoff: &Handoff,
+        budget: &mut Budget<'_>,
+    ) -> Result<(Self, InertCompilerExecutionSubjectStorageV3)> {
+        let inputs = replay_input_floor(handoff)?;
+        let floor = budget.storage();
+        let overlap = inputs
+            .checked_add(Budget::STORAGE_WINDOW_SCRATCH_V1)
+            .ok_or(Resource::Arithmetic)?;
+        budget.with_additional_storage_window_v1(MAX_COMPILER_MODULE_HANDOFF_STORAGE_V5, |b| {
+            b.with_prepaid_scope(floor.max(inputs), 0, 0, overlap, |b| {
+                crate::compiler_module_handoff::resources::with_budget(b, |b| {
+                    b.charge_work(8)?;
+                    metered_after_entry(b, inputs, || {
+                        Ok((
+                            Self::from_exact(attempt, slot, transaction, handoff)?,
+                            InertCompilerExecutionSubjectStorageV3(RETAINED),
+                        ))
+                    })
+                })?
+            })
+        })
+    }
+
+    /// Logical work for original-account replay, excluding caller comparisons.
+    pub const COMPOSED_REPLAY_WORK_V3: usize =
+        Budget::STORAGE_WINDOW_WORK_V1 + INERT_COMPILER_EXECUTION_SUBJECT_WORK_V3;
+
+    /// Additional nested scratch over the actual handoff and fixed coordinates.
+    /// Inputs must already be prepaid; the returned subject charge is separate.
+    pub fn composed_replay_storage_v3(handoff: &Handoff) -> Result<usize> {
+        replay_input_floor(handoff)?
+            .checked_add(Budget::STORAGE_WINDOW_SCRATCH_V1)
+            .and_then(|n| n.checked_add(INERT_COMPILER_EXECUTION_SUBJECT_STORAGE_V3))
+            .ok_or(Resource::Arithmetic.into())
+    }
+
     fn from_exact(
         attempt: BuildAttempt,
         slot: CompilerModuleHandoffSlotV5,
@@ -507,6 +556,15 @@ fn input_floor(bytes: &[u8]) -> usize {
     } else {
         0
     }
+}
+fn replay_input_floor(handoff: &Handoff) -> Result<usize> {
+    handoff_floor(handoff)?
+        .checked_add(size_of::<(
+            BuildAttempt,
+            CompilerModuleHandoffSlotV5,
+            CompilerModuleHandoffTransactionIdentityV5,
+        )>())
+        .ok_or(Resource::Arithmetic.into())
 }
 fn subject(
     budget: &mut Budget<'_>,

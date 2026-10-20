@@ -2330,6 +2330,7 @@ fn finish_admitted_input(
             (Some(identity), Some(subject))
         });
     Ok(crate::AdmittedSimulationInputV1 {
+        simulation_bundle_kir_identity: bundle_identity.map(|_| *admitted.identity()),
         kir_sha256: *admitted.identity().digest(),
         request_sha256: Sha256::digest(request_bytes).into(),
         request_bytes: u64::try_from(request_bytes.len()).map_err(|_| {

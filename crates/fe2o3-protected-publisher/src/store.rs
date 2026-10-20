@@ -101,6 +101,8 @@ pub struct DurableStore {
     indexed_read_fault: Option<IndexedReadFault>,
     #[cfg(test)]
     before_indexed_decode: Option<BeforeIndexedDecodeHook>,
+    #[cfg(test)]
+    before_unlock: Option<Box<dyn FnOnce() + Send>>,
 }
 
 #[derive(Clone)]
@@ -260,6 +262,8 @@ impl DurableStore {
             indexed_read_fault: None,
             #[cfg(test)]
             before_indexed_decode: None,
+            #[cfg(test)]
+            before_unlock: None,
         };
         store.verify_identity()?;
         store.replay(&header)?;
@@ -916,10 +920,19 @@ impl DurableStore {
     fn set_before_indexed_decode(&mut self, hook: impl FnOnce(&mut Vec<u8>) + Send + 'static) {
         self.before_indexed_decode = Some(Box::new(hook));
     }
+
+    #[cfg(test)]
+    pub(crate) fn set_before_unlock(&mut self, hook: impl FnOnce() + Send + 'static) {
+        self.before_unlock = Some(Box::new(hook));
+    }
 }
 
 impl Drop for DurableStore {
     fn drop(&mut self) {
+        #[cfg(test)]
+        if let Some(hook) = self.before_unlock.take() {
+            hook();
+        }
         // Unlock the shared open-file description before close, including any
         // transient fork inheritance that has not reached close-on-exec yet.
         unsafe {
@@ -2772,6 +2785,7 @@ mod tests {
             .await
             .unwrap();
 
+        // Spawned requests need not all enter the queue before poisoning.
         let mut queued = Vec::new();
         for ordinal in 0..63 {
             let worker = worker.clone();
@@ -2795,6 +2809,11 @@ mod tests {
             assert!(matches!(result.await.unwrap(), Err(PublisherError::Store)));
         }
         assert_eq!(std::fs::read(&path).unwrap(), durable);
+        assert!(
+            worker
+                .shutdown_until(tokio::time::Instant::now() + Duration::from_secs(10))
+                .await
+        );
         drop(worker);
         assert_eq!(DurableStore::open(&path).unwrap().count(), 1);
     }

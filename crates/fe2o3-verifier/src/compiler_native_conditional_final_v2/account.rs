@@ -37,7 +37,7 @@ impl Account {
 }
 
 /// Closed-route temporary reservation. A failed or unwound nested operation
-/// leaves terminal charges; only complete success releases this known extent.
+/// leaves terminal charges; only denial-free success releases this known extent.
 pub(super) fn temporary<T>(
     budget: &mut Budget<'_>,
     bytes: usize,
@@ -51,6 +51,7 @@ pub(crate) fn temporary_using<T, Failure: From<Error> + From<Resource>>(
     bytes: usize,
     run: impl FnOnce(&mut Budget<'_>) -> Result<T, Failure>,
 ) -> Result<T, Failure> {
+    budget.check_prior_denials_v1()?;
     let account = Account::capture(budget);
     budget.charge_work(1)?;
     budget.reserve_storage(bytes)?;
@@ -60,6 +61,7 @@ pub(crate) fn temporary_using<T, Failure: From<Error> + From<Resource>>(
         return Err(error.into());
     }
     if result.is_ok() {
+        budget.check_prior_denials_v1()?;
         budget.release_storage(bytes)?;
     }
     result
@@ -79,6 +81,7 @@ pub(super) fn transfer_using<T, Failure: From<Error> + From<Resource>>(
     budget: &mut Budget<'_>,
     run: impl FnOnce(&mut Budget<'_>) -> Result<(T, NativeConditionalSourceStorageV2), Failure>,
 ) -> Result<(T, NativeConditionalSourceStorageV2), Failure> {
+    budget.check_prior_denials_v1()?;
     let account = Account::capture(budget);
     budget.charge_work(8)?;
     let result = catch_unwind(AssertUnwindSafe(|| run(budget)));
@@ -96,6 +99,7 @@ pub(super) fn transfer_using<T, Failure: From<Error> + From<Resource>>(
                 drop(owner);
                 return Err(error.into());
             }
+            budget.check_prior_denials_v1()?;
             if let Err(error) = budget.release_storage(budget.storage() - account.floor) {
                 drop(owner);
                 return Err(error.into());

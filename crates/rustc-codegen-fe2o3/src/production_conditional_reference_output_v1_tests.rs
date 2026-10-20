@@ -84,7 +84,9 @@ fn typed_fixture(scalar: Scalar, bits: u128) -> AuthenticatedReferenceEffectBind
         rustc_mir_body_sha256: [7; 32],
     };
     AuthenticatedReferenceEffectBindingV1 {
-        registration_path: "inert".into(),
+        origin: crate::reference_effect_v1::ReferenceBindingOriginV1::SourceRegistration(
+            "inert".into(),
+        ),
         logical_kernel_name: "inert".into(),
         kernel: identity,
         reference: identity,

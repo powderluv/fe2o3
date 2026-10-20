@@ -429,3 +429,34 @@ fn digest_bytes_and_hex_are_canonical_nonzero_and_domain_separated() {
         Err(DigestError::InvalidHexCharacter { index: 0 })
     ));
 }
+
+#[test]
+fn encoded_digest_uses_the_same_domain_length_and_preimage_without_reencoding() {
+    use sha2::{Digest, Sha256};
+    let descriptor = fixture();
+    let bytes = encode_descriptor_v3(&descriptor).unwrap();
+    let expected = digest(&descriptor);
+    assert_eq!(
+        InvocationDigestV3::calculate_encoded(&bytes).unwrap(),
+        expected
+    );
+    let raw: [u8; 32] = Sha256::digest(&bytes).into();
+    assert_ne!(raw, expected.into_bytes());
+    let mut h = Sha256::new();
+    h.update(INVOCATION_DIGEST_DOMAIN_V3);
+    h.update((bytes.len() as u64).to_le_bytes());
+    h.update(&bytes);
+    assert_eq!(<[u8; 32]>::from(h.finalize()), expected.into_bytes());
+    let mut changed = bytes.clone();
+    changed.push(0);
+    assert_ne!(
+        InvocationDigestV3::calculate_encoded(&changed).unwrap(),
+        expected
+    );
+    changed.pop();
+    changed[0] ^= 1;
+    assert_ne!(
+        InvocationDigestV3::calculate_encoded(&changed).unwrap(),
+        expected
+    );
+}

@@ -98,7 +98,7 @@ fn reference() -> Reference {
         rustc_mir_body_sha256: [7; 32],
     };
     Reference {
-        registration_path: "inert-v69".into(),
+        origin: ReferenceBindingOriginV1::SourceRegistration("inert-v69".into()),
         logical_kernel_name: "inert-v69".into(),
         kernel: identity,
         reference: identity,

@@ -1,6 +1,9 @@
 //! Generic hook accounting only; no reconstructed source or proof is fabricated.
 use super::*;
 
+#[path = "denial_tests.rs"]
+mod denials;
+
 #[derive(Debug)]
 enum Outer {
     Final(Error),

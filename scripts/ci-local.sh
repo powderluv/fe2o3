@@ -153,6 +153,9 @@ readonly CPU_TEST_PACKAGES=(
   fe2o3-virtual-runtime
   fe2o3-virtual-runtime-cli
   fe2o3-verifier
+  fe2o3-worker-v3-verification-protocol
+  fe2o3-worker-v3-verification-client
+  fe2o3-worker-v3-verification-service
   reserved-fe2o3-symbols
 )
 readonly HOST_REFERENCE_EXAMPLES=(
@@ -1565,6 +1568,8 @@ run_generic_core() {
   run_format
   run_check
   run_backend_build
+  run_step compiler-map-evidence-tests \
+    python3 -I -B scripts/tests/compiler_map_evidence_test.py
   run_step simulation-expectation-tests \
     python3 -I -B scripts/tests/simulation_expectation.py
   run_step tutorial-scalar-gemm-corpus-tests \

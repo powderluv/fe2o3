@@ -207,6 +207,7 @@ impl<'work> PreparedNativeConditionalFillApplicationV1<'work> {
             record.plan() == claim.plan(),
             "native readiness record/claim plan",
         )?;
+        let authenticated = content::authenticate(&wire, &record, compiler, profile, budget)?;
         let limits = Limits::new(bytes.len(), record.output_length()).map_err(failure)?;
         io::directory(&directory)?;
         let directory = Directory::admit_service_owned(directory).map_err(failure)?;
@@ -220,6 +221,7 @@ impl<'work> PreparedNativeConditionalFillApplicationV1<'work> {
             "exact canonical native readiness custody",
         )?;
         let (finalized, transcript, carriage) = content::recover(
+            authenticated,
             &wire,
             &record,
             &claim,

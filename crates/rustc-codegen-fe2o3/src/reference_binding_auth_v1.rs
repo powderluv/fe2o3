@@ -10,6 +10,24 @@ pub(crate) fn authenticate_reference_binding_v1<'tcx>(
     reference: Instance<'tcx>,
     work: &mut SourceClosureWorkV1,
 ) -> Result<AuthenticatedReferenceEffectBindingV1, ReferenceBindingErrorV1> {
+    authenticate_reference_binding_with_origin_v1(
+        tcx,
+        ReferenceBindingOriginV1::SourceRegistration(registration_path),
+        logical_kernel_name,
+        kernel,
+        reference,
+        work,
+    )
+}
+
+pub(crate) fn authenticate_reference_binding_with_origin_v1<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    origin: ReferenceBindingOriginV1,
+    logical_kernel_name: String,
+    kernel: Instance<'tcx>,
+    reference: Instance<'tcx>,
+    work: &mut SourceClosureWorkV1,
+) -> Result<AuthenticatedReferenceEffectBindingV1, ReferenceBindingErrorV1> {
     let meter = &ReferenceExtractionWorkV1::borrowed(work);
     authenticate_safe_local_reference_v1(meter, tcx, reference)?;
     let (signature_preimage, relations) = logical_abi_relation_v1(meter, tcx, kernel, reference)?;
@@ -33,7 +51,7 @@ pub(crate) fn authenticate_reference_binding_v1<'tcx>(
     }
     meter.rows::<AuthenticatedReferenceEffectBindingV1>(1)?;
     Ok(AuthenticatedReferenceEffectBindingV1 {
-        registration_path,
+        origin,
         logical_kernel_name,
         kernel: function_identity_v1(meter, tcx, kernel)?,
         reference: function_identity_v1(meter, tcx, reference)?,

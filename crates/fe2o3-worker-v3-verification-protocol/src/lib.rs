@@ -3,6 +3,13 @@
 
 mod protocol;
 mod protocol_v2;
+mod readiness_v3;
+
+pub use readiness_v3::{
+    MAX_WORKER_V3_VERIFICATION_BEGIN_BYTES_V3, WORKER_V3_VERIFICATION_BEGIN_PREFIX_BYTES_V3,
+    WORKER_V3_VERIFICATION_READY_BYTES_V3, WorkerV3VerificationProtocolErrorV3,
+    WorkerV3VerificationReadyFrameV3,
+};
 
 pub use protocol::{
     MAX_WORKER_V3_VERIFICATION_ENTRIES_V1, MAX_WORKER_V3_VERIFICATION_ENTRY_NAME_BYTES_V1,

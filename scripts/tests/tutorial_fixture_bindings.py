@@ -19,10 +19,10 @@ ROOT = Path(__file__).resolve().parents[2]
 EXCERPTS = {
     "gfx950-fp4-gemm": (1349, 1449, 1518),
     "gfx950-fp8-gemm": (3774, 3874, 3936),
-    "gfx950-fp4-attention": (6196, 6296, 6376),
-    "gfx950-fp8-attention": (15990, 16090, 16170),
+    "gfx950-fp4-attention": (8718, 8818, 8898),
+    "gfx950-fp8-attention": (18512, 18612, 18692),
 }
-SOURCE_SHA256 = "37f0c0f9dd28b576e6d8c0ff11426c0874d92e95a21405cd5dd5ff261ef72cd0"
+SOURCE_SHA256 = "2ce9d0e21d4e38c807d35ec16940f31fb4f07dd63f05827295a5424fedd54f7c"
 
 
 class FixtureBindingTests(unittest.TestCase):

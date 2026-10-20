@@ -3,12 +3,15 @@
 
 use super::*;
 use crate::reference_effect_v1::AuthenticatedReferenceEffectBindingV1 as Binding;
+use crate::reference_effect_v1::ReferenceBindingOriginV1 as Origin;
 use fe2o3_kernel_ir::CanonicalKernelIrVerificationResourceBudgetV1 as Budget;
 use fe2o3_lower_mir_kernel::ProductionSourceBoundConditionalAggregateRequestV1 as Request;
 use fe2o3_verifier::NativeCompilerStagingCommitmentV1 as Staging;
 use fe2o3_verifier::conditional_reference_v1 as portable;
 use fe2o3_verifier::portable_reference_v1::ReferenceReplayInputV1;
-use fe2o3_verifier::portable_reference_v1::codec::{NativeCpuAssociationV1, NativeCpuInputV1};
+use fe2o3_verifier::portable_reference_v1::codec::{
+    NativeCpuAssociationV1, NativeCpuInputV1, NativeCpuPolicyAssociationV2, NativeCpuPolicyInputV2,
+};
 #[cfg(test)]
 use portable::{ConditionalReferenceInputV1, SourceBoundCpuCorrespondenceV1};
 
@@ -180,35 +183,47 @@ pub(crate) fn capture_replayed_cpu_formula_v2(
     execution: &fe2o3_verifier::ProductionConditionalFormulaExecutionV2,
     budget: &mut Budget<'_>,
 ) -> Result<ConditionalReplayTransportV2, Error> {
-    fe2o3_verifier::portable_reference_v1::codec::with_encoded_native_cpu_input_v1(
-        native_cpu_input_v1(request, binding, semantic_root),
-        budget,
-        |bytes, commitment, budget| {
-            budget.charge_work(32).map_err(capture_error)?;
-            if execution.report().cpu_input_commitment().as_bytes() != &commitment {
-                return Err(Error::UnsupportedReference(
-                    "conditional CPU capture commitment",
-                ));
-            }
-            let wire = execution
-                .signed_receipt_wire()
-                .try_into()
-                .map_err(|_| Error::UnsupportedReference("conditional formula signature extent"))?;
-            copy_inert_transport_v2(
-                bytes,
-                request
-                    .pliron_input()
-                    .retained_policy_checked_refinement_staging()
-                    .iter()
-                    .map(staging_commitment_v2),
-                InertFunctionalRefinementReceiptSignatureV2::from_untrusted_parts(
-                    wire,
-                    *execution.receipt_verifying_key(),
-                ),
+    let capture = |bytes: &[u8], commitment: [u8; 32], budget: &mut Budget<'_>| {
+        budget.charge_work(32).map_err(capture_error)?;
+        if execution.report().cpu_input_commitment().as_bytes() != &commitment {
+            return Err(Error::UnsupportedReference(
+                "conditional CPU capture commitment",
+            ));
+        }
+        let wire = execution
+            .signed_receipt_wire()
+            .try_into()
+            .map_err(|_| Error::UnsupportedReference("conditional formula signature extent"))?;
+        copy_inert_transport_v2(
+            bytes,
+            request
+                .pliron_input()
+                .retained_policy_checked_refinement_staging()
+                .iter()
+                .map(staging_commitment_v2),
+            InertFunctionalRefinementReceiptSignatureV2::from_untrusted_parts(
+                wire,
+                *execution.receipt_verifying_key(),
+            ),
+            budget,
+        )
+    };
+    match &binding.origin {
+        Origin::SourceRegistration(_) => {
+            fe2o3_verifier::portable_reference_v1::codec::with_encoded_native_cpu_input_v1(
+                native_cpu_input_v1(request, binding, semantic_root)?,
                 budget,
+                capture,
             )
-        },
-    )
+        }
+        Origin::ReferenceEnrollment(_) => {
+            fe2o3_verifier::portable_reference_v1::codec::with_encoded_native_cpu_policy_input_v2(
+                native_cpu_policy_input_v2(request, binding, semantic_root)?,
+                budget,
+                capture,
+            )
+        }
+    }
     .map_err(capture_error)?
 }
 
@@ -236,8 +251,15 @@ fn native_cpu_input_v1<'a>(
     request: &Request<'_>,
     binding: &'a Binding,
     semantic_root: u32,
-) -> NativeCpuInputV1<'a> {
-    NativeCpuInputV1 {
+) -> Result<NativeCpuInputV1<'a>, Error> {
+    let registration_path =
+        binding
+            .origin
+            .source_registration_v1()
+            .ok_or(Error::UnsupportedReference(
+                "policy enrollment requires the V2 CPU execution path",
+            ))?;
+    Ok(NativeCpuInputV1 {
         association: NativeCpuAssociationV1 {
             semantic_mir_sha256: *request
                 .source()
@@ -246,7 +268,7 @@ fn native_cpu_input_v1<'a>(
                 .semantic_sha256()
                 .as_bytes(),
             semantic_root,
-            registration_path: &binding.registration_path,
+            registration_path,
             logical_kernel_name: &binding.logical_kernel_name,
         },
         kernel: &binding.kernel,
@@ -257,7 +279,7 @@ fn native_cpu_input_v1<'a>(
             effect_ir_sha256: binding.effect_ir_sha256,
             observable_output_writes: &binding.observable_output_writes,
         },
-    }
+    })
 }
 
 pub(crate) fn retain_source_bound_cpu_formula_v2(
@@ -273,13 +295,26 @@ pub(crate) fn retain_source_bound_cpu_formula_v2(
             "conditional CPU join requires one authenticated binding",
         ));
     };
-    fe2o3_verifier::execute_and_retain_conditional_ranked_formula_v2(
-        runtime,
-        request,
-        native_cpu_input_v1(request, binding, semantic_root),
-        budget,
-        timeout_seconds,
-    )
+    match &binding.origin {
+        Origin::SourceRegistration(_) => {
+            fe2o3_verifier::execute_and_retain_conditional_ranked_formula_v2(
+                runtime,
+                request,
+                native_cpu_input_v1(request, binding, semantic_root)?,
+                budget,
+                timeout_seconds,
+            )
+        }
+        Origin::ReferenceEnrollment(_) => {
+            fe2o3_verifier::execute_and_retain_conditional_ranked_formula_policy_v2(
+                runtime,
+                request,
+                native_cpu_policy_input_v2(request, binding, semantic_root)?,
+                budget,
+                timeout_seconds,
+            )
+        }
+    }
     .map_err(|error| Error::ProofExecution(error.to_string()))
 }
 
@@ -295,17 +330,63 @@ pub(crate) fn replay_source_bound_cpu_formula_v2<R>(
     ) -> R,
 ) -> Result<R, Error> {
     #[cfg(test)]
-    composition_tests::on_replay(request, binding, semantic_root, budget);
-    #[cfg(test)]
-    formula_v2_tests::on_replay(retained, request, binding, semantic_root, budget);
-    retained
-        .with_replayed_request_v2(
+    match &binding.origin {
+        Origin::SourceRegistration(_) => {
+            composition_tests::on_replay(request, binding, semantic_root, budget);
+            formula_v2_tests::on_replay(retained, request, binding, semantic_root, budget);
+        }
+        Origin::ReferenceEnrollment(_) => {
+            policy_v2_tests::on_replay(retained, request, binding, semantic_root, budget);
+        }
+    }
+    match &binding.origin {
+        Origin::SourceRegistration(_) => retained.with_replayed_request_v2(
             request,
-            native_cpu_input_v1(request, binding, semantic_root),
+            native_cpu_input_v1(request, binding, semantic_root)?,
             budget,
             |execution, budget| Ok(consume(execution, budget)),
-        )
-        .map_err(|error| Error::ProofExecution(error.to_string()))
+        ),
+        Origin::ReferenceEnrollment(_) => retained.with_replayed_policy_request_v2(
+            request,
+            native_cpu_policy_input_v2(request, binding, semantic_root)?,
+            budget,
+            |execution, budget| Ok(consume(execution, budget)),
+        ),
+    }
+    .map_err(|error| Error::ProofExecution(error.to_string()))
+}
+
+fn native_cpu_policy_input_v2<'a>(
+    request: &Request<'_>,
+    binding: &'a Binding,
+    semantic_root: u32,
+) -> Result<NativeCpuPolicyInputV2<'a>, Error> {
+    let Origin::ReferenceEnrollment(origin) = &binding.origin else {
+        return Err(Error::UnsupportedReference(
+            "source registration requires the V1 CPU execution path",
+        ));
+    };
+    Ok(NativeCpuPolicyInputV2 {
+        association: NativeCpuPolicyAssociationV2 {
+            semantic_mir_sha256: *request
+                .source()
+                .semantic_ssa()
+                .source_semantic()
+                .semantic_sha256()
+                .as_bytes(),
+            semantic_root,
+            logical_kernel_name: &binding.logical_kernel_name,
+            origin: *origin,
+        },
+        kernel: &binding.kernel,
+        reference: &binding.reference,
+        replay: ReferenceReplayInputV1 {
+            signature_preimage: &binding.signature_preimage,
+            effect_ir: &binding.effect_ir,
+            effect_ir_sha256: binding.effect_ir_sha256,
+            observable_output_writes: &binding.observable_output_writes,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -340,6 +421,10 @@ pub(crate) mod composition_tests;
 #[cfg(test)]
 #[path = "production_conditional_formula_genuine_v2_tests.rs"]
 pub(crate) mod formula_v2_tests;
+
+#[cfg(test)]
+#[path = "production_conditional_reference_policy_v2_tests.rs"]
+pub(crate) mod policy_v2_tests;
 
 #[cfg(test)]
 #[path = "production_conditional_reference_transport_v2_tests.rs"]

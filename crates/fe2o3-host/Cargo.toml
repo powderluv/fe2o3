@@ -43,6 +43,7 @@ fe2o3-resource-accounting.workspace = true
 fe2o3-runtime.workspace = true
 fe2o3-runtime-model.workspace = true
 fe2o3-runtime-protocol.workspace = true
+fe2o3-rustc-invocation.workspace = true
 fe2o3-verifier.workspace = true
 libc.workspace = true
 reserved-fe2o3-symbols.workspace = true
@@ -66,7 +67,6 @@ fe2o3-proof-contracts.workspace = true
 fe2o3-artifact-transaction = { workspace = true, features = ["test-hooks"] }
 fe2o3-build-authority.workspace = true
 fe2o3-external-anchor-protocol.workspace = true
-fe2o3-rustc-invocation.workspace = true
 rmpv = { version = "1.3.1", default-features = false }
 serde = "1"
 serde_json = "1"

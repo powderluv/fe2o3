@@ -188,6 +188,8 @@ dependencies = [
  "fe2o3-amd-target",
  "fe2o3-build-authority",
  "libc",
+ "serde",
+ "serde_json",
  "sha2",
 ]
 

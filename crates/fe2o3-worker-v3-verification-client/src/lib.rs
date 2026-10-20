@@ -8,6 +8,12 @@ compile_error!(
 
 mod client;
 mod client_v2;
+mod client_v3;
+
+pub use client_v3::{
+    WorkerV3VerificationClientErrorV3, WorkerV3VerificationClientV3,
+    WorkerV3VerificationReadyClientV3,
+};
 mod error;
 mod snapshot;
 

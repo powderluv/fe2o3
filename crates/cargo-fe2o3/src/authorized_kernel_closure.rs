@@ -224,7 +224,7 @@ const TRUSTED_GIT_PROC_MACROS: [(&str, &str, &str, &str); 2] = [
 // nested fixture lockfiles. Source changes require review and a fresh tree pin;
 // they do not change the independent external-source admission below.
 const TRUSTED_FE2O3_MACROS_TREE: &str =
-    "0456f54f422af97e3292bc14622ab618026bf0627ec9a80c794fe8a5b354d052";
+    "9e3ab9723b1ea729730a9353f0da5e9b972ddef1a4f6518ecb44b9a960633dda";
 // This digest belongs to TRUSTED_FE2O3_EXTERNAL_SOURCE and is intentionally
 // independent of the workspace-local macros tree.
 const TRUSTED_FE2O3_EXTERNAL_MACROS_TREE: &str =
@@ -1644,6 +1644,7 @@ mod tests {
 
         for substituted_digest in [
             [0_u8; 32],
+            decode_digest("0456f54f422af97e3292bc14622ab618026bf0627ec9a80c794fe8a5b354d052"),
             decode_digest("7486446880845fec8c9d9db54c0fb4239b4561357414c7c1d10d6b92a10092a5"),
             decode_digest("65aa1e5e26c40735f10562a847d46dcff5835cb43ad9355002d8a83c93eb38e2"),
             decode_digest("52bc00864c6a96e00ce68a40af13402ce492bc2e99127c74ab062ccae80fbbfa"),

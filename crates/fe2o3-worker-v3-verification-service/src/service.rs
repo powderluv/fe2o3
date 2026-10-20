@@ -683,9 +683,23 @@ pub(crate) fn receive_request(
     caller: WorkerV3VerificationCallerV1,
     deadline: Instant,
 ) -> Result<(Vec<u8>, [OwnedFd; 2]), WorkerV3VerificationServiceErrorV1> {
+    receive_request_sized(
+        control,
+        caller,
+        deadline,
+        MAX_WORKER_V3_VERIFICATION_REQUEST_BYTES_V1,
+    )
+}
+
+pub(crate) fn receive_request_sized(
+    control: &OwnedFd,
+    caller: WorkerV3VerificationCallerV1,
+    deadline: Instant,
+    maximum: usize,
+) -> Result<(Vec<u8>, [OwnedFd; 2]), WorkerV3VerificationServiceErrorV1> {
     loop {
         wait_for(control, PollFlags::IN, deadline)?;
-        let mut payload = vec![0_u8; MAX_WORKER_V3_VERIFICATION_REQUEST_BYTES_V1];
+        let mut payload = vec![0_u8; maximum];
         let received = {
             let mut vectors = [IoSliceMut::new(&mut payload)];
             let mut space = AlignedAncillaryStorageV1(

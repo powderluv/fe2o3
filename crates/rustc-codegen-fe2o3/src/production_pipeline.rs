@@ -3462,44 +3462,87 @@ impl<'tcx> ProductionCompilation<'tcx, CollectedRustStage<'tcx>> {
         profile: source_owned_v29::ImportProfile,
     ) -> Result<ProductionCompilation<'tcx, AdmittedSemanticMirStage>, ProductionPipelineError>
     {
+        self.import_semantic_mir_with_enrollment_v1(profile, None)
+    }
+
+    fn import_semantic_mir_with_enrollment_v1(
+        self,
+        profile: source_owned_v29::ImportProfile,
+        enrollment: Option<(
+            crate::protected_compiler_execution::native_v3::ReferenceEnrollmentPreparationV1<'_>,
+            &mut fe2o3_kernel_ir::CanonicalKernelIrVerificationResourceBudgetV1<'_>,
+        )>,
+    ) -> Result<ProductionCompilation<'tcx, AdmittedSemanticMirStage>, ProductionPipelineError>
+    {
         let CollectedRustStage {
             tcx,
             closure,
             typed_descriptor_roots,
             debug_source_capture,
-            transaction,
+            mut transaction,
         } = self.stage;
-        let constructed = match profile {
-            source_owned_v29::ImportProfile::AtomicV41 => {
-                crate::collector::construct_production_semantic_mir_atomic_v41(
-                    tcx,
-                    closure,
-                    debug_source_capture,
-                )
+        let constructed = match enrollment {
+            Some((preparation, budget)) if preparation.is_enrolled() => {
+                let nominal = match profile {
+                    source_owned_v29::ImportProfile::Current => false,
+                    source_owned_v29::ImportProfile::NominalV35 => true,
+                    _ => return Err(
+                        crate::protected_compiler_execution::native_v3::Error::Reference(
+                            crate::reference_effect_v1::ReferenceBindingErrorV1::new(
+                                "reference enrollment is not integrated with this import profile",
+                            ),
+                        )
+                        .into(),
+                    ),
+                };
+                let ProductionCompilerCustody::ProtectedV3 { invocation, .. } =
+                    &mut transaction.compiler_custody
+                else {
+                    return Err(ProductionPipelineError::ExtractionCannotPublish);
+                };
+                preparation.with_invocation(invocation, budget, |loan| {
+                    crate::collector::construct_production_semantic_mir_with_enrollment_v1(
+                        tcx,
+                        closure,
+                        debug_source_capture,
+                        nominal,
+                        loan,
+                    )
+                    .map_err(ProductionPipelineError::SemanticImport)
+                })?
             }
-            source_owned_v29::ImportProfile::NominalV35 => {
-                crate::collector::construct_production_semantic_mir_nominal_v35(
-                    tcx,
-                    closure,
-                    debug_source_capture,
-                )
+            _ => match profile {
+                source_owned_v29::ImportProfile::AtomicV41 => {
+                    crate::collector::construct_production_semantic_mir_atomic_v41(
+                        tcx,
+                        closure,
+                        debug_source_capture,
+                    )
+                }
+                source_owned_v29::ImportProfile::NominalV35 => {
+                    crate::collector::construct_production_semantic_mir_nominal_v35(
+                        tcx,
+                        closure,
+                        debug_source_capture,
+                    )
+                }
+                source_owned_v29::ImportProfile::Current => {
+                    crate::collector::construct_production_semantic_mir_v1(
+                        tcx,
+                        closure,
+                        debug_source_capture,
+                    )
+                }
+                source_owned_v29::ImportProfile::SourceOwnedV29 => {
+                    crate::collector::construct_production_semantic_mir_source_owned_v29(
+                        tcx,
+                        closure,
+                        debug_source_capture,
+                    )
+                }
             }
-            source_owned_v29::ImportProfile::Current => {
-                crate::collector::construct_production_semantic_mir_v1(
-                    tcx,
-                    closure,
-                    debug_source_capture,
-                )
-            }
-            source_owned_v29::ImportProfile::SourceOwnedV29 => {
-                crate::collector::construct_production_semantic_mir_source_owned_v29(
-                    tcx,
-                    closure,
-                    debug_source_capture,
-                )
-            }
-        }
-        .map_err(ProductionPipelineError::SemanticImport)?;
+            .map_err(ProductionPipelineError::SemanticImport)?,
+        };
         let crate::collector::ConstructedProductionSemanticMirV1 {
             semantic_mir,
             context_entries,
@@ -3543,7 +3586,20 @@ impl<'tcx> ProductionCompilation<'tcx, CollectedRustStage<'tcx>> {
     pub(crate) fn verify_general_kernel_checks(
         self,
     ) -> Result<RankedVerifiedProductionCompilation, ProductionPipelineError> {
-        let admitted = self.import_semantic_mir()?;
+        self.verify_general_kernel_checks_with_enrollment_v1(None)
+    }
+
+    fn verify_general_kernel_checks_with_enrollment_v1(
+        self,
+        enrollment: Option<(
+            crate::protected_compiler_execution::native_v3::ReferenceEnrollmentPreparationV1<'_>,
+            &mut fe2o3_kernel_ir::CanonicalKernelIrVerificationResourceBudgetV1<'_>,
+        )>,
+    ) -> Result<RankedVerifiedProductionCompilation, ProductionPipelineError> {
+        let admitted = self.import_semantic_mir_with_enrollment_v1(
+            source_owned_v29::ImportProfile::Current,
+            enrollment,
+        )?;
         admitted
             .construct_semantic_middle_end()?
             .construct_semantic_ssa()?

@@ -1,7 +1,7 @@
+use super::cpu_origin::DecodedCpu;
 use super::*;
-use crate::portable_reference_v1::codec::{
-    DecodedNativeCpuInputV1, NativeCpuAssociationV1, with_decoded_native_cpu_input_v1,
-};
+#[cfg(test)]
+use crate::portable_reference_v1::codec::NativeCpuAssociationV1;
 use fe2o3_functional_proof::{
     FunctionalRefinementBoundaryV2, FunctionalRefinementImportPolicyV2,
     ImportedFunctionalRefinementProofV2,
@@ -15,22 +15,41 @@ use fe2o3_pliron::{
     ProductionSessionLimitsV1, stage_ranked_kernel_with_borrowed_policy_checked_refinement_v2,
 };
 
+#[cfg(test)]
 pub(super) fn association(
     cpu: NativeCpuAssociationV1<'_>,
     semantic: [u8; 32],
     row: &NativeConditionalSourceRootV2<'_>,
     budget: &mut Budget<'_>,
 ) -> Result<(), E> {
+    association_fields(
+        cpu.semantic_mir_sha256,
+        cpu.semantic_root,
+        cpu.logical_kernel_name,
+        semantic,
+        row,
+        budget,
+    )
+}
+
+fn association_fields(
+    cpu_semantic: [u8; 32],
+    cpu_root: u32,
+    cpu_name: &str,
+    semantic: [u8; 32],
+    row: &NativeConditionalSourceRootV2<'_>,
+    budget: &mut Budget<'_>,
+) -> Result<(), E> {
     budget.charge_work(
-        cpu.logical_kernel_name
+        cpu_name
             .len()
             .checked_add(row.launch.logical_name().len())
             .and_then(|n| n.checked_add(34))
             .ok_or(Resource::Arithmetic)?,
     )?;
-    if cpu.semantic_mir_sha256 != semantic
-        || cpu.semantic_root != row.semantic_root
-        || cpu.logical_kernel_name != row.launch.logical_name()
+    if cpu_semantic != semantic
+        || cpu_root != row.semantic_root
+        || cpu_name != row.launch.logical_name()
     {
         return Err(E::invalid(
             "conditional CPU source/root/logical-name association",
@@ -70,21 +89,34 @@ pub(super) fn reconstruct_root(
     source: &ReplayedNativeSourceV1,
     row: &NativeConditionalSourceRootV2<'_>,
     policy: &NativeConditionalRootPolicyV2<'_>,
+    expected: cpu_mapping::RootExpectation<'_>,
     budget: &mut Budget<'_>,
 ) -> Result<ReplayedRoot, E> {
     reconstruct_root_using(
         source,
         row,
         policy,
+        expected,
         budget,
-        |request, decoded, budget| {
-            crate::import_and_retain_conditional_ranked_formula_v2(
-                request,
-                decoded,
-                row.formula_receipt,
-                policy.formula,
-                budget,
-            )
+        |request, decoded, budget| match decoded {
+            DecodedCpu::Registration(decoded) => {
+                crate::import_and_retain_conditional_ranked_formula_v2(
+                    request,
+                    decoded,
+                    row.formula_receipt,
+                    policy.formula,
+                    budget,
+                )
+            }
+            DecodedCpu::Policy(decoded) => {
+                crate::import_and_retain_conditional_ranked_formula_policy_v2(
+                    request,
+                    decoded,
+                    row.formula_receipt,
+                    policy.formula,
+                    budget,
+                )
+            }
         },
         |formula| formula.map_err(|error| E(Cause::Formula(error))),
     )
@@ -94,67 +126,77 @@ pub(super) fn reconstruct_root_using<R, Failure: From<E> + From<Resource>>(
     source: &ReplayedNativeSourceV1,
     row: &NativeConditionalSourceRootV2<'_>,
     policy: &NativeConditionalRootPolicyV2<'_>,
+    expected: cpu_mapping::RootExpectation<'_>,
     budget: &mut Budget<'_>,
     import: impl FnOnce(
         &fe2o3_lower_mir_kernel::ProductionSourceBoundConditionalAggregateRequestV1<'_>,
-        &DecodedNativeCpuInputV1,
+        DecodedCpu<'_>,
         &mut Budget<'_>,
     ) -> R,
     finish: impl FnOnce(R) -> Result<RetainedProductionConditionalFormulaV2, Failure>,
 ) -> Result<ReplayedRoot, Failure> {
-    with_decoded_native_cpu_input_v1(row.cpu_input_bytes, budget, |decoded, budget| {
-        let cpu = decoded.input_v1();
-        association(
-            cpu.association,
-            *source
-                .source()
-                .semantic_ssa()
-                .source_semantic()
-                .semantic_sha256()
-                .as_bytes(),
-            row,
-            budget,
-        )?;
-        let subjects =
-            crate::conditional_reference_v1::reference_subjects_v1(cpu.kernel, cpu.reference)
-                .map_err(|error| E(Cause::Correspondence(error)))?;
-        let pending = pending(row, policy.effects, budget)?;
-        let (rows, storage) =
-            decode_production_ranked_source_rows_v1(row.source_rows_bytes, budget)
-                .map_err(|error| E(Cause::Rows(error)))?;
-        budget.reserve_storage(storage.retained_storage())?;
-        let (access_sources, executable_effect_sources) = rows.into_parts();
-        let ranked_ir = account::text(row.ranked_ir, budget)?;
-        let input = ProductionConditionalRootInputV1 {
-            pending,
-            semantic_root: row.semantic_root,
-            launch_rank: row.launch_rank,
-            access_sources,
-            executable_effect_sources,
-            ranked_ir,
-            reference_subjects: subjects,
-        };
-        // Inline headers live in the root vector's already-prepaid slot.
-        budget.release_storage(size_of::<ProductionRankedSourceRowsV1>())?;
-        let prior = input.retained_storage_v1()?;
-        let floor = budget.storage();
-        let ledger = budget.work_ledger_identity_v1();
-        let result =
-            with_conditional_root_request_v1(source.source(), input, budget, |request, budget| {
-                import(request, decoded, budget)
-            });
-        // The lower continuation reserves its returned input anew. Only after
-        // every lower postcheck succeeds can its original reservation transfer.
-        if budget.work_ledger_identity_v1() != ledger || budget.storage() < floor {
-            drop(result);
-            return Err(Resource::Accounting.into());
-        }
-        let (formula, input) = result.map_err(|error| E(Cause::Continuation(error)))?;
-        let formula = finish(formula)?;
-        budget.release_storage(prior)?;
-        Ok(ReplayedRoot { input, formula })
-    })
-    .map_err(|error| E(Cause::Cpu(error)))?
+    cpu_origin::with_decoded(
+        row.cpu_input_bytes,
+        expected.origin,
+        budget,
+        |decoded, budget| {
+            let cpu = decoded.subjects();
+            association_fields(
+                cpu.semantic_mir_sha256,
+                cpu.semantic_root,
+                cpu.logical_kernel_name,
+                *source
+                    .source()
+                    .semantic_ssa()
+                    .source_semantic()
+                    .semantic_sha256()
+                    .as_bytes(),
+                row,
+                budget,
+            )?;
+            expected.require_subjects(&cpu, budget)?;
+            let subjects =
+                crate::conditional_reference_v1::reference_subjects_v1(cpu.kernel, cpu.reference)
+                    .map_err(|error| E(Cause::Correspondence(error)))?;
+            let pending = pending(row, policy.effects, budget)?;
+            let (rows, storage) =
+                decode_production_ranked_source_rows_v1(row.source_rows_bytes, budget)
+                    .map_err(|error| E(Cause::Rows(error)))?;
+            budget.reserve_storage(storage.retained_storage())?;
+            let (access_sources, executable_effect_sources) = rows.into_parts();
+            let ranked_ir = account::text(row.ranked_ir, budget)?;
+            let input = ProductionConditionalRootInputV1 {
+                pending,
+                semantic_root: row.semantic_root,
+                launch_rank: row.launch_rank,
+                access_sources,
+                executable_effect_sources,
+                ranked_ir,
+                reference_subjects: subjects,
+            };
+            // Inline headers live in the root vector's already-prepaid slot.
+            budget.release_storage(size_of::<ProductionRankedSourceRowsV1>())?;
+            let prior = input.retained_storage_v1()?;
+            let floor = budget.storage();
+            let ledger = budget.work_ledger_identity_v1();
+            let result = with_conditional_root_request_v1(
+                source.source(),
+                input,
+                budget,
+                |request, budget| import(request, decoded, budget),
+            );
+            // The lower continuation reserves its returned input anew. Only after
+            // every lower postcheck succeeds can its original reservation transfer.
+            if budget.work_ledger_identity_v1() != ledger || budget.storage() < floor {
+                drop(result);
+                return Err(Resource::Accounting.into());
+            }
+            let (formula, input) = result.map_err(|error| E(Cause::Continuation(error)))?;
+            let formula = finish(formula)?;
+            budget.release_storage(prior)?;
+            Ok(ReplayedRoot { input, formula })
+        },
+    )
 }
 
 fn pending(

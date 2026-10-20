@@ -16,6 +16,7 @@ fe2o3-artifact-transaction.workspace = true
 fe2o3-build-authority.workspace = true
 fe2o3-compiler-closure-capability.workspace = true
 fe2o3-compiler-execution-protocol.workspace = true
+fe2o3-compiler-lineage.workspace = true
 fe2o3-external-anchor-protocol.workspace = true
 fe2o3-host-link-closure = { path = "../fe2o3-host-link-closure" }
 fe2o3-kernel-ir.workspace = true
@@ -33,6 +34,5 @@ zeroize = "=1.9.0"
 
 [dev-dependencies]
 fe2o3-compiler-ffi.workspace = true
-fe2o3-compiler-lineage.workspace = true
 serde = "=1.0.229"
 tempfile = "=3.21.0"

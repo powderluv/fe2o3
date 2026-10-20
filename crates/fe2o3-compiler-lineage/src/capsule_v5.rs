@@ -247,6 +247,7 @@ pub struct InertProductionSemanticCapsuleV5 {
     bytes: ImmutableBytesV3,
     invocation: RustcInvocationDescriptorV3,
     invocation_digest: InvocationDigestV3,
+    invocation_range: Range<usize>,
     target: DeviceTargetV1,
     inventory: InertRustcIdentityInventoryReceiptV3,
     preflight: InertRustcPreflightPlanReceiptV3,
@@ -291,6 +292,7 @@ impl InertProductionSemanticCapsuleV5 {
         let metadata_base = envelope_base + frame.metadata.layout.metadata_range().start;
         let policy_roster_range = shift(envelope_base, frame.metadata.layout.policy_roster_range());
         let metadata = frame.metadata().layout;
+        let invocation_range = shift(metadata_base, metadata.invocation_range());
         let (inventory, preflight, final_commitment) = conditional_metadata_receipts(
             shared.clone(),
             shift(
@@ -321,6 +323,7 @@ impl InertProductionSemanticCapsuleV5 {
             bytes: ImmutableBytesV3::from_shared(shared, range).ok_or(Error::Length)?,
             invocation,
             invocation_digest,
+            invocation_range,
             target,
             inventory,
             preflight,
@@ -340,6 +343,11 @@ impl InertProductionSemanticCapsuleV5 {
     /// Original canonical invocation content, not authenticated origin.
     pub const fn invocation(&self) -> &RustcInvocationDescriptorV3 {
         &self.invocation
+    }
+    /// Exact canonical invocation bytes borrowed from the retained capsule.
+    /// This is inert content, not authenticated origin or a receipt digest.
+    pub fn invocation_bytes(&self) -> &[u8] {
+        &self.canonical_bytes()[self.invocation_range.clone()]
     }
     /// Existing invocation digest domain.
     pub const fn invocation_digest(&self) -> InvocationDigestV3 {

@@ -8,6 +8,7 @@ impl<T: Send + 'static> NativeAttempt<'_, T> {
         &mut self,
         cleanup: &mut Cleanup,
         maximum_handoff_bytes: usize,
+        enrollment: &Option<fe2o3_compiler_lineage::NativeConditionalCpuMappingExpectationV1>,
         b: &mut Budget<'_>,
     ) -> Result<Storage> {
         let (growth, retained) = self.account.with(self.retained, b, |b| {
@@ -27,6 +28,7 @@ impl<T: Send + 'static> NativeAttempt<'_, T> {
                             payload.manifest.manifest(),
                             cleanup,
                             maximum_handoff_bytes,
+                            enrollment,
                             b,
                         )?
                         .additional_storage())

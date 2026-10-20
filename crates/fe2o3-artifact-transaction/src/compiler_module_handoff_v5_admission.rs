@@ -129,7 +129,8 @@ mod tests {
         ) -> (bool, usize, usize) {
             let fixture = super::super::tests::fixture::Fixture::new();
             let output = PinnedOutput::open(&fixture.path).unwrap();
-            let lock = output.try_lock().unwrap().unwrap();
+            // Lock acquisition is fixture setup, not a nonblocking-admission assertion.
+            let lock = output.lock().unwrap();
             let mut owned = Owned::new(Work::new(work), limit);
             owned.with_budget(|b| {
                 b.reserve_storage(OUTSIDE).unwrap();
@@ -165,6 +166,33 @@ mod tests {
         assert!(!run(baseline.1, baseline.2 - 1, 41, 43).0);
         assert!(!run(baseline.1, baseline.2, OUTSIDE + 1, 0).0);
         assert!(!run(baseline.1, baseline.2, usize::MAX, 1).0);
+    }
+
+    #[test]
+    fn terminal_fixture_waits_for_contended_output_lock() {
+        let fixture = super::super::tests::fixture::Fixture::new();
+        let output = PinnedOutput::open(&fixture.path).unwrap();
+        let held = output.lock().unwrap();
+        assert!(output.try_lock().unwrap().is_none());
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::sync_channel(0);
+        std::thread::scope(|scope| {
+            let output = &output;
+            let contender = scope.spawn(move || {
+                started_tx.send(()).unwrap();
+                let _lock = output.lock().unwrap();
+                acquired_tx.send(()).unwrap();
+            });
+            started_rx.recv().unwrap();
+            assert!(matches!(
+                acquired_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            drop(held);
+            acquired_rx.recv().unwrap();
+            contender.join().unwrap();
+        });
+        let _reacquired = output.lock().unwrap();
     }
 
     #[test]

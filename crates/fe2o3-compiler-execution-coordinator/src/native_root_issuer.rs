@@ -167,6 +167,10 @@ impl<'work, T: Send + 'static> NativeAttempt<'work, T> {
     /// Read the policy association from the original retained preparation after
     /// its transfer. This does not replace live continuity or grant authority.
     pub(crate) fn original_policy_identity(&self, b: &mut Budget<'_>) -> Result<[u8; 32]> {
+        self.original_policy_coordinates(b).map(|(identity, _)| identity)
+    }
+
+    fn original_policy_coordinates(&self, b: &mut Budget<'_>) -> Result<([u8; 32], u64)> {
         self.account.with(self.retained, b, |b| {
             self.issuer
                 .as_ref()
@@ -175,13 +179,8 @@ impl<'work, T: Send + 'static> NativeAttempt<'work, T> {
                 ))?
                 .child
                 .with_resources(b, |payload, _| {
-                    Ok(*payload
-                        .prepared
-                        .trust
-                        .policy()
-                        .policy()
-                        .identity()
-                        .as_bytes())
+                    let policy = payload.prepared.trust.policy().policy();
+                    Ok((*policy.identity().as_bytes(), policy.generation()))
                 })
         })
     }
@@ -769,6 +768,9 @@ mod quota {
 }
 #[path = "native_root_issuer_completion.rs"]
 mod completion;
+#[path = "native_root_enrollment.rs"]
+mod enrollment;
+pub(crate) use enrollment::OriginalCompilerEnrollment;
 #[path = "native_root_issuer_publication_service.rs"]
 mod publication_service;
 #[cfg(test)]

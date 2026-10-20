@@ -251,6 +251,12 @@ impl RustcInvocationCapabilityV1 {
         &self.descriptor
     }
 
+    /// Borrows the retained canonical encoding without re-encoding or allocating.
+    /// These bytes describe an invocation; they do not establish live-process custody.
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+
     /// Revalidates file identity and transport invariants, then decodes and re-encodes exact V3 bytes.
     pub fn revalidate(&self) -> Result<(), String> {
         let bytes = self.image.read_exact_bytes()?;

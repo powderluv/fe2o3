@@ -1496,7 +1496,9 @@ mod tests {
         };
         let bindings = AuthenticatedReferenceEffectBindingsV1::new(vec![
             AuthenticatedReferenceEffectBindingV1 {
-                registration_path: "test".to_owned(),
+                origin: crate::reference_effect_v1::ReferenceBindingOriginV1::SourceRegistration(
+                    "test".to_owned(),
+                ),
                 logical_kernel_name: "test".to_owned(),
                 kernel: identity,
                 reference: identity,

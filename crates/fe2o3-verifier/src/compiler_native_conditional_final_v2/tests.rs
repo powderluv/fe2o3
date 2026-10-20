@@ -105,8 +105,11 @@ fn conditional_final_component_exact_limits_and_denial_history() {
         assert!(b.charge_work(usize::MAX).is_err());
         assert!(b.reserve_storage(usize::MAX).is_err());
         let first = (b.failed_work(), b.failed_storage());
-        run(b).unwrap();
-        assert_eq!(b.work(), 21);
+        assert!(matches!(
+            run(b),
+            Err(Error(Cause::Resource(Resource::Work(_))))
+        ));
+        assert_eq!(b.work(), 7);
         assert_eq!((b.failed_work(), b.failed_storage()), first);
         assert_eq!(b.storage(), FLOOR);
     });

@@ -15,6 +15,7 @@ pub(super) enum Cause {
     History(fe2o3_kernel_opt::RefinedForwardingHistoryWireErrorV1),
     Catalog(fe2o3_kernel_ir::KernelIrContractCatalogErrorV1),
     Descriptor(fe2o3_kernel_descriptor::DescriptorWireErrorV5<Resource>),
+    Inventory(fe2o3_compiler_lineage::RustcEnrollmentInventoryErrorV1<Resource>),
     Manifest(ManifestErrorV5),
     TargetLineage(fe2o3_compiler_lineage::ProductionTargetLineageErrorV3),
     Subject(fe2o3_compiler_lineage::NativeNeutralSubjectErrorV1),

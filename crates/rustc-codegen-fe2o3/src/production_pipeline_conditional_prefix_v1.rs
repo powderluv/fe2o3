@@ -61,9 +61,11 @@ impl<'tcx>
         let native_error = |error| {
             ProductionPipelineError::conditional_final_bridge_v1(bridge::Error::Native(error))
         };
-        session.prepare_and_acquire(
-            |budget| {
-                let prefix = self.verify_general_kernel_checks()?.prepare_conditional_prefix_for_f_v1(
+        session.prepare_and_acquire_with_enrollment(
+            |enrollment, budget| {
+                let prefix = self.verify_general_kernel_checks_with_enrollment_v1(
+                    Some((enrollment, &mut *budget)),
+                )?.prepare_conditional_prefix_for_f_v1(
                     HistoryLimits {
                         refinement: fe2o3_kernel_analysis::CanonicalKirLoopLimitsV1::default(),
                         forwarding: fe2o3_kernel_analysis::CanonicalKirCrossBlockForwardingLimitsV1::default(),

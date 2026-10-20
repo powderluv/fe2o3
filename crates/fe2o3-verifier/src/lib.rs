@@ -25,11 +25,15 @@ mod compiler_native_conditional_handoff_v5;
 mod compiler_native_conditional_policy_roster_v1;
 mod native_conditional_root_policy_file_v1;
 pub use compiler_native_conditional_handoff_v5::{
-    CompilerConditionalNativeSemanticHandoffErrorV5,
+    CanonicalRefinedForwardingHistoryLimitsV1, CompilerConditionalNativeSemanticHandoffErrorV5,
     RecoveredCompilerConditionalNativeSemanticHandoffStorageV5,
     RecoveredCompilerConditionalNativeSemanticHandoffV5,
     recover_compiler_conditional_native_semantic_handoff_in_original_account_v5,
     recover_compiler_conditional_native_semantic_handoff_v5,
+    recover_compiler_conditional_native_semantic_handoff_with_cpu_mapping_in_original_account_v5,
+    recover_compiler_conditional_native_semantic_handoff_with_cpu_mapping_v5,
+    recover_compiler_conditional_native_semantic_handoff_with_cpu_origins_in_original_account_v5,
+    recover_compiler_conditional_native_semantic_handoff_with_cpu_origins_v5,
 };
 pub use compiler_native_conditional_policy_roster_v1::{
     InertNativeConditionalPolicyRosterV1, NativeConditionalPolicyReconstructionErrorV1,
@@ -41,6 +45,8 @@ pub use native_conditional_root_policy_file_v1::{
     MAX_NATIVE_CONDITIONAL_ROOT_POLICY_FILE_BYTES_V1,
     encode_native_conditional_root_policy_file_v1,
     recover_native_conditional_handoff_under_policy_file_v1,
+    recover_native_conditional_handoff_under_policy_file_with_cpu_mapping_v1,
+    recover_native_conditional_handoff_under_policy_file_with_cpu_origins_v1,
     validate_native_conditional_root_policy_file_v1,
 };
 pub mod compiler_native_conditional_source_packet_v2;
@@ -135,11 +141,17 @@ pub mod compiler_native_conditional_source_proof_v2;
 pub use compiler_native_conditional_source_proof_v2::final_replay::{
     NativeConditionalFinalErrorV2, NativeConditionalFinalInputsV2,
     validate_native_conditional_source_through_f_v2,
+    validate_native_conditional_source_through_f_with_cpu_mapping_v2,
+    validate_native_conditional_source_through_f_with_cpu_origins_v2,
 };
 pub use compiler_native_conditional_source_proof_v2::{
+    NativeConditionalCpuExpectationV1, NativeConditionalCpuMappingContextV1,
+    NativeConditionalCpuMappingExpectationV1, NativeConditionalCpuOriginExpectationV1,
     NativeConditionalRootPolicyV2, NativeConditionalSourceProofErrorV2,
     NativeConditionalSourceStorageV2, ReplayedNativeConditionalSourceV2,
     select_native_conditional_ownership_site_v2, validate_native_conditional_source_packet_v2,
+    validate_native_conditional_source_packet_with_cpu_mapping_v2,
+    validate_native_conditional_source_packet_with_cpu_origins_v2,
 };
 
 pub use artifact_record::{
@@ -194,8 +206,10 @@ pub use conditional_ranked_formulas_v1::{
     ProductionConditionalFormulaExecutionV1, ProductionConditionalFormulaExecutionV2,
     ProductionConditionalFormulaReportV1, ProductionConditionalFormulaReportV2,
     RetainedProductionConditionalFormulaV1, RetainedProductionConditionalFormulaV2,
+    execute_and_retain_conditional_ranked_formula_policy_v2,
     execute_and_retain_conditional_ranked_formula_v1,
     execute_and_retain_conditional_ranked_formula_v2,
+    import_and_retain_conditional_ranked_formula_policy_v2,
     import_and_retain_conditional_ranked_formula_v2, with_conditional_ranked_formula_execution_v1,
 };
 // Deprecated compatibility exports. Despite their Verus-oriented names, these

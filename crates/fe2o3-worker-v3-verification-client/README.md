@@ -37,3 +37,20 @@ arrays, sends their canonical V2 frame, closes the write half, and accepts one b
 packet followed by exact peer EOF. Phase packets cannot carry descriptors or other ancillary data.
 The terminal response is opaque and authority-free even when the remote application selected the
 application-response disposition.
+# V3 Readiness Client
+
+## Explicit Pathname Readiness V3
+
+Choose V3 explicitly at both ends. `WorkerV3VerificationClientV3::admit_connected_path_until`
+uses the existing strict pathname/unnamed endpoint checks, enables credential receiving,
+and snapshots SO_PEERCRED without sending anything. Consuming `wait_ready` requires exactly
+one canonical 64-byte Ready packet with no descriptors and matching SCM_CREDENTIALS.
+The returned move-only `WorkerV3VerificationReadyClientV3` may send one nonce-bound composite
+Begin and then uses the existing V2 challenge/current/terminal state machine.
+
+The original absolute Instant is never refreshed. Already-queued duplicate Ready/data/EOF
+is rejected before Begin; traffic racing the queue probe is still rejected by the next
+strict phase. Any readiness or Begin error closes the owned endpoint and ancillary
+descriptors. There is no Hello, implicit downgrade, global replay ledger, standalone
+client proof of nonce freshness, signer access or verification/execution authority.
+V2 callers retain exactly their existing framing and behavior.

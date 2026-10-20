@@ -178,7 +178,7 @@ fn verify_using(
         files.push(file);
     }
     for source in &sources {
-        source.revalidate(&root)?;
+        source.revalidate_content(&root)?;
     }
     for directory in &directories {
         directory.revalidate(&root, &roster)?;
@@ -290,8 +290,18 @@ struct Source {
     path: String,
     file: File,
     initial: ObjectSnapshotV1,
+    sha256: [u8; 32],
 }
 impl Source {
+    fn revalidate_content(&self, root: &Root) -> Result<()> {
+        self.revalidate(root)?;
+        // Same-length writes can share an observed filesystem timestamp tick.
+        if stream_hash(&self.file, self.initial.byte_len, None)? != self.sha256 {
+            return Err(changed("compiler bundle source content changed"));
+        }
+        self.revalidate(root)
+    }
+
     fn revalidate(&self, root: &Root) -> Result<()> {
         let mode = self.initial.mode & 0o7777;
         let length = self.initial.byte_len;
@@ -326,6 +336,7 @@ fn copy_source(
         path: path.to_owned(),
         file,
         initial,
+        sha256: digest,
     };
     let sealed = File::from(
         memfd_create(

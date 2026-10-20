@@ -49,7 +49,37 @@ impl Startup {
     }
 }
 
-impl Admitted<'_, '_> {
+impl<'b, 'w> Admitted<'b, 'w> {
+    pub(crate) fn with_reference_enrollment<T>(
+        self,
+        invocation: &mut crate::protected_rustc_invocation::AdmittedProtectedRustcInvocationV1,
+        run: impl FnOnce(
+            Option<&native_v3::ReferenceEnrollmentLoanV1<'_>>,
+        ) -> Result<T, ProductionPipelineError>,
+    ) -> Result<(Self, T), ProductionPipelineError> {
+        match self {
+            Self::Legacy { session, budget } => {
+                if invocation
+                    .reference_enrollment_requested(budget)
+                    .map_err(native_v3::Error::Reference)?
+                {
+                    return Err(native_v3::Error::Reference(
+                        crate::reference_effect_v1::ReferenceBindingErrorV1::new(
+                            "explicit reference enrollment requires the native compiler session",
+                        ),
+                    )
+                    .into());
+                }
+                let value = run(None)?;
+                Ok((Self::Legacy { session, budget }, value))
+            }
+            Self::Native(session) => {
+                let (session, value) = session.with_reference_enrollment(invocation, run)?;
+                Ok((Self::Native(session), value))
+            }
+        }
+    }
+
     pub(crate) fn publish<'tcx>(
         self,
         transaction: ProductionCompilation<'tcx, CollectedRustStage<'tcx>>,

@@ -396,7 +396,7 @@ fn independently_recheck_current_record_v1(
     Ok(())
 }
 
-/// One-use auditor that owns the application endpoint inherited at FD 195.
+/// One-use auditor owning an inherited endpoint or an explicitly owned application peer.
 ///
 /// ```compile_fail
 /// use fe2o3_host::InheritedWorkerV3CompilerCurrentRecordAuditorV1;
@@ -424,6 +424,41 @@ impl fmt::Debug for InheritedWorkerV3CompilerCurrentRecordAuditorV1 {
 }
 
 impl InheritedWorkerV3CompilerCurrentRecordAuditorV1 {
+    /// Consumes an owned application peer into a private close-on-exec audit session.
+    ///
+    /// A fresh close-on-exec duplicate is retained before the original descriptor is dropped.
+    /// The input is consumed on success, error, or unwind; no fixed descriptor slot is inspected
+    /// or reacquired. Admission uses the same connected unnamed Unix `SOCK_SEQPACKET` checks and
+    /// fixed deadline as the inherited entry point.
+    ///
+    /// Ownership does not establish inherited or production provenance, exclusive ownership of
+    /// the underlying kernel object, protected-key custody, or verification/load/launch authority.
+    /// Existing aliases may interfere with transport; signed request, policy, and challenge checks
+    /// remain mandatory. Production deployment admission remains a separate boundary.
+    ///
+    /// Callers cannot supply a different deadline:
+    ///
+    /// ```compile_fail,E0061
+    /// use fe2o3_host::InheritedWorkerV3CompilerCurrentRecordAuditorV1;
+    /// fn arbitrary_deadline(peer: std::os::fd::OwnedFd) {
+    ///     let _ = InheritedWorkerV3CompilerCurrentRecordAuditorV1::admit_owned_application_service(
+    ///         peer, std::time::Duration::from_secs(3600),
+    ///     );
+    /// }
+    /// ```
+    pub fn admit_owned_application_service(
+        peer: std::os::fd::OwnedFd,
+    ) -> Result<Self, CompilerExecutionClientErrorV1> {
+        let retained = rustix::io::fcntl_dupfd_cloexec(&peer, 3)
+            .map_err(|error| CompilerExecutionClientErrorV1::Descriptor(error.into()))?;
+        drop(peer);
+        CompilerExecutionClientV1::admit(
+            retained,
+            WORKER_V3_COMPILER_CURRENT_RECORD_AUDIT_TIMEOUT_V1,
+        )
+        .map(Self::from_client)
+    }
+
     /// Consumes the inherited public FD slot into one private close-on-exec client.
     ///
     /// # Safety

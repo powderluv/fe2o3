@@ -50,6 +50,16 @@ mod kernel_context_frontend_v1;
 pub(crate) mod primitive_from_stage_tests;
 mod production_importer_v1;
 mod reference_custody_v1;
+mod reference_enrollment_v1;
+
+#[cfg(test)]
+mod reference_loan_flow_tests;
+#[cfg(test)]
+pub(crate) use production_importer_v1::original_root_inventory_flow_v362_tests::{
+    check_original_root_inventory_flow, reversed_original_root_inventory_request,
+};
+#[cfg(test)]
+pub(crate) use reference_loan_flow_tests::check_empty_enrollment_replay;
 
 #[cfg(test)]
 pub(crate) use production_importer_v1::check_wave64_descriptor_mutations_v1;
@@ -66,6 +76,7 @@ pub(crate) use production_importer_v1::{
     construct_production_semantic_mir_nominal_v35,
     construct_production_semantic_mir_ordered_composition_v1,
     construct_production_semantic_mir_source_owned_v29, construct_production_semantic_mir_v1,
+    construct_production_semantic_mir_with_enrollment_v1,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -449,13 +460,35 @@ pub(crate) fn collect_authenticated_kernel_closure_v1<'tcx>(
     target: crate::production_target_v1::RetainedProductionTargetV1,
     context_producers: CapturedContextProducersV1<'tcx>,
 ) -> Result<AuthenticatedCollectedKernelClosureV1<'tcx>, CollectError> {
-    let (collection, context_entries, closure_flow, terminal_census) = collect_device_functions(
+    collect_authenticated_kernel_closure_with_enrollment_v1(
         tcx,
         cgus,
         verbose,
-        target.canonical_name().to_owned(),
+        target,
         context_producers,
-    )?;
+        None,
+    )
+}
+
+pub(crate) fn collect_authenticated_kernel_closure_with_enrollment_v1<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    cgus: &[CodegenUnit<'tcx>],
+    verbose: bool,
+    target: crate::production_target_v1::RetainedProductionTargetV1,
+    context_producers: CapturedContextProducersV1<'tcx>,
+    enrollment: Option<
+        &crate::protected_compiler_execution::native_v3::ReferenceEnrollmentLoanV1<'_>,
+    >,
+) -> Result<AuthenticatedCollectedKernelClosureV1<'tcx>, CollectError> {
+    let (collection, context_entries, closure_flow, terminal_census) =
+        collect_device_functions_with_enrollment_v1(
+            tcx,
+            cgus,
+            verbose,
+            target.canonical_name().to_owned(),
+            context_producers,
+            enrollment,
+        )?;
     let roots = collection
         .functions
         .iter()
@@ -502,6 +535,27 @@ fn collect_device_functions<'tcx>(
     ),
     CollectError,
 > {
+    collect_device_functions_with_enrollment_v1(tcx, cgus, verbose, target, context_producers, None)
+}
+
+fn collect_device_functions_with_enrollment_v1<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    cgus: &[CodegenUnit<'tcx>],
+    verbose: bool,
+    target: String,
+    context_producers: CapturedContextProducersV1<'tcx>,
+    enrollment: Option<
+        &crate::protected_compiler_execution::native_v3::ReferenceEnrollmentLoanV1<'_>,
+    >,
+) -> Result<
+    (
+        CollectionResult<'tcx>,
+        kernel_context_auth_v1::AuthenticatedContextEntriesV1<'tcx>,
+        closure_flow_v1::AuthenticatedClosureFlowV1<'tcx>,
+        CollectedTileTerminalCensusV259,
+    ),
+    CollectError,
+> {
     let ffi_declarations =
         crate::device_ffi::collect_declarations(tcx, cgus).map_err(|error| CollectError {
             message: error.to_string(),
@@ -530,14 +584,29 @@ fn collect_device_functions<'tcx>(
         }
     }
 
-    for root in kernel_roots(
+    let mut roots = kernel_roots(
         tcx,
         cgus,
         &collector.context_producers.declarations,
         &mut collector.closure_work,
     )
-    .map_err(CollectError::from)?
-    {
+    .map_err(CollectError::from)?;
+    let loan = enrollment;
+    let enrollment = loan
+        .map(|loan| {
+            reference_enrollment_v1::bind_v1(
+                tcx,
+                cgus,
+                &mut roots,
+                loan,
+                &mut collector.closure_work,
+            )
+            .map_err(|error| CollectError {
+                message: error.to_string(),
+            })
+        })
+        .transpose()?;
+    for root in roots {
         let instance = root.target;
         let raw_name = tcx.def_path_str(instance.def_id());
         if verbose {
@@ -549,7 +618,7 @@ fn collect_device_functions<'tcx>(
         collector.add_root(root)?;
     }
 
-    collector.collect()
+    collector.collect_with_enrollment_v1(enrollment, loan)
 }
 
 #[derive(Clone, Debug)]
@@ -2751,7 +2820,25 @@ impl<'tcx> DeviceCollector<'tcx> {
     }
 
     fn collect(
+        self,
+    ) -> Result<
+        (
+            CollectionResult<'tcx>,
+            kernel_context_auth_v1::AuthenticatedContextEntriesV1<'tcx>,
+            closure_flow_v1::AuthenticatedClosureFlowV1<'tcx>,
+            CollectedTileTerminalCensusV259,
+        ),
+        CollectError,
+    > {
+        self.collect_with_enrollment_v1(None, None)
+    }
+
+    fn collect_with_enrollment_v1(
         mut self,
+        enrollment: Option<reference_enrollment_v1::RetainedEnrollmentV1<'tcx>>,
+        loan: Option<
+            &crate::protected_compiler_execution::native_v3::ReferenceEnrollmentLoanV1<'_>,
+        >,
     ) -> Result<
         (
             CollectionResult<'tcx>,
@@ -2824,12 +2911,14 @@ impl<'tcx> DeviceCollector<'tcx> {
         self.authenticate_production_kernel_source_safety()?;
         self.authenticate_reachable_frontend_contracts()?;
         let context_entries = kernel_context_auth_v1::authenticate_v1(&mut self)?;
-        let closure_flow = closure_flow_v1::authenticate_v1(
+        let closure_flow = closure_flow_v1::authenticate_with_enrollment_v1(
             self.tcx,
             &mut self.result,
             self.call_edges,
             self.closure_work,
             self.verbose,
+            enrollment,
+            loan,
         )
         .map_err(|error| CollectError {
             message: format!("bounded closure admission failed: {error}"),

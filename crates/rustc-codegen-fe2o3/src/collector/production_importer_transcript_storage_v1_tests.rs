@@ -8,6 +8,7 @@ fn inventory(bytes: &[u8], spare: usize) -> AuthenticatedRustcIdentityInventoryV
     AuthenticatedRustcIdentityInventoryV3 {
         sha256: [7; 32],
         canonical_transcript: data.into_boxed_slice(),
+        original_root_associations: None,
     }
 }
 

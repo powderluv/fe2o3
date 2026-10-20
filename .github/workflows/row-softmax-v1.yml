@@ -78,9 +78,16 @@ jobs:
         run: sh examples/qwen3_rope_kv_v1/run-verus.sh
 
   host-contract:
-    name: Host contract and fail-closed source checks
+    name: Host contract and fail-closed source checks (${{ matrix.mode }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+          - debug
+          - release
+          - clippy
     env:
       # Keep host-test executables inside the unchanged 512 MiB hashing bound.
       CARGO_PROFILE_DEV_DEBUG: '0'
@@ -107,16 +114,19 @@ jobs:
         run: cargo build --locked -p cargo-fe2o3
 
       - name: Run debug tests
+        if: matrix.mode == 'debug'
         run: >-
           target/debug/cargo-fe2o3 test --locked --all-targets
           --manifest-path examples/row_softmax_v1/Cargo.toml
 
       - name: Run release tests
+        if: matrix.mode == 'release'
         run: >-
           target/debug/cargo-fe2o3 test --release --locked --all-targets
           --manifest-path examples/row_softmax_v1/Cargo.toml
 
       - name: Run strict Clippy
+        if: matrix.mode == 'clippy'
         run: >-
           target/debug/cargo-fe2o3 clippy --locked --all-targets --all-features
           --manifest-path examples/row_softmax_v1/Cargo.toml -- -D warnings

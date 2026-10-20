@@ -296,7 +296,7 @@ fn successes(
     let signature = retained
         .with_replayed_request_v2(
             request,
-            native_cpu_input_v1(request, binding, root),
+            native_cpu_input_v1(request, binding, root).unwrap(),
             budget,
             |execution, b| {
                 assert!(b.work_ledger_identity_v1() == account);
@@ -325,7 +325,7 @@ fn successes(
     let mut entered = false;
     assert_eq!(
         imported(
-            native_cpu_input_v1(request, binding, root),
+            native_cpu_input_v1(request, binding, root).unwrap(),
             request,
             &signature,
             accepted,
@@ -366,7 +366,7 @@ fn callbacks(
         let result = catch_unwind(AssertUnwindSafe(|| {
             retained.with_replayed_request_v2(
                 request,
-                native_cpu_input_v1(request, binding, root),
+                native_cpu_input_v1(request, binding, root).unwrap(),
                 budget,
                 |_, b| -> Result<(), Error> {
                     entered = true;
@@ -541,7 +541,10 @@ fn mutations(
             .find(|i| !is_root(*i))
             .unwrap()
     });
-    let registration = format!("{}::v2_probe", binding.registration_path);
+    let registration = format!(
+        "{}::v2_probe",
+        binding.origin.source_registration_v1().unwrap()
+    );
     let logical = format!("{}_v2_probe", binding.logical_kernel_name);
     for (case, name) in [
         "source-hash",
@@ -555,7 +558,7 @@ fn mutations(
         reject_input(
             name,
             || {
-                let mut input = native_cpu_input_v1(request, binding, root);
+                let mut input = native_cpu_input_v1(request, binding, root).unwrap();
                 match case {
                     0 => input.association.semantic_mir_sha256[0] ^= 1,
                     1 => input.association.semantic_root = absent,
@@ -599,7 +602,7 @@ fn mutations(
                     if reference { "reference" } else { "kernel" }
                 ),
                 || {
-                    let mut input = native_cpu_input_v1(request, binding, root);
+                    let mut input = native_cpu_input_v1(request, binding, root).unwrap();
                     if reference {
                         input.reference = &identity;
                     } else {
@@ -685,7 +688,7 @@ fn coherent_operand(
     reject_input(
         "coherent-cpu-operand",
         || {
-            let mut input = native_cpu_input_v1(request, binding, root);
+            let mut input = native_cpu_input_v1(request, binding, root).unwrap();
             input.replay.effect_ir = &ir;
             input.replay.effect_ir_sha256 = digest;
             input.replay.observable_output_writes = &writes;
@@ -719,7 +722,7 @@ fn legacy_omission(
     ir.observable_output_effects[0].value = changed;
     assert_eq!(ir.canonical_sha256_v1(), binding.effect_ir_sha256);
     let make = || {
-        let mut input = native_cpu_input_v1(request, binding, root);
+        let mut input = native_cpu_input_v1(request, binding, root).unwrap();
         input.replay.effect_ir = &ir;
         input.replay.observable_output_writes = &ir.observable_output_effects;
         input
@@ -832,7 +835,7 @@ fn policies(
             let account = b.work_ledger_identity_v1();
             let mut entered = false;
             let error = imported(
-                native_cpu_input_v1(request, binding, root),
+                native_cpu_input_v1(request, binding, root).unwrap(),
                 request,
                 &transported,
                 &policy,
@@ -888,7 +891,7 @@ fn resources(
         retained
             .with_replayed_request_v2(
                 request,
-                native_cpu_input_v1(request, binding, root),
+                native_cpu_input_v1(request, binding, root).unwrap(),
                 b,
                 |_, _| Ok(()),
             )
@@ -911,7 +914,7 @@ fn resources(
         let mut entered = false;
         let result = retained.with_replayed_request_v2(
             request,
-            native_cpu_input_v1(request, binding, root),
+            native_cpu_input_v1(request, binding, root).unwrap(),
             &mut b,
             |_, _| {
                 entered = true;
@@ -948,7 +951,7 @@ fn resources(
         let mut entered = false;
         let result = retained.with_replayed_request_v2(
             request,
-            native_cpu_input_v1(request, binding, root),
+            native_cpu_input_v1(request, binding, root).unwrap(),
             b,
             |_, b| {
                 entered = true;
@@ -982,7 +985,7 @@ fn resources(
         let mut entered = false;
         let result: Result<Provisional<'_>, Error> = (|| {
             encode(
-                native_cpu_input_v1(request, binding, root),
+                native_cpu_input_v1(request, binding, root).unwrap(),
                 b,
                 |bytes, _, b| {
                     decode(bytes, b, |decoded, b| {

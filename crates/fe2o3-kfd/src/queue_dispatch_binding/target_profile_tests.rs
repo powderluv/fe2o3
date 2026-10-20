@@ -136,3 +136,40 @@ fn gfx942_replacement_preflight_rejects_gfx950_without_changing_data() {
     assert_eq!(inputs(&data), expected);
     assert_eq!(memory.observation(), before);
 }
+
+#[test]
+fn gfx942_target_refusal_stays_terminal_when_valid_programs_are_retried() {
+    let image = synthetic_gfx950_image_v1();
+    for foreign in 0..3 {
+        let mut selected = programs();
+        selected[foreign] = synthetic_gfx950_program_v1(&image);
+        let mut memory = Memory::new(true);
+        let data = memory.roster();
+        let expected = inputs(&data);
+        let before = memory.observation();
+        let mut owner = FixedDispatchPreparationCustodyV1::new([packet(0)], data);
+        assert!(matches!(
+            prepare_public_fixed_dispatch_resources_in_place(&mut memory, &selected, &mut owner),
+            Err(Gfx942DispatchBindingErrorV1::InvalidCode(TARGET_ERROR))
+        ));
+
+        for _ in 0..2 {
+            assert!(matches!(
+                prepare_public_fixed_dispatch_resources_in_place(
+                    &mut memory,
+                    &programs(),
+                    &mut owner,
+                ),
+                Err(Gfx942DispatchBindingErrorV1::ResourcePhase)
+            ));
+            assert_eq!(owner.stage, PreparationStageV1::Plan);
+            assert!(owner.failed);
+            assert!(!owner.native_started);
+            assert!(owner.plan.is_none());
+            assert!(owner.code.is_empty());
+            assert!(owner.completed.is_none());
+            assert_inputs(&owner, &expected);
+            assert_eq!(memory.observation(), before);
+        }
+    }
+}

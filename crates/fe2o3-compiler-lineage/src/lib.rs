@@ -30,6 +30,7 @@ mod native_refined_forwarding_carrier_v1;
 mod proof_binding;
 mod proof_binding_v4;
 mod receipt;
+mod rustc_enrollment_inventory_v1;
 mod semantic_to_llvm_v3;
 mod target_lineage_v3;
 
@@ -132,6 +133,7 @@ pub use receipt::{
     InertTargetBindingReceiptIdentityV3, InertTargetBindingReceiptV3,
     MAX_CANONICAL_SEMANTIC_MIR_BYTES_V3, MAX_LINEAGE_RECEIPT_PREIMAGE_BYTES_V3,
 };
+pub use rustc_enrollment_inventory_v1::*;
 pub use semantic_to_llvm_v3::{
     INERT_SEMANTIC_TO_LLVM_ASSOCIATION_MAGIC_V3, INERT_SEMANTIC_TO_LLVM_ASSOCIATION_VERSION_V3,
     InertSemanticToLlvmAssociationErrorV3, InertSemanticToLlvmAssociationInputsV3,

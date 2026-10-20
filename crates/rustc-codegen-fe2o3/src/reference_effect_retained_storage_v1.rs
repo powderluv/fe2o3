@@ -1,7 +1,8 @@
 //! Complete retained reference-effect binding payloads, not source authority.
 use super::{
     AuthenticatedReferenceEffectBindingV1, AuthenticatedReferenceEffectBindingsV1,
-    ReferenceEffectIrV1, ReferenceLogicalSignaturePreimageV1, ReferenceOutputWriteV1,
+    ReferenceBindingOriginV1, ReferenceEffectIrV1, ReferenceLogicalSignaturePreimageV1,
+    ReferenceOutputWriteV1,
 };
 use fe2o3_kernel_ir::LogicalStorageCounterV1;
 use fe2o3_verifier::portable_reference_v1::retained_storage_v1::ReferenceRetainedStorageErrorV1;
@@ -26,7 +27,7 @@ impl AuthenticatedReferenceEffectBindingsV1 {
         for binding in bindings {
             c.charge(0, 1)?;
             let AuthenticatedReferenceEffectBindingV1 {
-                registration_path,
+                origin,
                 logical_kernel_name,
                 kernel,
                 reference,
@@ -38,8 +39,11 @@ impl AuthenticatedReferenceEffectBindingsV1 {
             fixed(kernel);
             fixed(reference);
             fixed(effect_ir_sha256);
-            charge_payload(
-                registration_path,
+            match origin {
+                ReferenceBindingOriginV1::SourceRegistration(path) => c.string(path)?,
+                ReferenceBindingOriginV1::ReferenceEnrollment(origin) => fixed(origin),
+            }
+            charge_payload_without_registration(
                 logical_kernel_name,
                 signature_preimage,
                 effect_ir,
@@ -63,6 +67,16 @@ fn charge_payload(
     c: &mut LogicalStorageCounterV1,
 ) -> Result<(), ReferenceRetainedStorageErrorV1> {
     c.string(registration_path)?;
+    charge_payload_without_registration(logical_kernel_name, signature, ir, writes, c)
+}
+
+fn charge_payload_without_registration(
+    logical_kernel_name: &String,
+    signature: &ReferenceLogicalSignaturePreimageV1,
+    ir: &ReferenceEffectIrV1,
+    writes: &Box<[ReferenceOutputWriteV1]>,
+    c: &mut LogicalStorageCounterV1,
+) -> Result<(), ReferenceRetainedStorageErrorV1> {
     c.string(logical_kernel_name)?;
     signature.charge_retained_heap_storage_v1(c)?;
     ir.charge_retained_heap_storage_v1(c)?;

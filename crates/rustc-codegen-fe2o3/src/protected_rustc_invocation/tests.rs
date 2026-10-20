@@ -6,14 +6,16 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::sync::Mutex;
 
 use fe2o3_build_authority::CompilerClosureV2;
+use fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1 as Work;
 use fe2o3_rustc_invocation::{
     AmdTargetIdTextV1, BackendToolsV1, CargoIdentityV1, CargoPackageV1, CargoTargetKindV1,
     CargoTargetV1, CompileEnvironmentEntryV1, CrateTypeV1, DeviceConfigurationV1, EditionV1,
     OutputDomainV1, RustcIdentityV1, RustcInvocationDescriptorV1, RustcInvocationDescriptorV2,
     RustcInvocationDescriptorV3, RustcUnitV1, RustcUnitV2, TestStateV1, ToolIdentityV1,
-    VerificationModeV1, encode_descriptor_v1, encode_descriptor_v2,
+    VerificationModeV1, encode_descriptor_v1, encode_descriptor_v2, encode_descriptor_v3,
 };
 
+use super::reference_enrollment_identity::Owner as EnrollmentOwner;
 use super::*;
 
 const TEST_CHILD_FD: RawFd = 711;
@@ -252,6 +254,257 @@ fn final_publication_transition_is_move_only_and_retains_exact_v3() {
     finished
         .revalidate_for_publication_with_observation(observation(&expected))
         .unwrap();
+}
+
+#[test]
+fn reference_enrollment_identity_survives_publication_without_recharging() {
+    let expected = baseline_descriptor();
+    let mut admitted = validate(expected.clone(), observation(&expected)).unwrap();
+    let mut other = validate(expected.clone(), observation(&expected)).unwrap();
+    let mut work = Work::new(5);
+    let storage = 17 + 2 * EnrollmentOwner::STORAGE;
+    let mut budget = Budget::new(&mut work, storage);
+    budget.reserve_storage(17).unwrap();
+    budget.charge_work(3).unwrap();
+    let ledger = budget.work_ledger_identity_v1();
+
+    // Seed fixture identity without recapturing the test process.
+    admitted.reference_enrollment = Some(EnrollmentOwner::new(&mut budget).unwrap());
+    other.reference_enrollment = Some(EnrollmentOwner::new(&mut budget).unwrap());
+    let stamp = admitted.reference_enrollment_stamp().unwrap();
+    let other_stamp = other.reference_enrollment_stamp().unwrap();
+    assert_eq!(
+        admitted.capability.canonical_bytes(),
+        other.capability.canonical_bytes()
+    );
+    let finished = admitted
+        .finish_for_publication_with_observation(observation(&expected))
+        .unwrap();
+
+    assert_eq!(finished.descriptor(), &expected);
+    let owner = finished.reference_enrollment.as_ref().unwrap();
+    assert!(owner.matches(&stamp));
+    assert!(!owner.matches(&other_stamp));
+    assert!(!other.reference_enrollment.as_ref().unwrap().matches(&stamp));
+    assert_eq!(budget.work(), 5);
+    assert_eq!(budget.storage(), storage);
+    assert_eq!(budget.peak_storage(), storage);
+    assert!(budget.work_ledger_identity_v1() == ledger);
+    assert_eq!(budget.failed_work(), None);
+    assert_eq!(budget.failed_storage(), None);
+
+    drop(finished);
+    drop(other);
+    drop(stamp);
+    drop(other_stamp);
+    assert_eq!(budget.storage(), storage);
+    assert_eq!(budget.work(), 5);
+}
+
+#[test]
+fn reference_enrollment_missing_and_foreign_stamps_refuse_before_image_work() {
+    let expected = baseline_descriptor();
+    for retained in [false, true] {
+        let mut admitted = validate(expected.clone(), observation(&expected)).unwrap();
+        let mut other = validate(expected.clone(), observation(&expected)).unwrap();
+        let owners = if retained { 2 } else { 1 };
+        let total_work = 3 + owners + 1;
+        let storage = 17 + owners * EnrollmentOwner::STORAGE;
+        let mut work = Work::new(total_work);
+        let mut budget = Budget::new(&mut work, storage);
+        budget.reserve_storage(17).unwrap();
+        budget.charge_work(3).unwrap();
+        let ledger = budget.work_ledger_identity_v1();
+        assert_eq!(
+            admitted
+                .reference_enrollment_stamp()
+                .unwrap_err()
+                .to_string(),
+            "reference enrollment invocation identity was not retained"
+        );
+        assert!(admitted.reference_enrollment.is_none());
+        other.reference_enrollment = Some(EnrollmentOwner::new(&mut budget).unwrap());
+        if retained {
+            admitted.reference_enrollment = Some(EnrollmentOwner::new(&mut budget).unwrap());
+        }
+        let foreign = other.reference_enrollment_stamp().unwrap();
+        assert_eq!(
+            admitted.capability.canonical_bytes(),
+            other.capability.canonical_bytes()
+        );
+        let moved = admitted;
+        let error = moved
+            .revalidate_reference_enrollment_identity(&foreign, &mut budget)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "reference enrollment original invocation changed"
+        );
+        assert_eq!(budget.work(), total_work);
+        assert_eq!(budget.storage(), storage);
+        assert_eq!(budget.peak_storage(), storage);
+        assert_eq!(budget.failed_work(), None);
+        assert_eq!(budget.failed_storage(), None);
+        assert!(budget.work_ledger_identity_v1() == ledger);
+        assert_eq!(moved.reference_enrollment.is_some(), retained);
+    }
+}
+
+#[test]
+fn reference_enrollment_work_refusal_preserves_first_denial() {
+    let expected = baseline_descriptor();
+    for prior_denial in [false, true] {
+        let mut admitted = validate(expected.clone(), observation(&expected)).unwrap();
+        let mut work = Work::new(4);
+        let storage = 17 + EnrollmentOwner::STORAGE;
+        let mut budget = Budget::new(&mut work, storage);
+        budget.reserve_storage(17).unwrap();
+        budget.charge_work(3).unwrap();
+        let ledger = budget.work_ledger_identity_v1();
+        admitted.reference_enrollment = Some(EnrollmentOwner::new(&mut budget).unwrap());
+        let stamp = admitted.reference_enrollment_stamp().unwrap();
+        if prior_denial {
+            assert!(matches!(budget.charge_work(5), Err(Resource::Work(error))
+                if error.actual() == 9 && error.limit() == 4));
+        }
+        let error = admitted
+            .revalidate_reference_enrollment_identity(&stamp, &mut budget)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "canonical Kernel IR work 5 exceeds limit 4"
+        );
+        assert_eq!(budget.work(), 4);
+        assert_eq!(budget.failed_work(), Some(if prior_denial { 9 } else { 5 }));
+        assert_eq!(budget.storage(), storage);
+        assert_eq!(budget.peak_storage(), storage);
+        assert_eq!(budget.failed_storage(), None);
+        assert!(budget.work_ledger_identity_v1() == ledger);
+        assert!(
+            admitted
+                .reference_enrollment
+                .as_ref()
+                .unwrap()
+                .matches(&stamp)
+        );
+    }
+}
+
+#[test]
+fn reference_enrollment_digest_exact_budget_preserves_original_account() {
+    use sha2::{Digest as _, Sha256};
+
+    let descriptor = baseline_descriptor();
+    let canonical = encode_descriptor_v3(&descriptor).unwrap();
+    let expected: [u8; 32] = Sha256::digest(&canonical).into();
+    let admitted = validate(descriptor.clone(), observation(&descriptor)).unwrap();
+    let total_work = 3 + canonical.len() + 1;
+    let mut work = Work::new(total_work);
+    let scratch = AdmittedProtectedRustcInvocationV1::REFERENCE_ENROLLMENT_HASH_SCRATCH;
+    let mut budget = Budget::new(&mut work, 17 + scratch);
+    budget.reserve_storage(17).unwrap();
+    budget.charge_work(3).unwrap();
+    let ledger = budget.work_ledger_identity_v1();
+
+    assert_eq!(
+        admitted
+            .reference_enrollment_invocation_sha256(&mut budget)
+            .unwrap(),
+        expected
+    );
+    assert_eq!(budget.work(), total_work);
+    assert_eq!(budget.storage(), 17);
+    assert_eq!(budget.peak_storage(), 17 + scratch);
+    assert_eq!(budget.failed_work(), None);
+    assert_eq!(budget.failed_storage(), None);
+    assert!(budget.work_ledger_identity_v1() == ledger);
+    assert!(admitted.reference_enrollment.is_none());
+}
+
+#[test]
+fn reference_enrollment_digest_one_short_preserves_prefix_and_first_denial() {
+    let descriptor = baseline_descriptor();
+    let canonical = encode_descriptor_v3(&descriptor).unwrap();
+    let admitted = validate(descriptor.clone(), observation(&descriptor)).unwrap();
+    let delta = canonical.len() + 1;
+    let total_work = 3 + delta;
+    for prior_denial in [false, true] {
+        let mut work = Work::new(total_work - 1);
+        let scratch = AdmittedProtectedRustcInvocationV1::REFERENCE_ENROLLMENT_HASH_SCRATCH;
+        let mut budget = Budget::new(&mut work, 17 + scratch);
+        budget.reserve_storage(17).unwrap();
+        budget.charge_work(3).unwrap();
+        let ledger = budget.work_ledger_identity_v1();
+        if prior_denial {
+            assert!(
+                matches!(budget.charge_work(delta + 5), Err(Resource::Work(error))
+                if error.actual() == total_work + 5 && error.limit() == total_work - 1)
+            );
+        }
+        let error = admitted
+            .reference_enrollment_invocation_sha256(&mut budget)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "canonical Kernel IR work {total_work} exceeds limit {}",
+                total_work - 1
+            )
+        );
+        assert_eq!(budget.work(), 4);
+        assert_eq!(
+            budget.failed_work(),
+            Some(total_work + if prior_denial { 5 } else { 0 })
+        );
+        assert_eq!(budget.storage(), 17);
+        assert_eq!(budget.peak_storage(), 17);
+        assert_eq!(budget.failed_storage(), None);
+        assert!(budget.work_ledger_identity_v1() == ledger);
+        assert!(admitted.reference_enrollment.is_none());
+    }
+}
+
+#[test]
+fn reference_enrollment_digest_one_short_scratch_preserves_prefix_and_first_denial() {
+    let descriptor = baseline_descriptor();
+    let canonical = encode_descriptor_v3(&descriptor).unwrap();
+    let admitted = validate(descriptor.clone(), observation(&descriptor)).unwrap();
+    let total_work = 3 + canonical.len() + 1;
+    let scratch = AdmittedProtectedRustcInvocationV1::REFERENCE_ENROLLMENT_HASH_SCRATCH;
+    let total_storage = 17 + scratch;
+    for prior_denial in [false, true] {
+        let mut work = Work::new(total_work);
+        let mut budget = Budget::new(&mut work, total_storage - 1);
+        budget.reserve_storage(17).unwrap();
+        budget.charge_work(3).unwrap();
+        let ledger = budget.work_ledger_identity_v1();
+        if prior_denial {
+            assert!(
+                matches!(budget.reserve_storage(scratch + 9), Err(Resource::Storage(error))
+                if error.actual() == total_storage + 9 && error.limit() == total_storage - 1)
+            );
+        }
+        let error = admitted
+            .reference_enrollment_invocation_sha256(&mut budget)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "canonical Kernel IR verification storage {total_storage} exceeds limit {}",
+                total_storage - 1
+            )
+        );
+        assert_eq!(budget.work(), total_work);
+        assert_eq!(budget.failed_work(), None);
+        assert_eq!(budget.storage(), 17);
+        assert_eq!(budget.peak_storage(), 17);
+        assert_eq!(
+            budget.failed_storage(),
+            Some(total_storage + if prior_denial { 9 } else { 0 })
+        );
+        assert!(budget.work_ledger_identity_v1() == ledger);
+        assert!(admitted.reference_enrollment.is_none());
+    }
 }
 
 #[test]

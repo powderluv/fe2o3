@@ -21,53 +21,65 @@ pub(super) fn frame(bytes: &[u8], s: &mut Scope<'_, '_>) -> Result<DecodedNative
         "semantic root",
     )?;
     let registration_path = r.text()?;
-    let logical_kernel_name = r.text()?;
-    let kernel = r.identity()?;
-    let reference = r.identity()?;
-    require(r.take(4)? == [0; 4], "signature header")?;
-    let kernel_inputs = r.rows(MAX_REFERENCE_SIGNATURE_INPUTS_V1, 2, |r| {
-        r.signature_input()
-    })?;
-    let reference_inputs = r.rows(MAX_REFERENCE_SIGNATURE_INPUTS_V1, 2, |r| {
-        r.signature_input()
-    })?;
-    let signature = ReferenceLogicalSignaturePreimageV1::new(
-        kernel_inputs,
-        reference_inputs,
-        ReferenceReturnShapeV1::Unit,
-        SemanticExternAbiV1::Rust,
-        SemanticFunctionSafetyV1::Safe,
-        false,
-    )?;
-    let effect_ir_sha256 = r.array()?;
-    let argument_count = r.u32()?;
-    let local_count = r.u32()?;
-    require(
-        local_count > argument_count && u64::from(local_count) <= HARD_MAX_LOCALS_V1,
-        "local count",
-    )?;
-    let relations = r.rows(MAX_REFERENCE_SIGNATURE_INPUTS_V1, 6, |r| r.relation())?;
-    let blocks = r.rows(MAX_REFERENCE_BLOCKS_V1, 9, |r| r.block())?;
-    require(r.u32()? == 0, "loop summaries unsupported")?;
-    let observable_output_effects = r.rows(MAX_REFERENCE_STATEMENTS_V1, 22, |r| r.effect())?;
-    require(r.bytes.is_empty(), "trailing bytes")?;
+    let subject = r.subject()?;
     Ok(DecodedNativeCpuInputV1 {
         semantic_mir_sha256,
         semantic_root,
         registration_path,
-        logical_kernel_name,
-        kernel,
-        reference,
-        signature,
-        effect_ir_sha256,
-        ir: ReferenceEffectIrV1 {
-            argument_count,
-            local_count,
-            relations,
-            blocks,
-            loop_summaries: Box::default(),
-            observable_output_effects,
-        },
+        logical_kernel_name: subject.logical_kernel_name,
+        kernel: subject.kernel,
+        reference: subject.reference,
+        signature: subject.signature,
+        effect_ir_sha256: subject.effect_ir_sha256,
+        ir: subject.ir,
+        commitment: [0; 32],
+    })
+}
+
+pub(super) fn policy_frame(
+    bytes: &[u8],
+    s: &mut Scope<'_, '_>,
+) -> Result<DecodedNativeCpuPolicyInputV2, Error> {
+    let mut r = Reader {
+        bytes,
+        s,
+        nodes: 0,
+        statements: 0,
+        atoms: 0,
+    };
+    require(r.take(8)? == policy_v2::POLICY_MAGIC, "magic")?;
+    require(r.take(2)? == 2u16.to_le_bytes(), "version")?;
+    require(r.take(2)? == [0; 2], "flags")?;
+    require(r.u32()? as usize == bytes.len(), "frame length")?;
+    require(r.u8()? == 64, "pointer width")?;
+    r.s.reserve(size_of::<DecodedNativeCpuPolicyInputV2>())?;
+    let semantic_mir_sha256 = r.array()?;
+    let semantic_root = r.u32()?;
+    require(
+        u64::from(semantic_root) < HARD_MAX_FUNCTIONS_V1,
+        "semantic root",
+    )?;
+    require(r.u8()? == policy_v2::ADMITTED_POLICY_TAG, "origin tag")?;
+    require(
+        r.take(2)? == policy_v2::REFERENCE_ENROLLMENT_DOMAIN_V1.to_le_bytes(),
+        "enrollment domain",
+    )?;
+    let origin = ReferenceEnrollmentOriginV1 {
+        rustc_invocation_sha256: r.array()?,
+        native_policy_sha256: r.array()?,
+        policy_generation: r.u64()?,
+        mapping_ordinal: r.u32()?,
+    };
+    require(
+        origin.mapping_ordinal < MAX_REFERENCE_ENROLLMENT_BINDINGS_V1,
+        "mapping ordinal",
+    )?;
+    let subject = r.subject()?;
+    Ok(DecodedNativeCpuPolicyInputV2 {
+        semantic_mir_sha256,
+        semantic_root,
+        origin,
+        subject,
         commitment: [0; 32],
     })
 }
@@ -80,6 +92,55 @@ struct Reader<'a, 's, 'b, 'w> {
     atoms: usize,
 }
 impl<'a> Reader<'a, '_, '_, '_> {
+    fn subject(&mut self) -> Result<DecodedCpuSubject, Error> {
+        let logical_kernel_name = self.text()?;
+        let kernel = self.identity()?;
+        let reference = self.identity()?;
+        require(self.take(4)? == [0; 4], "signature header")?;
+        let kernel_inputs = self.rows(MAX_REFERENCE_SIGNATURE_INPUTS_V1, 2, |r| {
+            r.signature_input()
+        })?;
+        let reference_inputs = self.rows(MAX_REFERENCE_SIGNATURE_INPUTS_V1, 2, |r| {
+            r.signature_input()
+        })?;
+        let signature = ReferenceLogicalSignaturePreimageV1::new(
+            kernel_inputs,
+            reference_inputs,
+            ReferenceReturnShapeV1::Unit,
+            SemanticExternAbiV1::Rust,
+            SemanticFunctionSafetyV1::Safe,
+            false,
+        )?;
+        let effect_ir_sha256 = self.array()?;
+        let argument_count = self.u32()?;
+        let local_count = self.u32()?;
+        require(
+            local_count > argument_count && u64::from(local_count) <= HARD_MAX_LOCALS_V1,
+            "local count",
+        )?;
+        let relations = self.rows(MAX_REFERENCE_SIGNATURE_INPUTS_V1, 6, |r| r.relation())?;
+        let blocks = self.rows(MAX_REFERENCE_BLOCKS_V1, 9, |r| r.block())?;
+        require(self.u32()? == 0, "loop summaries unsupported")?;
+        let observable_output_effects =
+            self.rows(MAX_REFERENCE_STATEMENTS_V1, 22, |r| r.effect())?;
+        require(self.bytes.is_empty(), "trailing bytes")?;
+        Ok(DecodedCpuSubject {
+            logical_kernel_name,
+            kernel,
+            reference,
+            signature,
+            effect_ir_sha256,
+            ir: ReferenceEffectIrV1 {
+                argument_count,
+                local_count,
+                relations,
+                blocks,
+                loop_summaries: Box::default(),
+                observable_output_effects,
+            },
+        })
+    }
+
     fn take(&mut self, count: usize) -> Result<&'a [u8], Error> {
         require(count <= self.bytes.len(), "truncated frame")?;
         self.s.work(add(count, 1)?)?;

@@ -40,10 +40,12 @@ use fe2o3_kernel_opt::{
 };
 use fe2o3_verifier::{
     NativeConditionalFinalErrorV2, NativeConditionalFinalInputsV2,
-    validate_native_conditional_source_through_f_v2,
+    validate_native_conditional_source_through_f_with_cpu_origins_v2,
 };
 use std::{convert::Infallible, fmt, mem::size_of};
 
+#[path = "production_pipeline_conditional_cpu_origins_v1.rs"]
+mod cpu_origins;
 #[path = "production_pipeline_conditional_native_handoff_v5.rs"]
 pub(super) mod native;
 #[path = "production_pipeline_conditional_policy_capture_v1.rs"]
@@ -114,6 +116,7 @@ pub(super) struct RetainedFinalContentV5 {
     module: InertCompilerModuleTextV1,
     pre_descriptor_llvm: TargetLineageIdentityV3,
     policy_roster: Vec<u8>,
+    cpu_origins: cpu_origins::RetainedCpuOriginRosterV1,
     retained: usize,
 }
 
@@ -392,6 +395,7 @@ pub(super) fn prepare(
                     .checked_add(size_of::<Error>())
                     .ok_or(Resource::Arithmetic)?,
             )?;
+            let cpu_origins = cpu_origins::capture(bindings, roots, budget)?;
             let policy_roster = policy_capture::capture(
                 packet,
                 policies,
@@ -443,12 +447,14 @@ pub(super) fn prepare(
             budget.release_storage(prefix_storage)?;
             drop(contracts);
             let policy_storage = policy_capture::retained_storage(&policy_roster)?;
+            let origin_storage = cpu_origins.retained_storage()?;
             let retained = header()?
                 .checked_add(history.storage().retained_storage())
                 .and_then(|n| n.checked_add(storage.retained_storage()))
                 .and_then(|n| n.checked_add(descriptor.storage().retained_storage()))
                 .and_then(|n| n.checked_add(module_storage.retained_storage()))
                 .and_then(|n| n.checked_add(policy_storage))
+                .and_then(|n| n.checked_add(origin_storage))
                 .ok_or(Resource::Arithmetic)?;
             let content = RetainedFinalContentV5 {
                 history,
@@ -457,6 +463,7 @@ pub(super) fn prepare(
                 module,
                 pre_descriptor_llvm,
                 policy_roster,
+                cpu_origins,
                 retained,
             };
             let frame =
@@ -484,21 +491,23 @@ pub(super) fn prepare(
                 observe_history(&frame, chain, bound, checked);
                 super::tests::bridge_consumer_called(content.observation(packet));
             }
-            let (proof, storage) = validate_native_conditional_source_through_f_v2(
-                packet,
-                policies,
-                NativeConditionalFinalInputsV2 {
-                    decoded_history: &decoded,
-                    expected_limits: chain.expected_limits(),
-                    final_catalog: &content.catalog,
-                    published_output_bytes: chain.output().canonical().canonical_bytes(),
-                    profile: bindings.rustc_target.profile(),
-                    descriptors: &descriptors,
-                    final_llvm: content.module.llvm_ir(),
-                },
-                budget,
-            )
-            .map_err(Error::Composition)?;
+            let (proof, storage) =
+                validate_native_conditional_source_through_f_with_cpu_origins_v2(
+                    packet,
+                    policies,
+                    content.cpu_origins.rows(),
+                    NativeConditionalFinalInputsV2 {
+                        decoded_history: &decoded,
+                        expected_limits: chain.expected_limits(),
+                        final_catalog: &content.catalog,
+                        published_output_bytes: chain.output().canonical().canonical_bytes(),
+                        profile: bindings.rustc_target.profile(),
+                        descriptors: &descriptors,
+                        final_llvm: content.module.llvm_ir(),
+                    },
+                    budget,
+                )
+                .map_err(Error::Composition)?;
             // Only destruction follows before the common packet assembler pays
             // the returned unreserved source receipt. Scratch refunds occur only
             // after source and target postchecks and all these borrows are gone.
@@ -524,6 +533,7 @@ fn header() -> Result<usize, Resource> {
         .and_then(|n| n.checked_sub(size_of::<CompilerDescriptorSourceV5>()))
         .and_then(|n| n.checked_sub(size_of::<InertCompilerModuleTextV1>()))
         .and_then(|n| n.checked_sub(size_of::<Vec<u8>>()))
+        .and_then(|n| n.checked_sub(size_of::<cpu_origins::RetainedCpuOriginRosterV1>()))
         .ok_or(Resource::Arithmetic)
 }
 

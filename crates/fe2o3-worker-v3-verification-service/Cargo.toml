@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 fe2o3-worker-v3-verification-protocol.workspace = true
-rustix = { workspace = true, features = ["event"] }
+rustix = { workspace = true, features = ["event", "rand"] }
 sha2.workspace = true
 
 [dev-dependencies]

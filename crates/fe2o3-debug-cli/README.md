@@ -781,3 +781,84 @@ discriminants and storage-bearing function parameters/results remain unsupported
 
 This adds no debugger protocol or KIR format change. Raw canonical bytes do not
 authenticate an original Rust source owner or a compiler continuation.
+
+## CPU schedule replay walkthrough
+
+### Route availability and inputs
+
+These routes have different input contracts; a larger wire version does not
+make a diagnostic input eligible for semantic schedule replay.
+
+| Route | Required inputs | Availability and scope |
+| --- | --- | --- |
+| Existing semantic CLI replay (`--replay-schedule`) | A supported canonical KIR or bundle route, its exact request, and a matching schedule document | Existing CPU replay; KIR/bundle, request, target and limits must match. |
+| Existing diagnostic CLI selectors (for example V16 or V21) | Canonical bytes and a request for that exact version/profile | Existing closed CPU profiles with their own capabilities and refusals; no new persisted replay or physical-state authority. |
+| `schedule_replay_walkthrough` library example | Bundle V6, its exact request, and an independent oracle JSON file | Example source is included here; a bundled tutorial fixture and clean-checkout input qualification remain pending. |
+
+No row establishes source authentication, GPU execution, or browser acceptance.
+The example does not supply a compiler export, request, or qualified tutorial
+fixture. Existing diagnostic routes are documented above; they are not aliases
+for the example's Bundle V6 loader.
+
+### Run against caller-provided inputs
+
+The `schedule_replay_walkthrough` example admits an existing Bundle V6 and
+request, records a seeded CPU schedule, round-trips its canonical document, and
+captures a debugger transcript while replaying that schedule. It checks the
+entire selected output, both initialization masks, initial/final checkpoint
+memory, and reverse/forward cursor round trips against a separately supplied
+oracle.
+
+```sh
+BUNDLE=/absolute/path/to/retained-bundle-v6.fe2sim
+REQUEST=/absolute/path/to/matching-request.json
+ORACLE_JSON=/absolute/path/to/independent-oracle.json
+
+cargo run --locked --offline -p fe2o3-debug-cli \
+  --example schedule_replay_walkthrough -- \
+  "$BUNDLE" "$REQUEST" "$ORACLE_JSON" 5
+```
+
+Replace all three placeholder paths with caller-provided files. The historical
+`loop_helper` oracle below illustrates the expected content; it is not a bundled
+input set or evidence that a clean checkout can reproduce that compiler export.
+
+Supply the exact bundle and request from your own retained compiler export.
+This example does not compile the source. For the retained `loop_helper`
+fixture, the request has seed `0xabcd1234`, salt `0x0f0f55aa`, rounds `1`,
+and four active invocations. Its Rust helper computes
+`(seed ^ salt) & 0xffff == 0x479e`. The output view spans bytes 4..20 of
+shared backing 0; the surrounding words are canaries. Its independent oracle is:
+
+```json
+{
+  "buffer_argument": 0,
+  "shared_backing": 0,
+  "allocation": 1,
+  "initial_bytes_hex": "efbeaddea5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5bebafeca",
+  "initial_initialized_hex": "ffffff",
+  "bytes_hex": "efbeadde9e4700009e4700009e4700009e470000bebafeca",
+  "initialized_hex": "ffffff"
+}
+```
+
+For an ordinary buffer argument, use `"shared_backing": null`.
+`allocation` is the logical CPU allocation ID from the corresponding debugger
+capture. Initialization masks use the low bit first within each byte; unused
+padding bits must be zero. The oracle covers the complete buffer/backing,
+including canaries, and is limited to 4096 bytes. Derive it from the kernel's
+intended behavior rather than copying simulator output. Wrong output,
+initialization, or checkpoint expectations fail without a success report.
+
+The JSON result includes exact bundle/request/oracle/schedule identities,
+record counts, one admission and schedule-recording duration, and raw
+nanosecond samples. After one warmup, each of 1..16 samples measures a complete
+replayed capture and 128 reverse/forward checkpoint round trips. Memory checks
+also revisit the initial snapshot after visiting the final snapshot.
+Navigation selects immutable observations; it does not undo kernel execution.
+
+Record the build profile, toolchain, CPU affinity and input hashes alongside
+the JSON when comparing timings. The command above uses Cargo's development
+profile. These are CPU library timings, not browser or GPU performance results.
+The example requires a complete bounded transcript and retains the existing
+schedule refusals for raw diagnostic KIR V16..V19.

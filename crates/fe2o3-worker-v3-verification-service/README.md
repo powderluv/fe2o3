@@ -77,3 +77,23 @@ must be observed by the client must create the listener itself. Passing a connec
 another process does not update Linux's connection-time `SO_PEERCRED` snapshot; a later packet from
 that process fails the per-message credential check. The existing unnamed V1 and V2 entrypoints
 remain strict and unchanged.
+# V3 Readiness Service
+
+## Explicit Pathname Readiness V3
+
+`WorkerV3VerificationReadyServiceSessionV3::prepare_until` consumes an endpoint which
+already passed strict V2 admission, repeats the full endpoint/credential validation,
+obtains one nonblocking kernel-random nonce, and emits Ready before accepting Begin.
+It accepts no Hello or abstract peer. Its move-only private state retains the original
+absolute deadline and nonce; consuming `begin` validates the composite nonce-bound request
+before using the existing V2 policy, replay, reservation and current-record core.
+
+Preparation failures are terminal. `ready_send_attempted` reports whether Ready may
+have been sent; `into_control` returns only an already-shutdown cleanup descriptor,
+or None if shutdown failed and it was closed. It never returns a reusable session.
+Begin errors close the endpoint and all received payloads. Callers must provide exclusive
+transport custody; OwnedFd alone cannot prove absence of external aliases.
+
+This is a separate opt-in production protocol, not a fixture synchronization shortcut.
+V2 remains unchanged and does not promise a readiness handshake. New V3 Rust I/O is not
+covered by existing model proofs; no native, hardware, loading or key authority is granted.

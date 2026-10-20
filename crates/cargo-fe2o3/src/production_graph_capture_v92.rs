@@ -40,6 +40,35 @@ fn identity(bytes: &[u8]) -> [u8; 32] {
     hash.finalize().into()
 }
 
+// CLOEXEC closes only at exec; fork/dup aliases can otherwise outlive this call.
+// Release the acquired OFD lock at the lexical boundary, before closing root.
+struct CaptureDirectoryLock<'a> {
+    root: &'a File,
+    held: bool,
+}
+
+impl<'a> CaptureDirectoryLock<'a> {
+    fn acquire(root: &'a File) -> Result<Self, String> {
+        rustix::fs::flock(root, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+            .map_err(error)?;
+        Ok(Self { root, held: true })
+    }
+
+    fn finish(mut self) -> Result<(), String> {
+        rustix::fs::flock(self.root, rustix::fs::FlockOperation::Unlock).map_err(error)?;
+        self.held = false;
+        Ok(())
+    }
+}
+
+impl Drop for CaptureDirectoryLock<'_> {
+    fn drop(&mut self) {
+        if self.held {
+            let _ = rustix::fs::flock(self.root, rustix::fs::FlockOperation::Unlock);
+        }
+    }
+}
+
 fn directory_identity(value: &std::fs::Metadata) -> (u64, u64, u32, u32, u32) {
     (
         value.dev(),
@@ -147,8 +176,7 @@ fn capture_scoped(
     {
         return Err("V92 capture directory is not private and canonical".to_owned());
     }
-    rustix::fs::flock(&root, rustix::fs::FlockOperation::NonBlockingLockExclusive)
-        .map_err(error)?;
+    let lock = CaptureDirectoryLock::acquire(&root)?;
     let name = expected
         .0
         .iter()
@@ -266,7 +294,7 @@ fn capture_scoped(
     {
         return Err("V92 capture path custody changed".to_owned());
     }
-    Ok(())
+    lock.finish()
 }
 
 #[cfg(test)]
@@ -384,5 +412,66 @@ mod tests {
         assert_eq!(std::fs::read_dir(&tmp.0).unwrap().count(), 0);
         drop(held);
         call(&tmp.0, bytes, expected).unwrap();
+    }
+
+    #[test]
+    fn capture_lock_finish_releases_retained_ofd_alias() {
+        let tmp = Temporary::new();
+        let root = File::open(&tmp.0).unwrap();
+        let lock = CaptureDirectoryLock::acquire(&root).unwrap();
+        let alias = root.try_clone().unwrap();
+        lock.finish().unwrap();
+        let bytes = b"bounded";
+        call(&tmp.0, bytes, (identity(bytes), bytes.len() as u64)).unwrap();
+        assert!(alias.metadata().unwrap().is_dir());
+    }
+
+    #[test]
+    fn failed_capture_lock_acquisition_preserves_independent_holder() {
+        let tmp = Temporary::new();
+        let root = File::open(&tmp.0).unwrap();
+        let lock = CaptureDirectoryLock::acquire(&root).unwrap();
+        let contender = File::open(&tmp.0).unwrap();
+        let Err(refusal) = CaptureDirectoryLock::acquire(&contender) else {
+            panic!("independent capture lock must be refused");
+        };
+        assert_eq!(refusal, error(rustix::io::Errno::WOULDBLOCK));
+        assert_eq!(
+            rustix::fs::flock(
+                &contender,
+                rustix::fs::FlockOperation::NonBlockingLockExclusive
+            ),
+            Err(rustix::io::Errno::WOULDBLOCK)
+        );
+        let bytes = b"bounded";
+        assert_eq!(
+            call(&tmp.0, bytes, (identity(bytes), bytes.len() as u64)),
+            Err(error(rustix::io::Errno::WOULDBLOCK))
+        );
+        assert_eq!(std::fs::read_dir(&tmp.0).unwrap().count(), 0);
+        lock.finish().unwrap();
+        call(&tmp.0, bytes, (identity(bytes), bytes.len() as u64)).unwrap();
+    }
+
+    #[test]
+    fn capture_lock_error_and_unwind_release_retained_ofd_alias() {
+        let tmp = Temporary::new();
+        let root = File::open(&tmp.0).unwrap();
+        let alias = root.try_clone().unwrap();
+        let result = (|| {
+            let _lock = CaptureDirectoryLock::acquire(&root).unwrap();
+            Err::<(), _>("injected capture error")
+        })();
+        assert_eq!(result, Err("injected capture error"));
+        let bytes = b"bounded";
+        let expected = (identity(bytes), bytes.len() as u64);
+        call(&tmp.0, bytes, expected).unwrap();
+        let unwind = std::panic::catch_unwind(|| {
+            let _lock = CaptureDirectoryLock::acquire(&root).unwrap();
+            panic!("injected capture unwind");
+        });
+        assert!(unwind.is_err());
+        call(&tmp.0, bytes, expected).unwrap();
+        assert!(alias.metadata().unwrap().is_dir());
     }
 }

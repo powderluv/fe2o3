@@ -134,6 +134,33 @@ pub struct WorkerV3VerificationAcceptedServiceEndpointV2 {
 }
 
 impl WorkerV3VerificationAcceptedServiceEndpointV2 {
+    pub(crate) fn into_readiness_control(
+        self,
+    ) -> Result<
+        (OwnedFd, WorkerV3VerificationCallerV1),
+        WorkerV3VerificationAcceptedServiceAdmissionFailureV2,
+    > {
+        let checked = (|| {
+            validate_accepted_control(&self.control, &self.expected_service_address)?;
+            require_passcred(&self.control)?;
+            if caller_identity(&self.control)? != self.caller {
+                return Err(WorkerV3VerificationServiceErrorV1::InvalidControl(
+                    "accepted control SO_PEERCRED changed after admission",
+                ));
+            }
+            Ok(())
+        })();
+        match checked {
+            Ok(()) => Ok((self.control, self.caller)),
+            Err(source) => Err(WorkerV3VerificationAcceptedServiceAdmissionFailureV2 {
+                control: self.control,
+                source,
+            }),
+        }
+    }
+}
+
+impl WorkerV3VerificationAcceptedServiceEndpointV2 {
     /// Admits one supervisor-provisioned accepted connection without receiving protocol bytes.
     ///
     /// The listener must have been prepared with
@@ -194,6 +221,10 @@ pub struct WorkerV3VerificationAcceptedServiceAdmissionFailureV2 {
 }
 
 impl WorkerV3VerificationAcceptedServiceAdmissionFailureV2 {
+    pub(crate) fn into_parts(self) -> (OwnedFd, WorkerV3VerificationServiceErrorV1) {
+        (self.control, self.source)
+    }
+
     /// Returns the exact admission error.
     pub const fn source_error(&self) -> &WorkerV3VerificationServiceErrorV1 {
         &self.source
@@ -366,7 +397,37 @@ where
         .map_err(WorkerV3VerificationServiceErrorV2::V1)?;
     let request = WorkerV3VerificationRequestV1::decode_canonical(&request_bytes)
         .map_err(WorkerV3VerificationServiceErrorV2::CanonicalBegin)?;
-    if phase_input_is_queued(&control)? {
+    begin_received_worker_v3_verification_session_until_v2(
+        (control, caller, deadline, |control: &OwnedFd, _| {
+            phase_input_is_queued(control)
+        }),
+        request,
+        descriptors,
+        policy_resolver,
+        measurement_resolver,
+        replay_guard,
+        challenge_provider,
+    )
+}
+
+pub(crate) fn begin_received_worker_v3_verification_session_until_v2<P, M, R, C, F>(
+    session: (OwnedFd, WorkerV3VerificationCallerV1, Instant, F),
+    request: WorkerV3VerificationRequestV1,
+    descriptors: [OwnedFd; 2],
+    policy_resolver: &mut P,
+    measurement_resolver: &mut M,
+    replay_guard: &mut R,
+    challenge_provider: &mut C,
+) -> Result<WorkerV3VerificationBeginOutcomeV2, WorkerV3VerificationServiceErrorV2>
+where
+    P: WorkerV3VerificationPolicyResolverV1,
+    M: WorkerV3VerificationMeasurementResolverV1,
+    R: WorkerV3VerificationChallengeReplayGuardV1,
+    C: WorkerV3VerificationChallengeReservationProviderV2,
+    F: FnMut(&OwnedFd, Instant) -> Result<bool, WorkerV3VerificationServiceErrorV2>,
+{
+    let (control, caller, deadline, mut phase_probe) = session;
+    if phase_probe(&control, deadline)? {
         return reject_begin(
             control,
             caller,
@@ -479,7 +540,7 @@ where
             Ok(payload) => payload,
             Err(reason) => return reject_begin_v1(control, caller, request, reason, deadline),
         };
-    if phase_input_is_queued(&control)? {
+    if phase_probe(&control, deadline)? {
         return reject_begin(
             control,
             caller,
@@ -500,7 +561,7 @@ where
             );
         }
     };
-    if phase_input_is_queued(&control)? {
+    if phase_probe(&control, deadline)? {
         return reject_begin(
             control,
             caller,
@@ -1147,7 +1208,9 @@ fn phase_input_is_queued(control: &OwnedFd) -> Result<bool, WorkerV3Verification
     }
 }
 
-fn require_deadline(deadline: Instant) -> Result<(), WorkerV3VerificationServiceErrorV2> {
+pub(crate) fn require_deadline(
+    deadline: Instant,
+) -> Result<(), WorkerV3VerificationServiceErrorV2> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         return Err(WorkerV3VerificationServiceErrorV2::V1(

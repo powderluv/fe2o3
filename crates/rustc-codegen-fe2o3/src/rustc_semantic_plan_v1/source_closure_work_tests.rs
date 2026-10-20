@@ -21,6 +21,7 @@ fn source_closure_work_defaults_to_the_existing_raw_budget() {
     let mut ordinary = RawMirPreflightCountsV1::default();
     assert_eq!(work.limits, limits);
     assert_eq!(work.counts, ordinary);
+    assert!(work.identity.is_none());
 
     for amount in [0, 2, 3] {
         work.charge(amount).unwrap();
@@ -70,6 +71,85 @@ fn source_closure_work_reuses_checked_overflow_accounting() {
         }) if maximum == work.limits.limit(SemanticMirResourceV1::ValidationWork)
     ));
     assert_eq!(work.counts, before);
+}
+
+#[test]
+fn source_closure_identity_follows_moves_not_reconstructed_counters() {
+    let mut original = SourceClosureWorkV1::default();
+    original.charge(17).unwrap();
+    let stamp = original.retain_identity_v1().unwrap();
+    let mut moved = original;
+    assert!(moved.matches_identity_v1(&stamp).unwrap());
+
+    let mut replacement = SourceClosureWorkV1 {
+        limits: moved.limits,
+        counts: moved.counts,
+        ..SourceClosureWorkV1::default()
+    };
+    assert!(!replacement.matches_identity_v1(&stamp).unwrap());
+    let replacement_stamp = replacement.retain_identity_v1().unwrap();
+    assert!(!moved.matches_identity_v1(&replacement_stamp).unwrap());
+    assert!(!replacement.matches_identity_v1(&stamp).unwrap());
+    assert!(moved.matches_identity_v1(&stamp).unwrap());
+    assert!(replacement.matches_identity_v1(&replacement_stamp).unwrap());
+}
+
+#[test]
+fn source_closure_identity_stamp_does_not_keep_a_dropped_account_alive() {
+    let stamp = {
+        let mut original = SourceClosureWorkV1::default();
+        original.retain_identity_v1().unwrap()
+    };
+    assert!(stamp.identity.upgrade().is_none());
+    let mut replacement = SourceClosureWorkV1::default();
+    let _replacement_stamp = replacement.retain_identity_v1().unwrap();
+    assert!(!replacement.matches_identity_v1(&stamp).unwrap());
+}
+
+#[test]
+fn source_closure_identity_creation_is_paid_before_installation() {
+    let inherited = 17;
+    let mut measured = SourceClosureWorkV1::default();
+    measured.charge(inherited).unwrap();
+    let _stamp = measured.retain_identity_v1().unwrap();
+    let total = measured.counts.validation_work;
+    assert!(total > inherited as u64);
+
+    let mut exact = work_with_limit(total);
+    exact.charge(inherited).unwrap();
+    let _stamp = exact.retain_identity_v1().unwrap();
+    assert_eq!(exact.counts.validation_work, total);
+
+    let mut short = work_with_limit(total - 1);
+    short.charge(inherited).unwrap();
+    assert!(short.retain_identity_v1().is_err());
+    assert!(short.identity.is_none());
+    assert_eq!(short.counts.validation_work, total);
+    assert!(short.retain_identity_v1().is_err());
+    assert!(short.identity.is_none());
+    assert!(short.counts.validation_work > total);
+
+    let mut zero = work_with_limit(0);
+    assert!(zero.retain_identity_v1().is_err());
+    assert!(zero.identity.is_none());
+}
+
+#[test]
+fn source_closure_identity_rechecks_debit_the_original_account() {
+    let mut work = SourceClosureWorkV1::default();
+    let stamp = work.retain_identity_v1().unwrap();
+    let paid = work.counts.validation_work;
+    work.limits = work
+        .limits
+        .with_limit(SemanticMirResourceV1::ValidationWork, paid + 1)
+        .unwrap();
+    assert!(work.matches_identity_v1(&stamp).unwrap());
+    assert_eq!(work.counts.validation_work, paid + 1);
+    assert!(work.matches_identity_v1(&stamp).is_err());
+    assert_eq!(work.counts.validation_work, paid + 2);
+    assert!(work.matches_identity_v1(&stamp).is_err());
+    assert_eq!(work.counts.validation_work, paid + 3);
+    assert!(work.identity.is_some());
 }
 
 fn transcript_counts(plan: &ProductionSemanticPreflightPlanV1<'_>) -> [u64; 11] {

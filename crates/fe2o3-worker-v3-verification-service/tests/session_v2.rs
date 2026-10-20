@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+#[path = "support/readiness_v3.rs"]
+mod readiness_v3_cases;
 use std::fs::File;
 use std::io::{IoSlice, IoSliceMut, Write};
 use std::mem::MaybeUninit;
@@ -28,7 +30,8 @@ use fe2o3_external_anchor_protocol::{
 };
 use fe2o3_worker_v3_verification_client::{
     WorkerV3VerificationBeginOutcomeV2 as ClientBeginOutcomeV2, WorkerV3VerificationClientErrorV2,
-    WorkerV3VerificationClientV2, WorkerV3VerificationPayloadSnapshotsV1,
+    WorkerV3VerificationClientV2, WorkerV3VerificationClientV3,
+    WorkerV3VerificationPayloadSnapshotsV1,
 };
 use fe2o3_worker_v3_verification_protocol::{
     MAX_WORKER_V3_VERIFICATION_APPLICATION_RESPONSE_BYTES_V2,
@@ -45,11 +48,10 @@ use fe2o3_worker_v3_verification_service::{
     WorkerV3VerificationCallerV1, WorkerV3VerificationChallengeReplayGuardV1,
     WorkerV3VerificationChallengeReservationProviderV2, WorkerV3VerificationCurrentRecordOutcomeV2,
     WorkerV3VerificationMeasurementResolverV1, WorkerV3VerificationPolicyResolverV1,
-    WorkerV3VerificationRejectionReasonV1, WorkerV3VerificationRejectionReasonV2,
-    WorkerV3VerificationServiceErrorV1, WorkerV3VerificationServiceErrorV2,
-    begin_worker_v3_verification_accepted_session_until_v2,
-    begin_worker_v3_verification_session_until_v2, begin_worker_v3_verification_session_v2,
-    prepare_worker_v3_verification_receiver_v1,
+    WorkerV3VerificationReadyServiceSessionV3, WorkerV3VerificationRejectionReasonV1,
+    WorkerV3VerificationRejectionReasonV2, WorkerV3VerificationServiceErrorV1,
+    WorkerV3VerificationServiceErrorV2, begin_worker_v3_verification_session_until_v2,
+    begin_worker_v3_verification_session_v2, prepare_worker_v3_verification_receiver_v1,
 };
 use rustix::fs::{MemfdFlags, Mode, OFlags, SealFlags};
 use rustix::io::Errno;
@@ -482,12 +484,14 @@ fn exact_two_phase_session_returns_only_opaque_authority_free_application_bytes(
 }
 
 #[test]
-fn connected_path_session_preserves_process_credentials_across_every_v2_phase() {
+fn connected_path_v3_session_preserves_process_credentials_across_every_phase() {
+    // Uncoordinated V2 pathname sessions require external rendezvous after both
+    // strict checks. This positive instead uses V3's public readiness boundary.
     let request = verification_request(41);
     let (_root, path, listener) = prepared_path_listener();
     let child = Command::new(std::env::current_exe().unwrap())
         .arg("--exact")
-        .arg("cross_process_connected_path_client_helper")
+        .arg("cross_process_connected_path_v3_client_helper")
         .arg("--ignored")
         .env("FE2O3_WORKER_V3_CONNECTED_PATH_CLIENT", &path)
         .stdin(Stdio::null())
@@ -504,19 +508,25 @@ fn connected_path_session_preserves_process_credentials_across_every_v2_phase() 
     let (mut policy, mut measurement, mut replay) = admission_state(&request);
     let mut reservations = FixedReservations::available(0xa1, 0xa2);
     let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
-    let begin = begin_worker_v3_verification_accepted_session_until_v2(
-        service,
-        deadline,
-        &mut policy,
-        &mut measurement,
-        &mut replay,
-        &mut reservations,
-    )
-    .unwrap();
+    let ready =
+        WorkerV3VerificationReadyServiceSessionV3::prepare_until(service, deadline).unwrap();
+    assert_eq!(ready.caller().pid(), child_pid);
+    assert_eq!(ready.deadline(), deadline);
+    assert!(!ready.grants_authority());
+    let begin = ready
+        .begin(
+            &mut policy,
+            &mut measurement,
+            &mut replay,
+            &mut reservations,
+        )
+        .unwrap();
     let WorkerV3VerificationBeginOutcomeV2::Reserved(pending) = begin else {
         panic!("valid connected-path Begin was rejected");
     };
     assert_eq!(pending.caller().pid(), child_pid);
+    assert_eq!(pending.deadline(), deadline);
+    assert!(!pending.grants_authority());
     let current = pending.receive_current_record().unwrap();
     let WorkerV3VerificationCurrentRecordOutcomeV2::Ready(terminal) = current else {
         panic!("valid connected-path current record was rejected");
@@ -534,8 +544,8 @@ fn connected_path_session_preserves_process_credentials_across_every_v2_phase() 
 }
 
 #[test]
-#[ignore = "subprocess helper for the connected-path session test"]
-fn cross_process_connected_path_client_helper() {
+#[ignore = "subprocess helper for the V3 connected-path session test"]
+fn cross_process_connected_path_v3_client_helper() {
     let Some(path) = std::env::var_os("FE2O3_WORKER_V3_CONNECTED_PATH_CLIENT") else {
         return;
     };
@@ -548,9 +558,14 @@ fn cross_process_connected_path_client_helper() {
     )
     .unwrap();
     connect(&client, &SocketAddrUnix::new(&path).unwrap()).unwrap();
+    let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
     let client =
-        WorkerV3VerificationClientV2::admit_connected_path(client, &path, Duration::from_secs(5))
-            .unwrap();
+        WorkerV3VerificationClientV3::admit_connected_path_until(client, &path, deadline).unwrap();
+    assert_eq!(client.deadline(), deadline);
+    assert!(!client.grants_authority());
+    let client = client.wait_ready().unwrap();
+    assert_eq!(client.deadline(), deadline);
+    assert!(!client.grants_authority());
     let request = verification_request(41);
     let outcome = client.begin(request.clone(), snapshots(&request)).unwrap();
     let ClientBeginOutcomeV2::Reserved(begin) = outcome else {
@@ -558,6 +573,9 @@ fn cross_process_connected_path_client_helper() {
     };
     let (challenge, pending) = begin.into_parts();
     assert_eq!(challenge.reservation_identity(), &[0xa2; 32]);
+    assert_eq!(challenge.as_bytes(), &[0xa1; 32]);
+    assert_eq!(pending.deadline(), deadline);
+    assert!(!pending.grants_authority());
     let fixture = CurrentRecordFixture::new();
     let (verification, attestation) = fixture.records(*challenge.as_bytes());
     let terminal = pending
@@ -574,6 +592,58 @@ fn cross_process_connected_path_client_helper() {
         terminal.application_response_bytes(),
         b"connected-path-application-decision"
     );
+    assert!(!terminal.grants_authority());
+}
+
+#[test]
+fn legacy_v2_connected_path_send_first_is_rejected_with_endpoint_retained() {
+    let request = verification_request(42);
+    let (_root, path, listener) = prepared_path_listener();
+    let client = socket_with(
+        AddressFamily::UNIX,
+        SocketType::SEQPACKET,
+        SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+        None,
+    )
+    .unwrap();
+    connect(&client, &SocketAddrUnix::new(&path).unwrap()).unwrap();
+    let service = accept_with(&listener, SocketFlags::CLOEXEC | SocketFlags::NONBLOCK).unwrap();
+    let unnamed = rustix::net::SocketAddrAny::from(SocketAddrUnix::new_unnamed());
+    assert_eq!(rustix::net::getpeername(&service).unwrap(), Some(unnamed));
+    let sender = rustix::io::fcntl_dupfd_cloexec(&client, 0).unwrap();
+    let client =
+        WorkerV3VerificationClientV2::admit_connected_path(client, &path, Duration::from_secs(5))
+            .unwrap();
+    let envelope = sealed_read_only(ENVELOPE);
+    let hsaco = sealed_read_only(HSACO);
+    // Complete the canonical Begin send before admission: SO_PASSCRED autobinds
+    // the previously unnamed client. This is a V2 refusal, not a full positive.
+    send_begin_raw(&sender, &request, &envelope, &hsaco);
+    let peer = rustix::net::getpeername(&service)
+        .unwrap()
+        .expect("connected service endpoint must retain its peer address");
+    assert!(
+        SocketAddrUnix::try_from(peer)
+            .unwrap()
+            .abstract_name()
+            .is_some()
+    );
+    let original = service.as_raw_fd();
+    let failure = WorkerV3VerificationAcceptedServiceEndpointV2::admit(service, &path).unwrap_err();
+    assert!(matches!(
+        failure.source_error(),
+        WorkerV3VerificationServiceErrorV1::InvalidControl(
+            "control is not the expected canonical filesystem-path service endpoint connected to an unnamed client"
+        )
+    ));
+    let retained = failure.into_control();
+    assert_eq!(retained.as_raw_fd(), original);
+    rustix::io::fcntl_getfd(&retained).unwrap();
+    drop(retained);
+    drop(client);
+    drop(sender);
+    drop(envelope);
+    drop(hsaco);
 }
 
 #[test]

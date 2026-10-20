@@ -134,7 +134,7 @@ pub(super) fn toolchain(value: VerusToolchainIdentityV2) -> [[u8; 32]; 5] {
     ]
 }
 
-fn vector<T>(count: usize, budget: &mut Budget<'_>) -> Result<Vec<T>, Error> {
+pub(super) fn vector<T>(count: usize, budget: &mut Budget<'_>) -> Result<Vec<T>, Error> {
     let requested = count
         .checked_mul(size_of::<T>())
         .ok_or(Resource::Arithmetic)?;

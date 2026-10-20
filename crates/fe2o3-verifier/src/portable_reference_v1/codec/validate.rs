@@ -5,6 +5,14 @@ pub(super) fn input(
     bytes: usize,
     s: &mut Scope<'_, '_>,
 ) -> Result<(), Error> {
+    subject(&input.subject(), bytes, s)
+}
+
+pub(super) fn subject(
+    input: &CpuSubject<'_>,
+    bytes: usize,
+    s: &mut Scope<'_, '_>,
+) -> Result<(), Error> {
     let signature = input.replay.signature_preimage;
     s.work(mul(
         8,

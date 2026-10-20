@@ -164,6 +164,31 @@ pub(super) fn runtime_interrupt() -> Result<Quota> {
     })
 }
 
+/// Complete scoped Attempt query, excluding callback work/outputs. Refusal's
+/// four compiler checks cover the helper's two plus the query's one, including
+/// helper image/profile/liveness, trace resources and the outer Attempt scope.
+/// Original issuer custody, count/digest work and result lifetime are added
+/// separately. This inert schedule does not select/raise deployment limits,
+/// admit the dynamic compiler/PREPARSE closure or activate a request caller.
+pub(super) fn original_enrollment() -> Result<Quota> {
+    use crate::compiler_invocation_backing::OriginalInvocationEnrollment as Projection;
+    let validation = refusal()?;
+    let custody =
+        crate::native_v3::NativeAttempt::<ManagedProofHelper>::original_enrollment_custody_quota()?;
+    Ok(Quota {
+        work: sum(&[
+            validation.work(),
+            custody.work(),
+            Projection::PROJECTION_WORK,
+        ])?,
+        scratch: sum(&[
+            validation.scratch(),
+            custody.scratch(),
+            Projection::PROJECTION_SCRATCH,
+        ])?,
+    })
+}
+
 /// First-exec transition: ready helper content validation, original inventory
 /// revalidation and the non-resuming image/census check. The fixed refusal
 /// schedule already funds four full compiler checks (this path needs three)
@@ -410,16 +435,31 @@ impl RootCompilerRequest<'_> {
         })
     }
 
-    /// The issuer is launched once. Its readiness, exact original cleanup-guard
-    /// validation and complete overlapping owners are not charged per syscall.
+    /// Issuer launch and the held intake/enrollment join occur once, not per
+    /// syscall. These derived costs do not increase deployment hard limits.
     pub(crate) fn runtime_startup_quota() -> Result<Quota> {
         let (_, compiler) = payloads()?;
         let issuer = compiler_attempt::Attempt::maximum_runtime_issuer_quota(compiler)
             .map_err(helper_error)?;
         let guard = Prepared::maximum_cleanup_guard_quota()?;
+        let query = original_enrollment()?;
+        let policy =
+            compiler_attempt::Attempt::original_policy_identity_quota().map_err(helper_error)?;
         Ok(Quota {
-            work: sum(&[issuer.work(), guard.work()])?,
-            scratch: sum(&[issuer.scratch(), guard.scratch()])?,
+            work: sum(&[
+                issuer.work(),
+                guard.work(),
+                query.work(),
+                policy.work(),
+                enrollment::WORK,
+            ])?,
+            scratch: sum(&[
+                issuer.scratch(),
+                guard.scratch(),
+                query.scratch(),
+                policy.scratch(),
+                enrollment::SCRATCH,
+            ])?,
         })
     }
 

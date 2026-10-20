@@ -74,6 +74,23 @@ fn completion_quote_preserves_original_issuer_and_outer_attempt_account() {
 }
 
 #[test]
+fn enrollment_quote_composes_existing_validation_original_custody_and_projection() {
+    use crate::compiler_invocation_backing::OriginalInvocationEnrollment as Projection;
+    let quote = super::super::quota::original_enrollment().unwrap();
+    let validation = super::super::quota::refusal().unwrap();
+    let custody =
+        crate::native_v3::NativeAttempt::<Helper>::original_enrollment_custody_quota().unwrap();
+    assert_eq!(
+        quote.work(),
+        validation.work() + custody.work() + Projection::PROJECTION_WORK
+    );
+    assert_eq!(
+        quote.scratch(),
+        validation.scratch() + custody.scratch() + Projection::PROJECTION_SCRATCH
+    );
+}
+
+#[test]
 fn runtime_arm_and_cancellation_quotes_include_the_outer_attempt() {
     let arm = Attempt::arm_runtime_quota().unwrap();
     let inner = Trace::runtime_takeover_quota().unwrap();

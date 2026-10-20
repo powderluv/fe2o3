@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use syn::{Expr, GenericArgument, ImplItem, Item, Pat, PathArguments, Stmt, Type};
 
-const ENTRIES: [&str; 8] = [
+const ENROLLMENT_ENTRY: &str = "verify_general_kernel_checks_with_enrollment_v1";
+const ENTRIES: [&str; 9] = [
     "verify_general_kernel_checks",
     "lower_production_target",
     "export_simulation_bundle_v1",
@@ -11,6 +12,7 @@ const ENTRIES: [&str; 8] = [
     "export_simulation_bundle_v4",
     "export_simulation_bundle_v5",
     "export_simulation_bundle_v6",
+    ENROLLMENT_ENTRY,
 ];
 const COMMON: [&str; 5] = [
     "import_semantic_mir",
@@ -55,6 +57,21 @@ fn local_name(expr: &Expr) -> Option<String> {
         return None;
     }
     path.path.get_ident().map(ToString::to_string)
+}
+
+fn exact_path(expr: &Expr, expected: &[&str]) -> bool {
+    let Expr::Path(path) = expr else { return false };
+    path.qself.is_none()
+        && path.path.leading_colon.is_none()
+        && path.path.segments.len() == expected.len()
+        && path
+            .path
+            .segments
+            .iter()
+            .zip(expected)
+            .all(|(segment, name)| {
+                segment.ident == *name && matches!(segment.arguments, PathArguments::None)
+            })
 }
 
 // Follow receiver ownership through local bindings; textual mentions or calls
@@ -121,7 +138,11 @@ fn conditional_refusal(expr: &Expr) -> Option<&Expr> {
 fn check_entry(method: &syn::ImplItemFn) -> Result<(), &'static str> {
     let name = method.sig.ident.to_string();
     let mut expected = COMMON.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-    if name != ENTRIES[0] {
+    if name == ENTRIES[0] {
+        expected = vec![ENROLLMENT_ENTRY.into()];
+    } else if name == ENROLLMENT_ENTRY {
+        expected[0] = "import_semantic_mir_with_enrollment_v1".into();
+    } else {
         expected.push("attach_target_neutral_checks".into());
         if name == ENTRIES[1] {
             expected.extend([
@@ -186,34 +207,33 @@ fn check_entry(method: &syn::ImplItemFn) -> Result<(), &'static str> {
         if call.method != expected.as_str() || *propagated != (index + 1 < calls.len()) {
             return Err("reordered, substituted, or unchecked stage");
         }
-        if expected.starts_with("into_simulation_bundle_v")
+        if name == ENTRIES[0] {
+            if call.args.len() != 1 || !exact_path(&call.args[0], &["None"]) {
+                return Err("changed absent enrollment forwarding");
+            }
+        } else if name == ENROLLMENT_ENTRY && index == 0 {
+            if call.args.len() != 2
+                || !exact_path(
+                    &call.args[0],
+                    &["source_owned_v29", "ImportProfile", "Current"],
+                )
+                || !exact_path(&call.args[1], &["enrollment"])
+            {
+                return Err("changed enrollment import forwarding");
+            }
+        } else if expected.starts_with("into_simulation_bundle_v")
             && index + 1 == calls.len()
             && !expected.ends_with(['5', '6'])
         {
-            if call.args.len() != 1 {
-                return Err("changed simulation binding");
-            }
-            let Expr::Path(binding) = &call.args[0] else {
-                return Err("changed simulation binding");
-            };
-            if binding.qself.is_some()
-                || binding.path.leading_colon.is_some()
-                || binding
-                    .path
-                    .segments
-                    .iter()
-                    .any(|segment| !matches!(segment.arguments, PathArguments::None))
-                || binding
-                    .path
-                    .segments
-                    .iter()
-                    .map(|segment| segment.ident.to_string())
-                    .collect::<Vec<_>>()
-                    != [
+            if call.args.len() != 1
+                || !exact_path(
+                    &call.args[0],
+                    &[
                         "fe2o3_kernel_ir",
                         "SimulationCompilerExecutionBindingV1",
                         "UnavailableExtractionOnly",
-                    ]
+                    ],
+                )
             {
                 return Err("changed simulation binding");
             }
@@ -271,19 +291,106 @@ fn replace_body(file: &mut syn::File, name: &str, body: &str) {
 }
 
 #[test]
+fn production_route_ast_check_rejects_changed_enrollment_forwarding() {
+    let original = syn::parse_file(include_str!("production_pipeline.rs")).unwrap();
+    check_routes(&original).unwrap();
+    for body in [
+        "{ self.verify_general_kernel_checks_with_enrollment_v1(Some(forged)) }",
+        "{ self.verify_general_kernel_checks_with_enrollment_v1() }",
+        "{ other.verify_general_kernel_checks_with_enrollment_v1(None) }",
+        "{ self.verify_general_kernel_checks_with_enrollment_v1(None)? }",
+    ] {
+        let mut altered = original.clone();
+        replace_body(&mut altered, ENTRIES[0], body);
+        let error = check_routes(&altered).expect_err(body);
+        assert!(error.starts_with(&format!("{}:", ENTRIES[0])), "{error}");
+    }
+    for import in [
+        "import_semantic_mir()",
+        "import_semantic_mir_with_enrollment_v1(source_owned_v29::ImportProfile::Current, None)",
+        "import_semantic_mir_with_enrollment_v1(source_owned_v29::ImportProfile::NominalV35, enrollment)",
+        "import_semantic_mir_with_enrollment_v1(source_owned_v29::ImportProfile::Current, replacement)",
+    ] {
+        let body = format!(
+            "{{ self.{import}?.construct_semantic_middle_end()?.construct_semantic_ssa()?.materialize_target_neutral()?.verify_general_kernel_checks() }}"
+        );
+        let mut altered = original.clone();
+        replace_body(&mut altered, ENROLLMENT_ENTRY, &body);
+        let error = check_routes(&altered).expect_err(&body);
+        assert!(
+            error.starts_with(&format!("{ENROLLMENT_ENTRY}:")),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn production_route_ast_check_requires_one_enrollment_helper() {
+    let original = syn::parse_file(include_str!("production_pipeline.rs")).unwrap();
+    check_routes(&original).unwrap();
+    for duplicate in [false, true] {
+        let mut altered = original.clone();
+        for item in &mut altered.items {
+            let Item::Impl(block) = item else { continue };
+            if !collected_stage(&block.self_ty) {
+                continue;
+            }
+            if let Some(index) = block.items.iter().position(
+                |item| matches!(item, ImplItem::Fn(method) if method.sig.ident == ENROLLMENT_ENTRY),
+            ) {
+                if duplicate {
+                    block.items.push(block.items[index].clone());
+                } else {
+                    block.items.remove(index);
+                }
+                break;
+            }
+        }
+        assert_eq!(
+            check_routes(&altered).unwrap_err(),
+            if duplicate {
+                "duplicate production entry"
+            } else {
+                "missing production entry"
+            },
+        );
+    }
+}
+
+#[test]
 fn production_route_ast_check_rejects_missing_reordered_and_disconnected_gates() {
     let original = syn::parse_file(include_str!("production_pipeline.rs")).unwrap();
-    for body in [
+    check_routes(&original).unwrap();
+    let mut inline = original.clone();
+    replace_body(
+        &mut inline,
+        ENROLLMENT_ENTRY,
+        "{ self.import_semantic_mir_with_enrollment_v1(source_owned_v29::ImportProfile::Current, enrollment)?.construct_semantic_middle_end()?.construct_semantic_ssa()?.materialize_target_neutral()?.verify_general_kernel_checks() }",
+    );
+    check_routes(&inline).unwrap();
+    for (body, reason) in [
         "{ self.import_semantic_mir()?.construct_semantic_middle_end()?.construct_semantic_ssa()?.verify_general_kernel_checks() }",
         "{ self.import_semantic_mir()?.construct_semantic_ssa()?.construct_semantic_middle_end()?.materialize_target_neutral()?.verify_general_kernel_checks() }",
         "{ self.import_semantic_mir()?.construct_semantic_middle_end()?.construct_semantic_ssa()?.materialize_target_neutral().verify_general_kernel_checks() }",
         "{ let unused = self.materialize_target_neutral()?; other.import_semantic_mir()?.construct_semantic_middle_end()?.construct_semantic_ssa()?.materialize_target_neutral()?.verify_general_kernel_checks() }",
         "{ let text = \".materialize_target_neutral()?\"; self.import_semantic_mir()?.construct_semantic_middle_end()?.construct_semantic_ssa()?.verify_general_kernel_checks() }",
         "{ self.import_semantic_mir()?.construct_semantic_middle_end()?.construct_semantic_ssa()?.materialize_target_neutral()?.materialize_target_neutral()?.verify_general_kernel_checks() }",
-    ] {
+    ].into_iter().zip([
+        "unused or missing stage",
+        "reordered, substituted, or unchecked stage",
+        "reordered, substituted, or unchecked stage",
+        "unknown or reused receiver",
+        "unused or missing stage",
+        "unused or missing stage",
+    ]) {
         let mut altered = original.clone();
-        replace_body(&mut altered, ENTRIES[0], body);
-        assert!(check_routes(&altered).is_err(), "accepted {body}");
+        let body = body.replace(
+            "import_semantic_mir()",
+            "import_semantic_mir_with_enrollment_v1(source_owned_v29::ImportProfile::Current, enrollment)",
+        );
+        replace_body(&mut altered, ENROLLMENT_ENTRY, &body);
+        let error = check_routes(&altered).expect_err(&body);
+        assert_eq!(error, format!("{ENROLLMENT_ENTRY}: {reason}"));
     }
     for (name, body) in [
         (
@@ -309,7 +416,8 @@ fn production_route_ast_check_rejects_missing_reordered_and_disconnected_gates()
     ] {
         let mut altered = original.clone();
         replace_body(&mut altered, name, body);
-        assert!(check_routes(&altered).is_err(), "accepted {name}: {body}");
+        let error = check_routes(&altered).expect_err(body);
+        assert!(error.starts_with(&format!("{name}:")), "{error}");
     }
     let mut duplicate = original.clone();
     let routes = original

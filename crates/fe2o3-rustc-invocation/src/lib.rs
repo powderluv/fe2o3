@@ -17,6 +17,7 @@ mod model;
 mod model_v2;
 mod model_v3;
 mod portable_metadata_v1;
+mod reference_enrollment_v1;
 mod rustc_args_v2;
 
 pub use codegen_metadata_v1::{
@@ -58,6 +59,11 @@ pub use model_v3::{MAX_DESCRIPTOR_BYTES_V3, RustcInvocationDescriptorV3};
 pub use portable_metadata_v1::{
     PORTABLE_SELECTED_METADATA_DOMAIN_V1, PortableMetadataErrorV1, PortablePackageIdentityV1,
     capture_cargo_package_identity_v1, portable_rustc_metadata_v1,
+};
+pub use reference_enrollment_v1::{
+    MAX_REFERENCE_ENROLLMENT_BINDINGS_V1, MAX_REFERENCE_ENROLLMENT_BYTES_V1,
+    MAX_REFERENCE_ENROLLMENT_SELECTOR_BYTES_V1, REFERENCE_ENROLLMENT_ENV_V1,
+    ReferenceEnrollmentBindingV1, ReferenceEnrollmentDecodeErrorV1, ReferenceEnrollmentRequestV1,
 };
 pub use rustc_args_v2::{
     RUSTC_SEPARATE_VALUE_OPTIONS_V2, RustcArgsErrorV2, RustcCompileInvocationV2, RustcInvocationV2,

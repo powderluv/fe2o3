@@ -6,6 +6,12 @@ compile_error!("fe2o3-worker-v3-verification-service requires Linux descriptor s
 
 mod service;
 mod service_v2;
+mod service_v3;
+
+pub use service_v3::{
+    WorkerV3VerificationReadinessFailureV3, WorkerV3VerificationReadyServiceSessionV3,
+    WorkerV3VerificationServiceErrorV3,
+};
 
 pub use service::{
     FramedWorkerV3VerificationSessionV1, RejectedWorkerV3VerificationSessionV1,

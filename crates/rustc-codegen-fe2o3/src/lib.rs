@@ -121,6 +121,7 @@ mod protected_compiler_execution;
 mod protected_rustc_invocation;
 mod reference_effect_bijection_v1;
 mod reference_effect_v1;
+mod reference_enrollment_policy_v1;
 mod rust_type_layout_general;
 mod rust_type_layout_v3;
 mod rustc_semantic_adapter_v1;
@@ -424,26 +425,32 @@ impl CodegenBackend for Fe2o3CodegenBackend {
                         ) {
                             tcx.dcx().fatal(format!("[rustc-codegen-fe2o3] {error}"));
                         }
-                        let closure = match collector::collect_authenticated_kernel_closure_v1(
+                        let mut invocation = protected_rustc_invocation.take().unwrap_or_else(|| {
+                            tcx.dcx().fatal(
+                                "[rustc-codegen-fe2o3] production compilation requires protected rustc invocation custody",
+                            )
+                        });
+                        let (compiler_execution, closure) = compiler_execution
+                            .with_reference_enrollment(&mut invocation, |loan| {
+                                Ok(match collector::collect_authenticated_kernel_closure_with_enrollment_v1(
                                 tcx,
                                 mono_partitions.codegen_units,
                                 self.config.verbose,
                                 target,
                                 context_producers,
+                                loan,
                             ) {
                                 Ok(closure) => closure,
                                 Err(error) => tcx.dcx().fatal(format!(
                                     "[rustc-codegen-fe2o3] production collection failed without fallback: {error}"
                                 )),
-                            };
+                            })
+                        }).unwrap_or_else(|error| tcx.dcx().fatal(format!(
+                            "[rustc-codegen-fe2o3] reference enrollment failed without fallback: {error}"
+                        )));
                         let output_dir = output_dir
                             .expect("device output was required above")
                             .to_path_buf();
-                        let invocation = protected_rustc_invocation.take().unwrap_or_else(|| {
-                                tcx.dcx().fatal(
-                                    "[rustc-codegen-fe2o3] production compilation requires protected rustc invocation custody",
-                                )
-                            });
                         let producer = match artifact_transaction::ProducerIdentity::from_rustc_invocation_descriptor_v3(
                             invocation.descriptor(),
                         ) {

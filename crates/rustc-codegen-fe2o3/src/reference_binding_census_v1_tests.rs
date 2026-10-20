@@ -94,7 +94,7 @@ fn binding() -> AuthenticatedReferenceEffectBindingV1 {
         })),
     };
     AuthenticatedReferenceEffectBindingV1 {
-        registration_path: "fixture::registration".into(),
+        origin: ReferenceBindingOriginV1::SourceRegistration("fixture::registration".into()),
         logical_kernel_name: "fixture".into(),
         kernel: identity(),
         reference: identity(),
@@ -322,7 +322,11 @@ fn string_and_signature_array_payloads_receive_full_byte_debits() {
     let original = binding();
     let baseline = measure(&original, &original, 0).1;
     let mut longer_name = original.clone();
-    longer_name.registration_path.push_str(&"x".repeat(257));
+    longer_name
+        .origin
+        .source_registration_mut_v1()
+        .unwrap()
+        .push_str(&"x".repeat(257));
     assert_eq!(measure(&longer_name, &longer_name, 0).1, baseline + 4 * 257);
     let mut more_inputs = original.clone();
     let mut kernel = more_inputs.signature_preimage.kernel_inputs().to_vec();
@@ -368,7 +372,9 @@ fn exact_expression_depth_is_admitted_but_either_overdeep_operand_refuses_before
     let ordinary = binding();
     let mut overdeep = binding();
     overdeep
-        .registration_path
+        .origin
+        .source_registration_mut_v1()
+        .unwrap()
         .push_str("_different_before_any_expression");
     overdeep.observable_output_writes[0].rhs = unary_chain(depth + 1);
     for (lhs, rhs) in [(&ordinary, &overdeep), (&overdeep, &ordinary)] {

@@ -9,6 +9,13 @@ use std::{
 
 const CAPACITY: usize = 127;
 const FLOOR: usize = METADATA + CAPACITY + 19;
+
+#[path = "cpu_mapping_tests.rs"]
+mod cpu_mapping;
+#[path = "cpu_origins_tests.rs"]
+mod cpu_origins;
+#[path = "denial_tests.rs"]
+mod denials;
 struct Dropped<'a>(&'a Cell<usize>);
 impl Drop for Dropped<'_> {
     fn drop(&mut self) {
@@ -137,14 +144,13 @@ fn conditional_native_recovery_component_entry_exact_short_capacity_and_work() {
 }
 
 #[test]
-fn conditional_native_recovery_component_success_preserves_original_denials_and_floor() {
+fn conditional_native_recovery_component_success_preserves_clean_account_and_floor() {
     let mut work = Work::new(100);
     let mut b = Budget::new(&mut work, MAX_STORAGE);
     b.reserve_storage(FLOOR).unwrap();
     b.charge_work(7).unwrap();
-    assert!(b.charge_work(usize::MAX).is_err());
-    assert!(b.reserve_storage(usize::MAX).is_err());
     let denials = (b.failed_work(), b.failed_storage());
+    assert_eq!(denials, (None, None));
     let ledger = b.work_ledger_identity_v1();
     let drops = Cell::new(0);
     let entry = begin(CAPACITY, &mut b).unwrap();

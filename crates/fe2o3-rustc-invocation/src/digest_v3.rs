@@ -20,10 +20,18 @@ impl InvocationDigestV3 {
     /// Calculates the V3 domain-separated digest of a descriptor.
     pub fn calculate(descriptor: &RustcInvocationDescriptorV3) -> Result<Self, DigestError> {
         let encoded = encode_descriptor_v3(descriptor)?;
+        Self::calculate_encoded(&encoded)
+    }
+
+    /// Hashes already-encoded bytes without allocating or re-encoding them.
+    ///
+    /// This does not validate canonicality or authenticate the input. Callers
+    /// requiring a descriptor must retain its original validated encoding.
+    pub fn calculate_encoded(encoded: &[u8]) -> Result<Self, DigestError> {
         let mut hasher = Sha256::new();
         hasher.update(INVOCATION_DIGEST_DOMAIN_V3);
         hasher.update((encoded.len() as u64).to_le_bytes());
-        hasher.update(&encoded);
+        hasher.update(encoded);
         Self::from_bytes(hasher.finalize().into())
     }
 

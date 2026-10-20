@@ -260,8 +260,11 @@ fn serial_dependencies_execute_and_copy_back_typed_bytes() {
 
 #[test]
 fn schedule_recording_respects_the_configured_resident_budget() {
+    // The preflight plan plus the full 1 << 19 decision reservation exceeds 256 MiB.
+    // Keep that refusal and use 1 << 18 decisions for success at the same cap.
     for (max_schedule_decisions, max_resident_bytes, succeeds) in [
-        (1 << 19, 256 << 20, true),
+        (1 << 18, 256 << 20, true),
+        (1 << 19, 256 << 20, false),
         (1 << 20, 256 << 20, false),
         (1 << 20, 512 << 20, true),
     ] {

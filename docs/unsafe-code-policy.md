@@ -41,6 +41,53 @@ source inventory and remain part of the system's trust boundary.
 
 ## Implementation Rules
 
+### Owned-Input Descriptor Probe Review (2026-10-19)
+
+The compiler owner and integrating reviewer examined
+`crates/fe2o3-host/src/compiler_execution_current_record_audit/tests/owned_input.rs`
+at commit `3296c5112f2fc13511652e7a4f535697f0b2c161`, Git blob
+`d085412309ee35bd3d95e4753f5ece1a2c414f6a`. This records exactly one
+test-only unsafe block; the reviewed Rust source is unchanged.
+
+The private `descriptor_flags` helper calls `libc::fcntl(raw, libc::F_GETFD)`
+only to query scalar descriptor flags, including `EBADF` for retired numeric
+slots. A retired slot cannot support the valid `BorrowedFd` required by a
+safe `AsFd` interface; constructing such a borrow would assert the validity
+these tests deliberately check. The fixed query takes no pointer and neither
+adopts ownership nor closes or mutates the descriptor. Negative results capture
+`last_os_error` immediately. Callers use it only for test-owned slot-retirement,
+CLOEXEC and no-stale-close observations.
+
+This is a contemporaneous slot observation, not evidence of immutable identity,
+open-file-description exclusivity, inheritance provenance or production authority.
+It is not a memory-safety proof, native qualification or permission to admit other
+unsafe constructs. Only this file's `{"block": 1}` inventory entry is added;
+all existing entries, the inventory checker and production guards are unchanged.
+
+### Reference Enrollment Inventory Review (2026-10-15)
+
+The three files below were reviewed at `622f671266926639173cb0b7fac82481f8ae966c`
+and are unchanged since `8c27e0029db793a56974ca8974df11fa678fd39e`.
+Only their stale inventory entries change; no unsafe source, checker or
+unrelated allowance changes.
+
+The native application `worker.rs` now records four blocks and two functions.
+The sole unsafe entry forwards the original exclusive fixed-descriptor contract
+to its private helper. The original owned budget outlives the complete callback;
+the fcntl, from_raw_fd and prctl obligations and retained custody are unchanged.
+
+The test-only `reference_enrollment_count_no_alloc.rs` observer records four
+blocks, four functions and one implementation. Pointer/Layout obligations pass unchanged to System. Its const
+Cell TLS observer does not allocate; the materializing-decode positive control
+checks that allocation observation is active.
+
+The isolated `protected_reference_enrollment_loan_v1_flow_fixture.rs` records
+three blocks. Its child-only pre_exec remap uses close/dup2 with owned sources above all fixed slots. The sole
+child adopts FD198 once for the image-check lifetime, and F_GETFD only observes
+the consumed invocation slot. Bounded wait/kill/reap cleanup remains unchanged.
+These reviews and affected CPU controls are not a memory-safety proof,
+protected compiler admission, native qualification or GPU execution.
+
 ### Native Timestamp Inventory Review (2026-10-08)
 
 Two reviewers examined the three timestamp-diagnostic files omitted from the

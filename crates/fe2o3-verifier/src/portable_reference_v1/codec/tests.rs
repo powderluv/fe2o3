@@ -9,6 +9,9 @@ mod resources;
 #[path = "roundtrip_tests.rs"]
 mod roundtrips;
 
+#[path = "policy_tests.rs"]
+mod policy;
+
 struct Fixture {
     signature: ReferenceLogicalSignaturePreimageV1,
     ir: ReferenceEffectIrV1,

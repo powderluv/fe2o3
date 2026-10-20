@@ -361,9 +361,43 @@ impl RawMirPreflightCountsV1 {
 pub(crate) struct SourceClosureWorkV1 {
     limits: SemanticMirLimitsV1,
     counts: RawMirPreflightCountsV1,
+    identity: Option<std::sync::Arc<()>>,
+}
+
+/// A process-local account comparison, never serialized admission evidence.
+#[derive(Debug)]
+pub(crate) struct SourceClosureWorkStampV1 {
+    identity: std::sync::Weak<()>,
 }
 
 impl SourceClosureWorkV1 {
+    pub(crate) fn retain_identity_v1(
+        &mut self,
+    ) -> Result<SourceClosureWorkStampV1, ProductionSemanticPreflightErrorV1> {
+        // Charge the logical retained payload and identity operation before
+        // allocation. This does not claim to measure allocator metadata.
+        self.charge(
+            1 + std::mem::size_of::<SourceClosureWorkStampV1>() + 2 * std::mem::size_of::<usize>(),
+        )?;
+        let identity = self.identity.get_or_insert_with(|| std::sync::Arc::new(()));
+        Ok(SourceClosureWorkStampV1 {
+            identity: std::sync::Arc::downgrade(identity),
+        })
+    }
+
+    pub(crate) fn matches_identity_v1(
+        &mut self,
+        stamp: &SourceClosureWorkStampV1,
+    ) -> Result<bool, ProductionSemanticPreflightErrorV1> {
+        self.charge(1)?;
+        Ok(self.identity.as_ref().is_some_and(|current| {
+            stamp
+                .identity
+                .upgrade()
+                .is_some_and(|original| std::sync::Arc::ptr_eq(current, &original))
+        }))
+    }
+
     pub(crate) fn limits(&self) -> SemanticMirLimitsV1 {
         self.limits
     }
@@ -781,7 +815,11 @@ pub(crate) fn build_production_semantic_preflight_plan_with_work_v1<'tcx>(
         SourceClosureWorkV1,
     ),
 ) -> Result<ProductionSemanticPreflightPlanV1<'tcx>, ProductionSemanticPreflightErrorV1> {
-    let SourceClosureWorkV1 { limits, mut counts } = work;
+    let SourceClosureWorkV1 {
+        limits,
+        mut counts,
+        identity: _,
+    } = work;
     counts.charge(SemanticMirResourceV1::Functions, functions.len(), limits)?;
     counts.charge(SemanticMirResourceV1::Roots, roots.len(), limits)?;
 

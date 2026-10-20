@@ -37,6 +37,8 @@ pub struct AdmittedSimulationInputV1 {
     /// Complete content identity of the exact admitted canonical bundle bytes.
     simulation_bundle_identity: Option<[u8; 32]>,
     simulation_bundle_evidence: Option<AdmittedSimulationBundleEvidenceV1>,
+    // Captured simulator identity; legacy bundles may retain a different production KIR.
+    simulation_bundle_kir_identity: Option<fe2o3_kir_sim::SimulationKernelIrIdentityV1>,
     bundle_target_v1: Option<AdmittedBundleTargetV1>,
     pub kir_sha256: [u8; 32],
     pub request_sha256: [u8; 32],
@@ -102,6 +104,27 @@ impl AdmittedSimulationInputV1 {
         // bundle-backed input. Bundle metadata must never relabel raw V16/V17.
         if !matches!(self.module.identity().wire_version(), 7 | 9 | 10 | 11 | 12) {
             return Err(unsupported());
+        }
+        // Public fields may be replaced after admission. Bundle schedules must
+        // still describe the exact simulator KIR captured with that bundle.
+        // Its identity can differ from the bundle's production KIR identity.
+        let identity = self.module.identity();
+        if self.kir_sha256 != *identity.digest()
+            || self
+                .simulation_bundle_kir_identity
+                .is_some_and(|captured| captured != *identity)
+            || self.simulation_bundle_identity.is_some()
+                != self.simulation_bundle_kir_identity.is_some()
+            || self.simulation_bundle_evidence.is_some_and(|evidence| {
+                Some(evidence.envelope_identity) != self.simulation_bundle_identity
+                    || Some(evidence.subject_identity) != self.simulation_bundle_subject
+            })
+        {
+            return Err(SimulationInputErrorV1 {
+                stage: "arguments".to_owned(),
+                code: "schedule_input_unsupported".to_owned(),
+                message: "persisted schedules require a consistent admitted KIR identity and retained bundle identity".to_owned(),
+            });
         }
         let artifact = match (
             self.simulation_bundle_identity,
@@ -1026,3 +1049,6 @@ pub use linux::physical_lds_exchange_debug_v22::{
     PhysicalLdsExchangeDebugInputStorageV22, PhysicalLdsExchangeDebugInputV22,
     load_physical_lds_exchange_debug_input_v22,
 };
+
+#[cfg(test)]
+mod persisted_schedule_identity_tests;

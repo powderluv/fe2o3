@@ -79,8 +79,20 @@ pub(super) fn authenticate_v1<'tcx>(
     tcx: TyCtxt<'tcx>,
     functions: &mut [CollectedFunction<'tcx>],
     graph: CallGraphV1,
+    work: SourceClosureWorkV1,
+    verbose: bool,
+) -> Result<AuthenticatedClosureFlowV1<'tcx>, Error> {
+    authenticate_with_enrollment_v1(tcx, functions, graph, work, verbose, None, None)
+}
+
+pub(super) fn authenticate_with_enrollment_v1<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    functions: &mut [CollectedFunction<'tcx>],
+    graph: CallGraphV1,
     mut work: SourceClosureWorkV1,
     verbose: bool,
+    enrollment: Option<super::reference_enrollment_v1::RetainedEnrollmentV1<'tcx>>,
+    loan: Option<&crate::protected_compiler_execution::native_v3::ReferenceEnrollmentLoanV1<'_>>,
 ) -> Result<AuthenticatedClosureFlowV1<'tcx>, Error> {
     let admissions = observe_v1(tcx, functions, &graph, &mut work)?;
     for (function, admission) in functions.iter_mut().zip(admissions) {
@@ -95,8 +107,10 @@ pub(super) fn authenticate_v1<'tcx>(
     }
     charge(&mut work, functions.len())?;
     let references =
-        super::reference_custody_v1::RetainedReferenceInputsV1::capture(tcx, functions, &mut work)
-            .map_err(|error| Error::new(error.to_string()))?;
+        super::reference_custody_v1::RetainedReferenceInputsV1::capture_with_enrollment(
+            tcx, functions, &mut work, enrollment, loan,
+        )
+        .map_err(|error| Error::new(error.to_string()))?;
     Ok(AuthenticatedClosureFlowV1 {
         functions: functions.iter().map(|f| (f.instance, f.role)).collect(),
         bodies: functions
@@ -110,6 +124,28 @@ pub(super) fn authenticate_v1<'tcx>(
 }
 
 impl<'tcx> AuthenticatedClosureFlowV1<'tcx> {
+    pub(super) fn rederive_reference_bindings_and_inventory_v1(
+        &mut self,
+        tcx: TyCtxt<'tcx>,
+        collection: &CollectionResult<'tcx>,
+        loan: Option<
+            &crate::protected_compiler_execution::native_v3::ReferenceEnrollmentLoanV1<'_>,
+        >,
+    ) -> Result<
+        (
+            crate::reference_effect_v1::AuthenticatedReferenceEffectBindingsV1,
+            Option<super::reference_custody_v1::PendingOriginalRootAssociationsV1<'tcx>>,
+        ),
+        crate::reference_effect_v1::ReferenceBindingErrorV1,
+    > {
+        self.references.rederive_with_inventory_capture(
+            tcx,
+            &collection.functions,
+            &mut self.work,
+            loan,
+        )
+    }
+
     pub(super) fn rederive_reference_bindings_v1(
         &mut self,
         tcx: TyCtxt<'tcx>,
@@ -118,8 +154,22 @@ impl<'tcx> AuthenticatedClosureFlowV1<'tcx> {
         crate::reference_effect_v1::AuthenticatedReferenceEffectBindingsV1,
         crate::reference_effect_v1::ReferenceBindingErrorV1,
     > {
+        self.rederive_reference_bindings_with_enrollment_v1(tcx, collection, None)
+    }
+
+    pub(super) fn rederive_reference_bindings_with_enrollment_v1(
+        &mut self,
+        tcx: TyCtxt<'tcx>,
+        collection: &CollectionResult<'tcx>,
+        loan: Option<
+            &crate::protected_compiler_execution::native_v3::ReferenceEnrollmentLoanV1<'_>,
+        >,
+    ) -> Result<
+        crate::reference_effect_v1::AuthenticatedReferenceEffectBindingsV1,
+        crate::reference_effect_v1::ReferenceBindingErrorV1,
+    > {
         self.references
-            .rederive(tcx, &collection.functions, &mut self.work)
+            .rederive_with_enrollment(tcx, &collection.functions, &mut self.work, loan)
     }
 
     pub(super) fn revalidate_for_import_v1(

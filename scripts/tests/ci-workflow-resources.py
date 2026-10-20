@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import stat
 import subprocess
 import tempfile
@@ -103,6 +104,86 @@ def core_groups(source: str) -> tuple[str, ...]:
     return matched[0]
 
 
+
+ROW_MODES = ("debug", "release", "clippy")
+ROW_ROUTES = (
+    ("Run debug tests", "debug",
+     "target/debug/cargo-fe2o3 test --locked --all-targets "
+     "--manifest-path examples/row_softmax_v1/Cargo.toml"),
+    ("Run release tests", "release",
+     "target/debug/cargo-fe2o3 test --release --locked --all-targets "
+     "--manifest-path examples/row_softmax_v1/Cargo.toml"),
+    ("Run strict Clippy", "clippy",
+     "target/debug/cargo-fe2o3 clippy --locked --all-targets --all-features "
+     "--manifest-path examples/row_softmax_v1/Cargo.toml -- -D warnings"),
+)
+ROW_SHARED_STEPS = (
+    ("Check out repository",
+     "        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n"
+     "        with:\n"
+     "          fetch-depth: 0"),
+    ("Check hosted CI resource contracts",
+     "        run: python3 -I -B scripts/tests/ci-workflow-resources.py"),
+    ("Install pinned Rust toolchain",
+     "        run: rustup show active-toolchain"),
+    ("Check formatting",
+     "        run: >-\n"
+     "          cargo fmt --manifest-path examples/row_softmax_v1/Cargo.toml\n"
+     "          --package fe2o3-row-softmax-v1 -- --check"),
+    ("Build binding-aware Cargo driver",
+     "        run: cargo build --locked -p cargo-fe2o3"),
+)
+
+
+def row_modes(source: str) -> tuple[str, ...]:
+    owner = job(source, "host-contract")
+    strategy = (
+        "    strategy:\n"
+        "      fail-fast: false\n"
+        "      matrix:\n"
+        "        mode:\n"
+        + "".join(f"          - {mode}\n" for mode in ROW_MODES)
+        + "    env:\n"
+    )
+    if owner.count("    strategy:\n") != 1 or owner.count(strategy) != 1:
+        raise ValueError("host matrix must run debug, release, and clippy exactly once")
+    for field, expected in (
+        ("name", "Host contract and fail-closed source checks (${{ matrix.mode }})"),
+        ("runs-on", "ubuntu-24.04"),
+        ("timeout-minutes", "15"),
+    ):
+        if re.findall(rf"(?m)^    {field}: (.+)$", owner) != [expected]:
+            raise ValueError(f"host matrix changed {field}")
+    profiles(owner, ROW_PROFILE_LINES)
+    header = owner.split("    steps:\n", 1)[0]
+    if "continue-on-error" in owner or "if:" in header:
+        raise ValueError("all host modes must be mandatory")
+    steps = re.findall(
+        r"(?ms)^      - name: ([^\n]+)\n(.*?)(?=^      - name: |\Z)", owner
+    )
+    names = tuple(name for name, _ in steps)
+    expected_names = tuple(name for name, _ in ROW_SHARED_STEPS) + tuple(
+        name for name, _, _ in ROW_ROUTES
+    )
+    if owner.count("    steps:\n") != 1 or names != expected_names:
+        raise ValueError("host modes must retain all shared and routed steps in order")
+    for (name, body), (_, expected) in zip(steps, ROW_SHARED_STEPS):
+        if body.rstrip("\n") != expected:
+            raise ValueError(f"host matrix changed shared step {name}")
+    for (name, body), (_, mode, command) in zip(steps[len(ROW_SHARED_STEPS):], ROW_ROUTES):
+        route = re.fullmatch(
+            rf"        if: matrix\.mode == '{mode}'\n"
+            r"        run: >-\n((?:          [^\n]+\n)+)",
+            body.rstrip("\n") + "\n",
+        )
+        if route is None:
+            raise ValueError(f"host matrix changed conditional route {name}")
+        folded = " ".join(line.strip() for line in route[1].splitlines())
+        if shlex.split(folded) != shlex.split(command):
+            raise ValueError(f"host matrix changed validation command {name}")
+    return ROW_MODES
+
+
 class WorkflowContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -178,6 +259,72 @@ class WorkflowContractTests(unittest.TestCase):
             "pub(crate) const MAX_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;",
             executable_source,
         )
+
+
+    def test_row_modes_are_mandatory_independent_and_exactly_routed(self) -> None:
+        self.assertEqual(row_modes(self.row), ROW_MODES)
+        self.assertEqual(len(set(ROW_MODES)), 3)
+
+    def test_row_matrix_cannot_omit_duplicate_or_replace_a_mode(self) -> None:
+        for mode in ROW_MODES:
+            entry = f"          - {mode}\n"
+            for replacement in ("", entry + entry, "          - unknown\n"):
+                with self.subTest(mode=mode, replacement=replacement):
+                    changed = self.row.replace(entry, replacement, 1)
+                    self.assertNotEqual(changed, self.row)
+                    with self.assertRaises(ValueError):
+                        row_modes(changed)
+        for old, new in (
+            ("      fail-fast: false\n", "      fail-fast: true\n"),
+            ("          - clippy\n", "          - clippy\n        exclude: []\n"),
+            ("    steps:\n", "    if: false\n    steps:\n"),
+            ("    steps:\n", "    continue-on-error: true\n    steps:\n"),
+        ):
+            with self.subTest(old=old):
+                host = job(self.row, "host-contract")
+                changed = host.replace(old, new, 1)
+                self.assertNotEqual(changed, host)
+                with self.assertRaises(ValueError):
+                    row_modes(self.row.replace(host, changed, 1))
+
+    def test_row_routes_cannot_skip_swap_or_weaken_commands(self) -> None:
+        for _, mode, _ in ROW_ROUTES:
+            route = f"        if: matrix.mode == '{mode}'"
+            for replacement in ("", route.replace(mode, "unknown"), route + " && false"):
+                with self.subTest(mode=mode, replacement=replacement):
+                    changed = self.row.replace(route, replacement, 1)
+                    self.assertNotEqual(changed, self.row)
+                    with self.assertRaises(ValueError):
+                        row_modes(changed)
+        for old, new in (
+            ("test --release --locked", "test --locked"),
+            ("clippy --locked --all-targets --all-features", "clippy --locked --all-targets"),
+            ("--manifest-path examples/row_softmax_v1/Cargo.toml -- -D warnings",
+             "--manifest-path examples/row_softmax_v1/Cargo.toml"),
+            ("run: cargo build --locked -p cargo-fe2o3", "run: cargo build -p cargo-fe2o3"),
+            ("          fetch-depth: 0", "          fetch-depth: 1"),
+        ):
+            with self.subTest(old=old):
+                changed = self.row.replace(old, new, 1)
+                self.assertNotEqual(changed, self.row)
+                with self.assertRaises(ValueError):
+                    row_modes(changed)
+
+    def test_row_modes_cannot_widen_resources_or_substitute_shared_steps(self) -> None:
+        for old, new in (
+            ("    timeout-minutes: 15", "    timeout-minutes: 30"),
+            ("    runs-on: ubuntu-24.04", "    runs-on: self-hosted"),
+            ("      CARGO_PROFILE_TEST_DEBUG: '0'", "      CARGO_PROFILE_TEST_DEBUG: '1'"),
+            ("run: rustup show active-toolchain", "run: true"),
+            ("run: python3 -I -B scripts/tests/ci-workflow-resources.py", "run: true"),
+        ):
+            with self.subTest(old=old):
+                host = job(self.row, "host-contract")
+                changed = host.replace(old, new, 1)
+                self.assertNotEqual(changed, host)
+                with self.assertRaises(ValueError):
+                    row_modes(self.row.replace(host, changed, 1))
+
 
     def test_preparation_is_exactly_once_before_the_unchanged_gate(self) -> None:
         generic = job(self.ci, "generic-core")

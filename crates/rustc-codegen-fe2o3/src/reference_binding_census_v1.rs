@@ -82,7 +82,7 @@ impl<'binding> BindingCensusV1<'binding, '_> {
     ) -> CensusResultV1<()> {
         self.record::<AuthenticatedReferenceEffectBindingV1>()?;
         let AuthenticatedReferenceEffectBindingV1 {
-            registration_path,
+            origin,
             logical_kernel_name,
             kernel: _,
             reference: _,
@@ -91,7 +91,7 @@ impl<'binding> BindingCensusV1<'binding, '_> {
             effect_ir,
             observable_output_writes,
         } = binding;
-        self.bytes(registration_path.len())?;
+        self.bytes(origin.retained_payload_bytes_v1())?;
         self.bytes(logical_kernel_name.len())?;
         self.record::<ReferenceLogicalSignaturePreimageV1>()?;
         self.flat(signature_preimage.kernel_inputs())?;
