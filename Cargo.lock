@@ -342,16 +342,16 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "syn 2.0.119",
  "toml",
 ]
 
 [[package]]
 name = "cc"
-version = "1.4.4"
+version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ad534f4357a5264cce5019c989cf66a4f0dc4e0d1b1d15f8aacec0ff7360273"
+checksum = "6651c9ed80effdc7db0ff72512157f901af5e3549e341e24b1dd4887d836d838"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -575,7 +575,7 @@ dependencies = [
  "fe2o3-kernel-ir",
  "fe2o3-pliron-owner-core",
  "pliron",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -737,7 +737,7 @@ dependencies = [
  "fe2o3-llvm-handoff",
  "rustix",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -746,14 +746,14 @@ version = "0.1.0"
 dependencies = [
  "fe2o3-hsaco",
  "rmpv",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
 name = "fe2o3-aql"
 version = "0.1.0"
 dependencies = [
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -767,7 +767,7 @@ dependencies = [
  "fe2o3-rustc-invocation",
  "libc",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -776,7 +776,7 @@ version = "0.1.0"
 dependencies = [
  "fe2o3-artifact-transaction",
  "fe2o3-kernel-descriptor",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -809,7 +809,7 @@ dependencies = [
  "libc",
  "rustix",
  "serde",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
  "zeroize",
 ]
@@ -818,7 +818,7 @@ dependencies = [
 name = "fe2o3-build-authority"
 version = "0.1.0"
 dependencies = [
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -837,7 +837,7 @@ dependencies = [
  "fe2o3-rustc-invocation",
  "libc",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "subtle",
  "zeroize",
 ]
@@ -856,7 +856,7 @@ dependencies = [
  "fe2o3-runtime-protocol",
  "libc",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -882,7 +882,7 @@ dependencies = [
  "fe2o3-rustc-invocation",
  "libc",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "subtle",
  "tempfile",
  "zeroize",
@@ -898,7 +898,7 @@ dependencies = [
  "fe2o3-kernel-ir",
  "fe2o3-loop-device",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "signal-hook",
  "tempfile",
  "zeroize",
@@ -939,7 +939,7 @@ dependencies = [
  "fe2o3-external-anchor-protocol",
  "fe2o3-kernel-ir",
  "fe2o3-rustc-invocation",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -962,7 +962,7 @@ dependencies = [
  "fe2o3-static-preexec-manifest",
  "libc",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
 ]
 
@@ -976,7 +976,7 @@ dependencies = [
  "fe2o3-kernel-descriptor",
  "fe2o3-rustc-invocation",
  "reserved-fe2o3-symbols",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -987,14 +987,14 @@ dependencies = [
  "fe2o3-build-authority",
  "fe2o3-kernel-descriptor",
  "fe2o3-rustc-invocation",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
 name = "fe2o3-completion"
 version = "0.1.0"
 dependencies = [
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1041,7 +1041,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1050,7 +1050,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1059,7 +1059,7 @@ version = "0.1.0"
 dependencies = [
  "fe2o3-amd-target",
  "fe2o3-macros",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "trybuild",
 ]
 
@@ -1078,7 +1078,7 @@ dependencies = [
 name = "fe2o3-drm-uapi"
 version = "0.1.0"
 dependencies = [
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1099,7 +1099,7 @@ dependencies = [
  "fe2o3-protected-static-executable",
  "libc",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
 ]
 
@@ -1108,7 +1108,7 @@ name = "fe2o3-external-anchor-protocol"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1126,7 +1126,7 @@ dependencies = [
  "fe2o3-runtime-protocol",
  "libc",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
 ]
 
@@ -1146,7 +1146,7 @@ dependencies = [
  "fe2o3-runtime-protocol",
  "libc",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
 ]
 
@@ -1164,7 +1164,7 @@ version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "fe2o3-proof-contracts",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1231,7 +1231,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
  "trybuild",
 ]
@@ -1247,7 +1247,7 @@ dependencies = [
  "fe2o3-artifact-transaction",
  "object 0.39.1",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
 ]
 
@@ -1275,7 +1275,7 @@ dependencies = [
  "reserved-fe2o3-symbols",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "trybuild",
 ]
 
@@ -1317,7 +1317,7 @@ dependencies = [
  "reserved-fe2o3-symbols",
  "rmpv",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "trybuild",
 ]
 
@@ -1332,7 +1332,7 @@ dependencies = [
  "rmpv",
  "rustc_apfloat",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1340,7 +1340,7 @@ name = "fe2o3-kernel-descriptor"
 version = "0.1.0"
 dependencies = [
  "fe2o3-amd-target",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1349,7 +1349,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1381,7 +1381,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "zeroize",
 ]
 
@@ -1389,7 +1389,7 @@ dependencies = [
 name = "fe2o3-kfd-uapi"
 version = "0.1.0"
 dependencies = [
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1409,7 +1409,7 @@ dependencies = [
  "rustc_apfloat",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1421,7 +1421,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1431,7 +1431,7 @@ dependencies = [
  "fe2o3-kernel-ir",
  "fe2o3-kir-sim",
  "fe2o3-semantic-trace",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1439,7 +1439,7 @@ name = "fe2o3-llvm-handoff"
 version = "0.1.0"
 dependencies = [
  "fe2o3-amd-target",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1447,7 +1447,7 @@ name = "fe2o3-llvm-text"
 version = "0.1.0"
 dependencies = [
  "fe2o3-llvm-handoff",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1477,7 +1477,7 @@ dependencies = [
  "fe2o3-pliron",
  "fe2o3-proof-contracts",
  "pliron",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1509,7 +1509,7 @@ dependencies = [
  "fe2o3-compiler-ffi",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1553,7 +1553,7 @@ dependencies = [
  "fe2o3-pliron-owner-core",
  "fe2o3-proof-contracts",
  "pliron",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "syn 2.0.119",
  "trybuild",
 ]
@@ -1608,7 +1608,7 @@ dependencies = [
  "fe2o3-rustc-invocation",
  "libc",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1642,7 +1642,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1678,7 +1678,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
 ]
 
@@ -1699,7 +1699,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror",
  "tokio",
@@ -1736,7 +1736,7 @@ dependencies = [
  "fe2o3-static-executable-format",
  "libc",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
 ]
 
@@ -1825,7 +1825,7 @@ dependencies = [
  "rmpv",
  "rustix",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tokio",
 ]
 
@@ -1856,14 +1856,14 @@ dependencies = [
  "fe2o3-hsaco-finalize",
  "fe2o3-kernel-ir",
  "fe2o3-static-executable-format",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
 name = "fe2o3-rustc-front"
 version = "0.1.0"
 dependencies = [
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1875,7 +1875,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1910,7 +1910,7 @@ dependencies = [
  "rmpv",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1927,7 +1927,7 @@ dependencies = [
  "rmpv",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1943,7 +1943,7 @@ dependencies = [
  "fe2o3-host-api",
  "fe2o3-kfd",
  "fe2o3-service-model",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1968,7 +1968,7 @@ dependencies = [
  "fe2o3-kir-sim-cli",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1983,7 +1983,7 @@ dependencies = [
  "fe2o3-runtime",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -2006,14 +2006,14 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
 name = "fe2o3-static-executable-format"
 version = "0.1.0"
 dependencies = [
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -2134,7 +2134,7 @@ dependencies = [
  "libc",
  "rand_core 0.6.4",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "syn 2.0.119",
  "toml",
 ]
@@ -2148,7 +2148,7 @@ dependencies = [
  "fe2o3-runtime-model",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -2162,7 +2162,7 @@ dependencies = [
  "fe2o3-virtual-runtime",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -2173,7 +2173,7 @@ dependencies = [
  "fe2o3-runtime-protocol",
  "fe2o3-worker-v3-verification-protocol",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
 ]
 
@@ -2184,7 +2184,7 @@ dependencies = [
  "fe2o3-hsaco",
  "fe2o3-kernel-descriptor",
  "fe2o3-runtime-protocol",
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -2198,7 +2198,7 @@ dependencies = [
  "fe2o3-worker-v3-verification-client",
  "fe2o3-worker-v3-verification-protocol",
  "rustix",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
 ]
 
@@ -2210,9 +2210,9 @@ checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.11"
+version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
+checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "foldhash"
@@ -2693,9 +2693,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.189"
+version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "linkme"
@@ -3179,7 +3179,7 @@ dependencies = [
 name = "reserved-fe2o3-symbols"
 version = "0.1.0"
 dependencies = [
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -3267,7 +3267,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.11.1",
  "syn 2.0.119",
  "toml",
 ]
@@ -3305,9 +3305,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.4"
+version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+checksum = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
 dependencies = [
  "bitflags",
  "errno",
@@ -3482,9 +3482,9 @@ dependencies = [
 
 [[package]]
 name = "sha2"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
+checksum = "47d7069beb7d6ac7b9acd1039986e73443f24234f41074da099d6f994ac9ad19"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.1",
@@ -3643,10 +3643,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "target-triple"
-version = "1.0.1"
+name = "target-tuple"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3a6bfce3d99adfa72d24750a61f782f3036a81e7f86d8841ee1326deaebd171"
+checksum = "876fef147edbcbddc8ac5cbbba92c7b86519e314e86638596c09673b2ed01e7f"
 
 [[package]]
 name = "tempfile"
@@ -3787,9 +3787,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "1.1.4+spec-1.1.0"
+version = "1.1.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aace63f4bbcdfc2c965b059de67119c89c4017a70d633be6c104910f67056f5"
+checksum = "920602543f0911ab71da12c50d59701da54c196d1a2bf5cb4b75667f137a406a"
 dependencies = [
  "indexmap",
  "serde_core",
@@ -3919,15 +3919,15 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "trybuild"
-version = "1.0.120"
+version = "1.0.122"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e605bf6b39357663d8ba4e984f8be8da8df6bb32e81031d6889024ea8fd68e4"
+checksum = "62db9c92d704393fbf2132041720cc80b689f2d3f28521015c2ac866223c11b8"
 dependencies = [
  "glob",
  "serde",
  "serde_derive",
  "serde_json",
- "target-triple",
+ "target-tuple",
  "termcolor",
  "toml",
 ]
