@@ -1000,7 +1000,8 @@ fn prepare_function_frame_v1<'source, 'service>(
                 })
             }
             PlannedParameterLocalBindingV1::Flattened { .. }
-            | PlannedParameterLocalBindingV1::Bf16Nominal { .. } => None,
+            | PlannedParameterLocalBindingV1::Bf16Nominal { .. }
+            | PlannedParameterLocalBindingV1::Wave64Nominal { .. } => None,
         }
     }));
     let failure_block = has_runtime_assert
@@ -1045,7 +1046,8 @@ fn prepare_function_frame_v1<'source, 'service>(
             Some(consumer) => Some(&mut *consumer as &mut (dyn ExecutionLifecycleConsumerV29 + '_)),
             None => None,
         },
-    )?;
+        None,
+)?;
     lowering.execution_calls = match execution_calls {
         Some(consumer) => Some(&mut *consumer as &mut (dyn ExecutionDefinedCallConsumerV29 + '_)),
         None => None,

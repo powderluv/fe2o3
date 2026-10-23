@@ -107,11 +107,25 @@ const SYSTEM_BATCHES: usize = 16;
 const COMBINE_BATCHES: usize = 4;
 
 #[cfg(feature = "hardware-test-hooks")]
+mod dimensions {
+    pub(super) use super::{
+        ALL_EXPERTS, ATTENTION_TOKENS_V1, CANDIDATES, CHANNELS_V1, DEEPSEEK_SPARSE_TOP_K_V1,
+        DISPATCH_CAPACITY, DRAFT_STEPS, EXPERTS, GRADIENT_SHARDS, HEAD_DIMENSION_V1, HIDDEN,
+        KDA_CHUNK_TOKENS_V1, KDA_KEY_DIMENSION_V1, KDA_STATE_ELEMENTS_V1, KDA_VALUE_DIMENSION_V1,
+        MIXING_STREAMS_V1, MUON_DIM, MUON_ELEMENTS, MUON_ITERATIONS, MUON_LEARNING_RATE, NGRAM,
+        OUTPUT, PREFILL_TOKENS_V1, QUERIES, SELECTED_BLOCKS_V1, SELECTED_TOKENS_V1,
+        SINKHORN_ITERATIONS_V1, STATE_WIDTH, SYSTEM_BATCHES, TABLE_SIZE, TOKENS,
+        TOKENS_PER_BLOCK_V1, TOP_K,
+    };
+}
+
+#[cfg(feature = "hardware-test-hooks")]
 #[path = "../../../examples/gfx950_advanced_attention/src/reference.rs"]
 mod attention_reference;
 #[cfg(feature = "hardware-test-hooks")]
 #[path = "../../../examples/gfx950_gpt_oss_decode/src/reference.rs"]
 mod gpt_oss_reference;
+
 #[cfg(feature = "hardware-test-hooks")]
 #[path = "../../../examples/gfx950_advanced_systems/src/reference.rs"]
 mod systems_reference;
@@ -599,6 +613,45 @@ fn require(condition: bool, message: impl Into<String>) -> Result<(), BoxError> 
 }
 
 #[cfg(feature = "hardware-test-hooks")]
+fn gpt_runtime_visibility_is_single(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        !value.is_empty()
+            && (value.bytes().all(|byte| byte.is_ascii_digit())
+                || value.strip_prefix("GPU-").is_some_and(|uuid| {
+                    uuid.len() == 16 && uuid.bytes().all(|byte| byte.is_ascii_hexdigit())
+                }))
+    })
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn require_gpt_runtime_visibility() -> Result<(), BoxError> {
+    let value = std::env::var_os("ROCR_VISIBLE_DEVICES");
+    require(
+        gpt_runtime_visibility_is_single(value.as_deref().and_then(|value| value.to_str())),
+        "GPT-OSS runtime requires one explicit ROCR_VISIBLE_DEVICES UUID or ordinal",
+    )
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+fn gpt_runtime_visibility_requires_one_explicit_device() {
+    for value in [
+        None,
+        Some(""),
+        Some("0,1"),
+        Some("-1"),
+        Some(" 0"),
+        Some("GPU-0123"),
+        Some("GPU-0123456789abcdeg"),
+    ] {
+        assert!(!gpt_runtime_visibility_is_single(value), "{value:?}");
+    }
+    for value in ["0", "12", "GPU-0123456789abcdef", "GPU-ABCDEF0123456789"] {
+        assert!(gpt_runtime_visibility_is_single(Some(value)), "{value:?}");
+    }
+}
+
+#[cfg(feature = "hardware-test-hooks")]
 fn kernarg_size(args: &[AbiArg]) -> usize {
     let size = args
         .iter()
@@ -831,9 +884,16 @@ fn input<T: Copy>(name: &'static str, values: &[T]) -> PlannedBuffer {
 fn output(name: &'static str, expected: ExpectedOutput) -> PlannedBuffer {
     let mut initial = vec![PREFIX_BYTE; GUARD_BYTES];
     match &expected {
-        ExpectedOutput::F32 { values, .. } => {
-            for _ in values {
-                initial.extend_from_slice(&F32_POISON_BITS.to_le_bytes());
+        ExpectedOutput::F32 {
+            values, exact_mask, ..
+        } => {
+            for (index, value) in values.iter().enumerate() {
+                let poison = if exact_mask.as_ref().is_some_and(|mask| mask[index]) {
+                    !value.to_bits()
+                } else {
+                    F32_POISON_BITS
+                };
+                initial.extend_from_slice(&poison.to_le_bytes());
             }
         }
         ExpectedOutput::U32(values) => {
@@ -1210,7 +1270,7 @@ fn attention_plans(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxError> {
             }
         }
         "gfx950_content_sparse_attention" | "gfx950_compressed_hybrid_attention" => {
-            if case == SPARSE_ATTENTION {
+            if [SPARSE_ATTENTION, SPARSE_ATTENTION_SIMT].contains(&case) {
                 let mut physical_q = Vec::new();
                 let mut key = Vec::new();
                 let mut value = Vec::new();
@@ -1858,26 +1918,29 @@ fn systems_plans(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxError> {
                 priorities.len(),
                 SYSTEM_BATCHES * QUERIES,
             ];
-            Ok(vec![LaunchPlan {
-                label: case.label.into(),
-                buffers: vec![
-                    input("queries", &queries),
-                    input("table_hashes", &hashes),
-                    input("table_grams", &grams),
-                    input("table_values", &values),
-                    input("priorities", &priorities),
-                    output("output", ExpectedOutput::I32(expected)),
-                ],
-                args: (0..6)
-                    .map(|buffer| PlannedArg::Slice {
-                        buffer,
-                        elements: lengths[buffer],
-                    })
-                    .collect(),
-            }])
+            Ok(vec![
+                LaunchPlan {
+                    label: case.label.into(),
+                    buffers: vec![
+                        input("queries", &queries),
+                        input("table_hashes", &hashes),
+                        input("table_grams", &grams),
+                        input("table_values", &values),
+                        input("priorities", &priorities),
+                        output("output", ExpectedOutput::I32(expected)),
+                    ],
+                    args: (0..6)
+                        .map(|buffer| PlannedArg::Slice {
+                            buffer,
+                            elements: lengths[buffer],
+                        })
+                        .collect(),
+                },
+                ngram_integer_plan(case),
+            ])
         }
         "gfx950_stage_gradient_shard_v1" => {
-            let shards = make_muon_shards();
+            let shards = make_stage_shards();
             Ok((0..GRADIENT_SHARDS)
                 .map(|shard| {
                     let values = (0..SYSTEM_BATCHES)
@@ -1961,14 +2024,61 @@ fn pack_mfma_blocked_output(logical_row_major: &[f32]) -> Result<Vec<f32>, BoxEr
     Ok(physical)
 }
 
+// GPT-OSS tile variants retain every input/guard and expose row-major 16x16 outputs.
+#[cfg(feature = "hardware-test-hooks")]
+const GPT_OSS_TILE: AdvancedCase = AdvancedCase {
+    label: "gfx950 GPT-OSS tile",
+    ..GPT_OSS
+};
+#[cfg(feature = "hardware-test-hooks")]
+const GPT_OSS_ROUTER_TILE: AdvancedCase = AdvancedCase {
+    label: "gfx950 GPT-OSS router tile",
+    ..GPT_OSS_ROUTER_COMPONENT
+};
+#[cfg(feature = "hardware-test-hooks")]
+const GPT_OSS_ATTENTION_TILE: AdvancedCase = AdvancedCase {
+    label: "gfx950 GPT-OSS attention tile",
+    ..GPT_OSS_ATTENTION_COMPONENT
+};
+#[cfg(feature = "hardware-test-hooks")]
+const GPT_OSS_EXPERT_TILE: AdvancedCase = AdvancedCase {
+    label: "gfx950 GPT-OSS expert tile",
+    ..GPT_OSS_EXPERT_COMPONENT
+};
+
 #[cfg(feature = "hardware-test-hooks")]
 fn gpt_oss_plans(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxError> {
-    let inputs = gpt_oss_reference::deterministic_batch_inputs();
+    gpt_oss_plans_for_fixture(case, false)
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn gpt_oss_plans_for_fixture(
+    case: AdvancedCase,
+    finite_router_edge: bool,
+) -> Result<Vec<LaunchPlan>, BoxError> {
+    let inputs = if finite_router_edge {
+        gpt_oss_reference::finite_router_edge_batch_inputs()
+    } else {
+        gpt_oss_reference::deterministic_batch_inputs()
+    };
     let expected = gpt_oss_reference::reference_batch(&inputs);
+    let row_major = [
+        GPT_OSS_TILE,
+        GPT_OSS_ROUTER_TILE,
+        GPT_OSS_ATTENTION_TILE,
+        GPT_OSS_EXPERT_TILE,
+    ]
+    .contains(&case);
     let expected_attention = expected
         .attention
         .chunks_exact(16 * 16)
-        .map(pack_mfma_blocked_output)
+        .map(|tile| {
+            if row_major {
+                Ok(tile.to_vec())
+            } else {
+                pack_mfma_blocked_output(tile)
+            }
+        })
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .flatten()
@@ -1976,15 +2086,28 @@ fn gpt_oss_plans(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxError> {
     let expected_expert = expected
         .expert
         .chunks_exact(16 * 16)
-        .map(pack_mfma_blocked_output)
+        .map(|tile| {
+            if row_major {
+                Ok(tile.to_vec())
+            } else {
+                pack_mfma_blocked_output(tile)
+            }
+        })
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
-    require(
-        expected.top4.len() == 16 && expected.top4[0][0] == 127 && expected.top4[1][0] == 0,
-        "deterministic GPT-OSS batch did not select alternating experts 127 and 0",
-    )?;
+    if finite_router_edge {
+        require(
+            expected.top4 == vec![[0, 1, 2, 3]; 16],
+            "finite below-floor GPT-OSS router fixture lost stable ties",
+        )?;
+    } else {
+        require(
+            expected.top4.len() == 16 && expected.top4[0][0] == 127 && expected.top4[1][0] == 0,
+            "deterministic GPT-OSS batch did not select alternating experts 127 and 0",
+        )?;
+    }
     let lengths = [
         inputs.hidden_f32.len(),
         inputs.router_f32.len(),
@@ -2001,7 +2124,11 @@ fn gpt_oss_plans(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxError> {
         expected.packed_top4.len(),
     ];
     Ok(vec![LaunchPlan {
-        label: case.label.into(),
+        label: if finite_router_edge {
+            format!("{} finite below-floor router", case.label)
+        } else {
+            case.label.into()
+        },
         buffers: vec![
             input("hidden_f32", &inputs.hidden_f32),
             input("router_f32", &inputs.router_f32),
@@ -2088,7 +2215,37 @@ fn gpt_oss_single_plan(case: AdvancedCase) -> Result<LaunchPlan, BoxError> {
 
 #[cfg(feature = "hardware-test-hooks")]
 fn gpt_oss_component_plans(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxError> {
-    let mut plans = gpt_oss_plans(GPT_OSS)?;
+    gpt_oss_component_plans_for_fixture(case, false)
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn gpt_oss_component_plans_for_fixture(
+    case: AdvancedCase,
+    finite_router_edge: bool,
+) -> Result<Vec<LaunchPlan>, BoxError> {
+    let mut plans = gpt_oss_plans_for_fixture(
+        if [
+            GPT_OSS_ROUTER_TILE,
+            GPT_OSS_ATTENTION_TILE,
+            GPT_OSS_EXPERT_TILE,
+        ]
+        .contains(&case)
+        {
+            GPT_OSS_TILE
+        } else {
+            GPT_OSS
+        },
+        finite_router_edge,
+    )?;
+    let case = if case == GPT_OSS_ROUTER_TILE {
+        GPT_OSS_ROUTER_COMPONENT
+    } else if case == GPT_OSS_ATTENTION_TILE {
+        GPT_OSS_ATTENTION_COMPONENT
+    } else if case == GPT_OSS_EXPERT_TILE {
+        GPT_OSS_EXPERT_COMPONENT
+    } else {
+        case
+    };
     let full = plans.pop().ok_or("GPT-OSS launch plan is absent")?;
     require(plans.is_empty(), "GPT-OSS launch plan was duplicated")?;
     let indices: &[usize] = if case == GPT_OSS_ROUTER_COMPONENT {
@@ -2122,7 +2279,11 @@ fn gpt_oss_component_plans(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxErr
         .map(|buffer| buffer.elements)
         .collect::<Vec<_>>();
     Ok(vec![LaunchPlan {
-        label: case.label.into(),
+        label: if finite_router_edge {
+            format!("{} finite below-floor router", case.label)
+        } else {
+            case.label.into()
+        },
         buffers,
         args: lengths
             .into_iter()
@@ -2134,24 +2295,36 @@ fn gpt_oss_component_plans(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxErr
 
 #[cfg(feature = "hardware-test-hooks")]
 fn plans_for(case: AdvancedCase) -> Result<Vec<LaunchPlan>, BoxError> {
-    if [GPT_OSS, GPT_OSS_PIPELINED].contains(&case) {
-        return gpt_oss_plans(case);
+    if [GPT_OSS, GPT_OSS_PIPELINED, GPT_OSS_TILE].contains(&case) {
+        let mut plans = gpt_oss_plans(case)?;
+        // Add the edge fixture; never replace the original nonuniform 16-item case.
+        plans.extend(gpt_oss_plans_for_fixture(case, true)?);
+        return Ok(plans);
     }
     if [
         GPT_OSS_ROUTER_COMPONENT,
         GPT_OSS_ATTENTION_COMPONENT,
         GPT_OSS_EXPERT_COMPONENT,
+        GPT_OSS_ROUTER_TILE,
+        GPT_OSS_ATTENTION_TILE,
+        GPT_OSS_EXPERT_TILE,
     ]
     .contains(&case)
     {
-        return gpt_oss_component_plans(case);
+        let mut plans = gpt_oss_component_plans(case)?;
+        if [GPT_OSS_ROUTER_COMPONENT, GPT_OSS_ROUTER_TILE].contains(&case) {
+            plans.extend(gpt_oss_component_plans_for_fixture(case, true)?);
+        }
+        return Ok(plans);
     }
     if [
         KDA_DECODE,
         KDA_PREFILL,
         SPARSE_ATTENTION,
+        SPARSE_ATTENTION_SIMT,
         DEEPSEEK_SPARSE_ATTENTION,
         HYBRID_ATTENTION,
+        HYBRID_ATTENTION_SIMT,
         ATTNRES,
         FOUR_BRANCH,
         MHC,
@@ -2258,6 +2431,31 @@ unsafe fn dispatch(
     resolution: &HsaKernelResolutionObservationV1,
     explicit: &[u8],
 ) -> Result<(), BoxError> {
+    // SAFETY: preserve the existing fixed geometry and reviewed launch boundary.
+    unsafe {
+        dispatch_with_grid(
+            case,
+            adapter,
+            executable,
+            kernel,
+            resolution,
+            explicit,
+            case.grid_x(),
+        )
+    }
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+unsafe fn dispatch_with_grid(
+    case: AdvancedCase,
+    adapter: &mut ReviewedHsaRuntimeAdapterV1,
+    executable: &ReviewedHsaExecutableV1,
+    kernel: &ReviewedHsaKernelV1,
+    resolution: &HsaKernelResolutionObservationV1,
+    explicit: &[u8],
+    grid_x: u32,
+) -> Result<(), BoxError> {
+    require(grid_x != 0, "zero workgroups must not dispatch")?;
     let size = kernarg_size(case.args);
     require(
         resolution.export_symbol() == case.export
@@ -2269,7 +2467,7 @@ unsafe fn dispatch(
             case.label
         ),
     )?;
-    let geometry = HsaLaunchGeometryV1::new([case.grid_x(), 1, 1], [case.workgroup_x, 1, 1], 0);
+    let geometry = HsaLaunchGeometryV1::new([grid_x, 1, 1], [case.workgroup_x, 1, 1], 0);
     let mut storage = RuntimeKernarg::new(size)?;
     let kernarg = storage.bytes_mut();
     kernarg.copy_from_slice(explicit);
@@ -2365,6 +2563,13 @@ fn verify_buffer(plan: &PlannedBuffer, actual: &[u8]) -> Result<(), BoxError> {
             let actual = decode_f32(body)?;
             let mut maximum_error = 0.0_f32;
             for (index, (actual, expected)) in actual.iter().zip(values).enumerate() {
+                if exact_mask.as_ref().is_some_and(|mask| mask[index]) {
+                    require(
+                        actual.to_bits() == expected.to_bits(),
+                        format!("{}[{index}] is not bitwise exact", plan.name),
+                    )?;
+                    continue;
+                }
                 let error = (actual - expected).abs();
                 let tolerance = absolute_tolerance + relative_tolerance * expected.abs();
                 require(
@@ -2374,12 +2579,6 @@ fn verify_buffer(plan: &PlannedBuffer, actual: &[u8]) -> Result<(), BoxError> {
                         plan.name
                     ),
                 )?;
-                if exact_mask.as_ref().is_some_and(|mask| mask[index]) {
-                    require(
-                        actual.to_bits() == expected.to_bits(),
-                        format!("{}[{index}] is not bitwise exact", plan.name),
-                    )?;
-                }
                 maximum_error = maximum_error.max(error);
             }
             println!(
@@ -2605,6 +2804,7 @@ fn gpt_unfused_profile_plans() -> Result<Vec<(AdvancedCase, LaunchPlan)>, BoxErr
 
 #[cfg(feature = "hardware-test-hooks")]
 fn run_gpt_unfused_comparator() -> Result<(), BoxError> {
+    require_gpt_runtime_visibility()?;
     let (bytes, digest) = read_pinned_hsaco()?;
     inspect_gpt_unfused_profile(&bytes)?;
     let plan = gpt_oss_single_plan(GPT_OSS_UNFUSED_ROUTER)?;
@@ -2940,6 +3140,9 @@ fn profile_plan(
 
 #[cfg(feature = "hardware-test-hooks")]
 fn run_case(mut case: AdvancedCase) -> Result<(), BoxError> {
+    if case.export.starts_with("gfx950_gpt_oss_") {
+        require_gpt_runtime_visibility()?;
+    }
     let plan_case = case;
     if let Some(value) = std::env::var_os(WORKGROUP_X_ENV) {
         let value = value
@@ -3056,6 +3259,26 @@ hardware_case!(
     GPT_OSS_EXPERT_COMPONENT
 );
 #[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_gpt_oss_layer_tile_tile_rust_cov6_matches_cpu_reference,
+    GPT_OSS_TILE
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_gpt_oss_router_component_tile_rust_cov6_matches_cpu_reference,
+    GPT_OSS_ROUTER_TILE
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_gpt_oss_attention_component_tile_rust_cov6_matches_cpu_reference,
+    GPT_OSS_ATTENTION_TILE
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_gpt_oss_expert_component_tile_rust_cov6_matches_cpu_reference,
+    GPT_OSS_EXPERT_TILE
+);
+#[cfg(feature = "hardware-test-hooks")]
 #[test]
 #[ignore = "non-authoritative: requires the exact HIP gfx950:xnack- comparator HSACO and MI350"]
 fn gfx950_gpt_oss_unfused_hip_matches_cpu_reference() -> Result<(), BoxError> {
@@ -3124,3 +3347,930 @@ fn output_poison_cannot_match_an_unwritten_expected_element() {
 #[test]
 #[ignore = "requires feature hardware-test-hooks and caller-supplied gfx950 HSACO"]
 fn gfx950_advanced_hardware_tests_require_explicit_hooks() {}
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+fn gpt_oss_finite_router_edge_is_an_additional_guarded_full_fixture() -> Result<(), BoxError> {
+    for case in [
+        GPT_OSS,
+        GPT_OSS_PIPELINED,
+        GPT_OSS_TILE,
+        GPT_OSS_ROUTER_COMPONENT,
+        GPT_OSS_ROUTER_TILE,
+    ] {
+        let plans = plans_for(case)?;
+        assert_eq!(plans.len(), 2);
+        let edge = &plans[1];
+        let route = edge.buffers.last().ok_or("route output absent")?;
+        let Some(ExpectedOutput::U32(values)) = &route.expected else {
+            return Err("route output kind changed".into());
+        };
+        assert_eq!(values, &vec![(1 << 7) | (2 << 14) | (3 << 21); 1024]);
+        assert_eq!(route.elements, 1024);
+        let inputs = gpt_oss_reference::finite_router_edge_batch_inputs();
+        let expected_inputs = [
+            value_bytes(&inputs.hidden_f32),
+            value_bytes(&inputs.router_f32),
+            value_bytes(&inputs.query_bf16),
+            value_bytes(&inputs.key_transposed_bf16),
+            value_bytes(&inputs.value_f32),
+            value_bytes(&inputs.sinks_f32),
+            value_bytes(&inputs.expert_activation_blocks_fp4),
+            value_bytes(&inputs.expert_weight_blocks_fp4),
+            value_bytes(&inputs.activation_scales),
+            value_bytes(&inputs.expert_weight_scales),
+        ];
+        let input_count = if case.args.len() == 13 { 10 } else { 2 };
+        for (buffer, bytes) in edge.buffers.iter().zip(&expected_inputs).take(input_count) {
+            assert!(buffer.immutable && buffer.expected.is_none());
+            assert_eq!(buffer.body_offset, 0);
+            assert_eq!(&buffer.initial, bytes);
+        }
+        for buffer in edge
+            .buffers
+            .iter()
+            .filter(|buffer| buffer.expected.is_some())
+        {
+            assert_eq!(buffer.body_offset, GUARD_BYTES);
+            assert_eq!(&buffer.initial[..GUARD_BYTES], &[PREFIX_BYTE; GUARD_BYTES]);
+            assert_eq!(
+                &buffer.initial[buffer.initial.len() - GUARD_BYTES..],
+                &[SUFFIX_BYTE; GUARD_BYTES]
+            );
+            assert!(
+                verify_buffer(buffer, &buffer.initial).is_err(),
+                "unwritten poison must not satisfy edge fixture"
+            );
+        }
+        if case.args.len() == 13 {
+            for index in [10, 11] {
+                let Some(ExpectedOutput::F32 { values, .. }) = &edge.buffers[index].expected else {
+                    return Err("float output kind changed".into());
+                };
+                assert_eq!(values.len(), 4096);
+                assert!(values.iter().all(|value| value.is_finite()));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+fn gpt_oss_tile_fixture_preserves_all_values_and_guards() -> Result<(), BoxError> {
+    let canonical = gpt_oss_plans(GPT_OSS)?.remove(0);
+    let tiled = gpt_oss_plans(GPT_OSS_TILE)?.remove(0);
+    assert_eq!(canonical.buffers.len(), 13);
+    assert_eq!(tiled.buffers.len(), 13);
+    for i in 0..10 {
+        assert!(tiled.buffers[i].immutable);
+        assert_eq!(canonical.buffers[i].initial, tiled.buffers[i].initial);
+    }
+    for i in [10, 11] {
+        let ExpectedOutput::F32 {
+            values: logical, ..
+        } = tiled.buffers[i].expected.as_ref().unwrap()
+        else {
+            panic!("float tile expected")
+        };
+        let ExpectedOutput::F32 {
+            values: blocked, ..
+        } = canonical.buffers[i].expected.as_ref().unwrap()
+        else {
+            panic!("float tile expected")
+        };
+        assert_eq!(logical.len(), 4096);
+        assert_eq!(blocked.len(), 4096);
+        for item in 0..16 {
+            for lane in 0..64 {
+                for component in 0..4 {
+                    let logical_offset =
+                        item * 256 + ((lane / 16) * 4 + component) * 16 + lane % 16;
+                    let packed_offset = item * 256 + component * 64 + lane;
+                    assert_eq!(logical[logical_offset], blocked[packed_offset]);
+                }
+            }
+        }
+        assert_eq!(tiled.buffers[i].body_offset, GUARD_BYTES);
+        assert_eq!(
+            &tiled.buffers[i].initial[..GUARD_BYTES],
+            &[PREFIX_BYTE; GUARD_BYTES]
+        );
+        let initial = &tiled.buffers[i].initial;
+        assert_eq!(
+            &initial[initial.len() - GUARD_BYTES..],
+            &[SUFFIX_BYTE; GUARD_BYTES]
+        );
+    }
+    assert_eq!(tiled.buffers[12].elements, 1024);
+    assert_eq!(canonical.buffers[12].initial, tiled.buffers[12].initial);
+    for (case, count) in [
+        (GPT_OSS_ROUTER_TILE, 3),
+        (GPT_OSS_ATTENTION_TILE, 5),
+        (GPT_OSS_EXPERT_TILE, 6),
+    ] {
+        let plan = plans_for(case)?.remove(0);
+        assert_eq!(plan.buffers.len(), count);
+        assert_eq!(plan.args.len(), count);
+        assert!(
+            plan.buffers
+                .iter()
+                .filter(|b| b.expected.is_some())
+                .all(|b| b.body_offset == GUARD_BYTES)
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_kda_decode_simt_rust_cov6_matches_cpu_reference,
+    KDA_DECODE
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_kda_decode_tile_rust_cov6_matches_cpu_reference,
+    KDA_DECODE
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_kda_chunkwise_prefill_simt_rust_cov6_matches_cpu_reference,
+    KDA_PREFILL
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_kda_chunkwise_prefill_tile_rust_cov6_matches_cpu_reference,
+    KDA_PREFILL
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_deepseek_sparse_attention_simt_rust_cov6_matches_cpu_reference,
+    DEEPSEEK_SPARSE_ATTENTION
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_deepseek_sparse_attention_tile_rust_cov6_matches_cpu_reference,
+    DEEPSEEK_SPARSE_ATTENTION
+);
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+fn gfx950_kda_c_oracle_maps_all_value_major_state_and_eight_token_words() {
+    // Distinct exact f32 values identify every logical coordinate. These raw
+    // oracle layouts are shared by canonical SIMT and checked tile.
+    let state: Vec<f32> = (0..256)
+        .map(|i| f32::from_bits(0x3f000001 + i as u32))
+        .collect();
+    let tokens: Vec<f32> = (0..128)
+        .map(|i| f32::from_bits(0x3e800001 + i as u32))
+        .collect();
+    let physical = kda_state_value_major(&state);
+    for batch in 0..4 {
+        for value in 0..16 {
+            for key in 0..16 {
+                let parent_row = batch * 16 + value;
+                let tile_address = parent_row * 16 + key;
+                assert_eq!(tile_address, batch * 256 + value * 16 + key);
+                assert_eq!(
+                    physical[value * 16 + key].to_bits(),
+                    state[key * 16 + value].to_bits()
+                );
+                for chunk in 0..2 {
+                    let packed = kda_replicated_chunk_output(&tokens, chunk);
+                    assert_eq!(
+                        packed[value * 16 + key].to_bits(),
+                        tokens[(chunk * 4 + key / 4) * 16 + value].to_bits()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+fn gfx950_kda_oracle_checks_every_f32_state_and_token_output_word() {
+    // Canonical SIMT and checked tile use these same complete oracle plans.
+    for (case, output_count) in [(KDA_DECODE, 2), (KDA_PREFILL, 3)] {
+        let plans = plans_for(case).expect("complete KDA plans");
+        assert_eq!(plans.len(), 1);
+        let mut outputs = 0;
+        for buffer in &plans[0].buffers {
+            if buffer.immutable {
+                assert!(buffer.expected.is_none());
+                continue;
+            }
+            let Some(ExpectedOutput::F32 {
+                values, exact_mask, ..
+            }) = &buffer.expected
+            else {
+                panic!("every KDA output must retain its f32 oracle");
+            };
+            assert_eq!(
+                values.len(),
+                MULTIGRID_WORKGROUPS_V1 * KDA_STATE_ELEMENTS_V1
+            );
+            assert!(values.iter().all(|value| value.is_finite()));
+            assert!(exact_mask.is_none());
+            let bytes = value_bytes(values);
+            assert_eq!(bytes.len(), values.len() * 4);
+            let mut valid = buffer.initial.clone();
+            valid[buffer.body_offset..buffer.body_offset + bytes.len()].copy_from_slice(&bytes);
+            verify_buffer(buffer, &valid).expect("complete expected f32 bytes accepted");
+            assert!(
+                verify_buffer(buffer, &buffer.initial).is_err(),
+                "unwritten output must fail"
+            );
+            for word in 0..values.len() {
+                let offset = buffer.body_offset + word * 4;
+                let saved: [u8; 4] = valid[offset..offset + 4].try_into().unwrap();
+                valid[offset..offset + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+                assert!(
+                    verify_buffer(buffer, &valid).is_err(),
+                    "unverified output word {word}"
+                );
+                valid[offset..offset + 4].copy_from_slice(&saved);
+            }
+            outputs += 1;
+        }
+        assert_eq!(outputs, output_count);
+    }
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+fn deepseek_oracles_reject_every_corrupted_output_word() {
+    for case in [DEEPSEEK_SPARSE_ATTENTION] {
+        let plans = plans_for(case).expect("complete existing oracle plans");
+        assert_eq!(plans.len(), 1);
+        let mut output_sizes = Vec::new();
+        for buffer in &plans[0].buffers {
+            if buffer.immutable {
+                assert!(buffer.expected.is_none());
+                continue;
+            }
+            let expected = buffer
+                .expected
+                .as_ref()
+                .expect("every output has an oracle");
+            let (bytes, floating) = match expected {
+                ExpectedOutput::F32 {
+                    values, exact_mask, ..
+                } => {
+                    if let Some(mask) = exact_mask {
+                        assert_eq!(mask.len(), values.len());
+                        assert!(mask.iter().any(|&exact| exact));
+                        assert!(mask.iter().any(|&exact| !exact));
+                    }
+                    (value_bytes(values), true)
+                }
+                ExpectedOutput::U32(values) => (value_bytes(values), false),
+                ExpectedOutput::I32(_) => panic!("these kernels have no signed output"),
+            };
+            output_sizes.push(expected.element_count());
+            let mut valid = buffer.initial.clone();
+            valid[buffer.body_offset..buffer.body_offset + bytes.len()].copy_from_slice(&bytes);
+            verify_buffer(buffer, &valid).expect("full original expected output accepted");
+            assert!(verify_buffer(buffer, &buffer.initial).is_err());
+            for word in 0..expected.element_count() {
+                let offset = buffer.body_offset + word * 4;
+                let saved: [u8; 4] = valid[offset..offset + 4].try_into().unwrap();
+                let corrupt = if floating {
+                    f32::NAN.to_le_bytes()
+                } else {
+                    (u32::from_le_bytes(saved) ^ 1).to_le_bytes()
+                };
+                valid[offset..offset + 4].copy_from_slice(&corrupt);
+                assert!(
+                    verify_buffer(buffer, &valid).is_err(),
+                    "unverified {} word {word}",
+                    buffer.name
+                );
+                valid[offset..offset + 4].copy_from_slice(&saved);
+            }
+        }
+        output_sizes.sort_unstable();
+        assert_eq!(output_sizes, [1024, 1024, 1024]);
+    }
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+const SPARSE_ATTENTION_SIMT: AdvancedCase = AdvancedCase {
+    label: "gfx950 content sparse attention SIMT",
+    static_lds_bytes: 0,
+    ..SPARSE_ATTENTION
+};
+
+#[cfg(feature = "hardware-test-hooks")]
+const HYBRID_ATTENTION_SIMT: AdvancedCase = AdvancedCase {
+    label: "gfx950 compressed hybrid attention SIMT",
+    static_lds_bytes: 0,
+    ..HYBRID_ATTENTION
+};
+
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_content_sparse_attention_tile_rust_cov6_matches_cpu_reference,
+    SPARSE_ATTENTION
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_content_sparse_attention_simt_rust_cov6_matches_cpu_reference,
+    SPARSE_ATTENTION_SIMT
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_compressed_hybrid_attention_tile_rust_cov6_matches_cpu_reference,
+    HYBRID_ATTENTION
+);
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_compressed_hybrid_attention_simt_rust_cov6_matches_cpu_reference,
+    HYBRID_ATTENTION_SIMT
+);
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+fn gfx950_attention_simt_cases_preserve_independent_oracle_payloads() {
+    for (tile, simt) in [
+        (SPARSE_ATTENTION, SPARSE_ATTENTION_SIMT),
+        (HYBRID_ATTENTION, HYBRID_ATTENTION_SIMT),
+    ] {
+        assert_eq!(tile.static_lds_bytes, 8192);
+        assert_eq!(simt.static_lds_bytes, 0);
+        assert_eq!(tile.export, simt.export);
+        assert_eq!(tile.descriptor, simt.descriptor);
+        assert_eq!(tile.args, simt.args);
+        assert_eq!(tile.workgroup_x, simt.workgroup_x);
+        let tile_plans = plans_for(tile).expect("tile oracle plans");
+        let simt_plans = plans_for(simt).expect("SIMT oracle plans");
+        assert_eq!(tile_plans.len(), simt_plans.len());
+        for (tile_plan, simt_plan) in tile_plans.iter().zip(&simt_plans) {
+            assert_eq!(tile_plan.args.len(), simt_plan.args.len());
+            assert_eq!(tile_plan.buffers.len(), simt_plan.buffers.len());
+            for (tile_buffer, simt_buffer) in tile_plan.buffers.iter().zip(&simt_plan.buffers) {
+                assert_eq!(tile_buffer.name, simt_buffer.name);
+                assert_eq!(tile_buffer.initial, simt_buffer.initial);
+                assert_eq!(tile_buffer.body_offset, simt_buffer.body_offset);
+                assert_eq!(tile_buffer.elements, simt_buffer.elements);
+                assert_eq!(tile_buffer.immutable, simt_buffer.immutable);
+                match (&tile_buffer.expected, &simt_buffer.expected) {
+                    (None, None) => {}
+                    (
+                        Some(ExpectedOutput::F32 {
+                            values: tile_values,
+                            absolute_tolerance: tile_absolute,
+                            relative_tolerance: tile_relative,
+                            exact_mask: tile_mask,
+                        }),
+                        Some(ExpectedOutput::F32 {
+                            values: simt_values,
+                            absolute_tolerance: simt_absolute,
+                            relative_tolerance: simt_relative,
+                            exact_mask: simt_mask,
+                        }),
+                    ) => {
+                        assert_eq!(value_bytes(tile_values), value_bytes(simt_values));
+                        assert_eq!(tile_absolute, simt_absolute);
+                        assert_eq!(tile_relative, simt_relative);
+                        assert_eq!(tile_mask, simt_mask);
+                    }
+                    (
+                        Some(ExpectedOutput::U32(tile_values)),
+                        Some(ExpectedOutput::U32(simt_values)),
+                    ) => {
+                        assert_eq!(tile_values, simt_values);
+                    }
+                    _ => panic!("tile and SIMT attention oracle output contracts differ"),
+                }
+            }
+        }
+    }
+}
+
+// Vecadd shares the reviewed runtime boundary, with its own complete F32 oracle.
+#[cfg(feature = "hardware-test-hooks")]
+#[path = "gfx950_advanced_hardware/vecadd.rs"]
+mod vecadd_qualification;
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+#[ignore = "non-authoritative: requires a digest-pinned Rust gfx950 HSACO and independently leased MI350"]
+fn gfx950_vecadd_rust_cov6_matches_cpu_reference() -> Result<(), BoxError> {
+    vecadd_qualification::run()
+}
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+#[ignore = "non-authoritative: requires a digest-pinned Rust gfx950 tile HSACO and independently leased MI350"]
+fn gfx950_vecadd_tile_rust_cov6_matches_cpu_reference() -> Result<(), BoxError> {
+    vecadd_qualification::run()
+}
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+#[ignore = "CPU-only metadata inspection of an explicitly pinned vecadd HSACO; no GPU initialization"]
+fn gfx950_vecadd_profile_cpu_inspection() -> Result<(), BoxError> {
+    let (bytes, _) = read_pinned_hsaco()?;
+    inspect_profile(vecadd_qualification::CASE, &bytes)
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+const MOE_ROUTE_TILE: AdvancedCase = MOE_ROUTE;
+#[cfg(feature = "hardware-test-hooks")]
+const MOE_EXPERT_SIMT: AdvancedCase = MOE_EXPERT;
+#[cfg(feature = "hardware-test-hooks")]
+const COMBINE_TILE: AdvancedCase = COMBINE;
+#[cfg(feature = "hardware-test-hooks")]
+const STAGE_SHARD_TILE: AdvancedCase = STAGE_SHARD;
+#[cfg(feature = "hardware-test-hooks")]
+const MUON_TILE: AdvancedCase = MUON;
+#[cfg(feature = "hardware-test-hooks")]
+const NGRAM_GATHER_TILE: AdvancedCase = NGRAM_GATHER;
+
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_moe_route_tile_rust_cov6_matches_cpu_reference,
+    MOE_ROUTE_TILE
+);
+
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_moe_expert_rank_simt_rust_cov6_matches_cpu_reference,
+    MOE_EXPERT_SIMT
+);
+
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_combine_expert_ranks_tile_rust_cov6_matches_cpu_reference,
+    COMBINE_TILE
+);
+
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_speculative_transaction_simt_rust_cov6_matches_cpu_reference,
+    SPECULATIVE
+);
+
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_speculative_transaction_tile_rust_cov6_matches_cpu_reference,
+    SPECULATIVE
+);
+
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_stage_gradient_shard_tile_rust_cov6_matches_cpu_reference,
+    STAGE_SHARD_TILE
+);
+
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_muon_update_tile_rust_cov6_matches_cpu_reference,
+    MUON_TILE
+);
+
+#[cfg(feature = "hardware-test-hooks")]
+hardware_case!(
+    gfx950_qwen_ngram_gather_tile_rust_cov6_matches_cpu_reference,
+    NGRAM_GATHER_TILE
+);
+
+#[cfg(feature = "hardware-test-hooks")]
+fn make_stage_shards() -> Vec<f32> {
+    let special = [
+        0x0000_0000_u32,
+        0x8000_0000,
+        0x0000_0001,
+        0x8000_0001,
+        0x007f_ffff,
+        0x807f_ffff,
+        0x0080_0000,
+        0x8080_0000,
+        0x7f7f_ffff,
+        0xff7f_ffff,
+        0x7f80_0000,
+        0xff80_0000,
+        0x7fc0_00a5,
+        0x7fc1_2345,
+        0xffc5_4321,
+        0x3f80_0001,
+    ];
+    (0..SYSTEM_BATCHES * GRADIENT_SHARDS * MUON_ELEMENTS)
+        .map(|index| {
+            let batch = index / (GRADIENT_SHARDS * MUON_ELEMENTS);
+            let shard = index / MUON_ELEMENTS % GRADIENT_SHARDS;
+            let element = index % MUON_ELEMENTS;
+            let bits = if batch < 2 {
+                special[(element + shard * 5 + batch * 3) % special.len()]
+            } else {
+                // Vary all mantissa bits across both shards and all later batches.
+                0x3e00_0000 | ((index as u32).wrapping_mul(0x0045_d9f3) & 0x807f_ffff)
+            };
+            f32::from_bits(bits)
+        })
+        .collect()
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn ngram_integer_plan(case: AdvancedCase) -> LaunchPlan {
+    let mut queries = vec![0; SYSTEM_BATCHES * QUERIES * NGRAM];
+    let mut hashes = vec![0; SYSTEM_BATCHES * TABLE_SIZE];
+    let mut grams = vec![0; SYSTEM_BATCHES * TABLE_SIZE * NGRAM];
+    let mut values = vec![0; SYSTEM_BATCHES * TABLE_SIZE];
+    let mut priorities = vec![i32::MIN; SYSTEM_BATCHES * TABLE_SIZE];
+    for batch in 0..SYSTEM_BATCHES {
+        for query in 0..QUERIES {
+            let base = (batch * QUERIES + query) * NGRAM;
+            queries[base..base + NGRAM].copy_from_slice(&[
+                i32::MIN + (batch * QUERIES + query) as i32,
+                -16_777_217 - query as i32,
+                i32::MAX - batch as i32,
+            ]);
+        }
+        // Force a wrapped probe order: slot14 is visited before slot1, but
+        // absolute slot1 must win their equal-priority tie.
+        let first = batch * QUERIES * NGRAM;
+        while hash_gram(&queries[first..first + NGRAM]) as usize & (TABLE_SIZE - 1) != 14 {
+            queries[first + 1] = queries[first + 1].wrapping_add(1);
+        }
+        for (query, slot, priority, value) in [
+            (0, 14, 7, 16_777_217),
+            (0, 1, 7, -16_777_219),
+            (1, 3, -8, 3),
+            (1, 8, 12, i32::MAX),
+            (2, 5, i32::MIN, i32::MIN),
+            (3, 4, i32::MAX, 99),
+            (4, 7, 0, i32::MAX),
+            (5, 9, i32::MAX - 1, -123_456_789),
+        ] {
+            let query_base = (batch * QUERIES + query) * NGRAM;
+            let table_slot = batch * TABLE_SIZE + slot;
+            hashes[table_slot] = hash_gram(&queries[query_base..query_base + NGRAM]);
+            let gram_base = table_slot * NGRAM;
+            grams[gram_base..gram_base + NGRAM]
+                .copy_from_slice(&queries[query_base..query_base + NGRAM]);
+            if query == 3 {
+                // Matching hash and higher priority cannot override full-key mismatch.
+                grams[gram_base + 2] ^= 1;
+            }
+            priorities[table_slot] = priority;
+            values[table_slot] = value;
+        }
+    }
+    let expected =
+        systems_reference::batched_ngram_reference(&queries, &hashes, &grams, &values, &priorities);
+    let lengths = [
+        queries.len(),
+        hashes.len(),
+        grams.len(),
+        values.len(),
+        priorities.len(),
+        SYSTEM_BATCHES * QUERIES,
+    ];
+    LaunchPlan {
+        label: format!(
+            "{} signed integers, collision, priority and wrapped tie",
+            case.label
+        ),
+        buffers: vec![
+            input("queries", &queries),
+            input("table_hashes", &hashes),
+            input("table_grams", &grams),
+            input("table_values", &values),
+            input("priorities", &priorities),
+            output("output", ExpectedOutput::I32(expected)),
+        ],
+        args: lengths
+            .into_iter()
+            .enumerate()
+            .map(|(buffer, elements)| PlannedArg::Slice { buffer, elements })
+            .collect(),
+    }
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+fn fixture_expected_bytes(plan: &PlannedBuffer) -> Vec<u8> {
+    let body = match plan.expected.as_ref().expect("output reference") {
+        ExpectedOutput::F32 { values, .. } => value_bytes(values),
+        ExpectedOutput::U32(values) => value_bytes(values),
+        ExpectedOutput::I32(values) => value_bytes(values),
+    };
+    let mut actual = plan.initial.clone();
+    actual[GUARD_BYTES..GUARD_BYTES + body.len()].copy_from_slice(&body);
+    actual
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+fn exact_f32_verification_preserves_payloads_zero_and_unwritten_detection() {
+    let values = vec![
+        f32::from_bits(F32_POISON_BITS),
+        f32::from_bits(0x7fc1_2345),
+        f32::from_bits(0xffc5_4321),
+        0.0,
+        -0.0,
+        f32::from_bits(1),
+        f32::from_bits(0x8000_0001),
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::from_bits(0x3f80_0001),
+    ];
+    let plan = output(
+        "raw_bits",
+        ExpectedOutput::F32 {
+            exact_mask: Some(vec![true; values.len()]),
+            values,
+            absolute_tolerance: 0.0,
+            relative_tolerance: 0.0,
+        },
+    );
+    let actual = fixture_expected_bytes(&plan);
+    verify_buffer(&plan, &actual).expect("all exact bits, including NaNs");
+    assert!(
+        verify_buffer(&plan, &plan.initial).is_err(),
+        "unwritten NaN poison must fail"
+    );
+    // A mutation at every element rejects payload changes, +0/-0 changes and
+    // incomplete last-element writes without relying on floating arithmetic.
+    for element in 0..plan.elements {
+        let mut changed = actual.clone();
+        changed[GUARD_BYTES + element * 4 + 3] ^= 0x80;
+        assert!(verify_buffer(&plan, &changed).is_err(), "element {element}");
+    }
+    let mut changed_payload = actual.clone();
+    changed_payload[GUARD_BYTES + 4] ^= 1;
+    assert!(verify_buffer(&plan, &changed_payload).is_err());
+    let mut changed_guard = actual.clone();
+    changed_guard[0] ^= 1;
+    assert!(verify_buffer(&plan, &changed_guard).is_err());
+    let tolerance_plan = f32_output("finite_only", vec![f32::NAN], 0.0);
+    assert!(verify_buffer(&tolerance_plan, &fixture_expected_bytes(&tolerance_plan)).is_err());
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+fn stage_tile_and_simt_keep_two_complete_bitwise_shard_plans() {
+    assert_eq!(STAGE_SHARD_TILE, STAGE_SHARD);
+    let plans = systems_plans(STAGE_SHARD_TILE).expect("stage plans");
+    assert_eq!(plans.len(), GRADIENT_SHARDS);
+    let mut first_input = None;
+    for plan in &plans {
+        assert_eq!(plan.buffers[0].elements, 256);
+        let output = &plan.buffers[1];
+        assert_eq!(output.elements, 256);
+        let Some(ExpectedOutput::F32 {
+            values,
+            exact_mask: Some(mask),
+            ..
+        }) = &output.expected
+        else {
+            panic!("full exact stage reference")
+        };
+        assert_eq!(mask.len(), 256);
+        assert!(mask.iter().all(|exact| *exact));
+        assert_eq!(value_bytes(values), plan.buffers[0].initial);
+        for bits in [
+            0_u32,
+            0x8000_0000,
+            0x7fc0_00a5,
+            0x7fc1_2345,
+            0xffc5_4321,
+            1,
+            0x8000_0001,
+        ] {
+            assert!(values.iter().any(|value| value.to_bits() == bits));
+        }
+        let actual = fixture_expected_bytes(output);
+        verify_buffer(output, &actual).expect("complete stage reference");
+        assert!(verify_buffer(output, &output.initial).is_err());
+        let mut omitted_last = actual.clone();
+        let last = GUARD_BYTES + 255 * 4;
+        omitted_last[last..last + 4].copy_from_slice(&output.initial[last..last + 4]);
+        assert!(
+            verify_buffer(output, &omitted_last).is_err(),
+            "last output is mandatory"
+        );
+        if let Some(first) = &first_input {
+            assert_ne!(first, &plan.buffers[0].initial, "two distinct shard inputs");
+        } else {
+            first_input = Some(plan.buffers[0].initial.clone());
+        }
+    }
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+fn ngram_tile_and_simt_keep_full_integer_collision_priority_and_tie_plans() {
+    assert_eq!(NGRAM_GATHER_TILE, NGRAM_GATHER);
+    let plans = systems_plans(NGRAM_GATHER_TILE).expect("ngram plans");
+    assert_eq!(
+        plans.len(),
+        2,
+        "preserve original plan and add integer edge cases"
+    );
+    for plan in &plans {
+        let output = &plan.buffers[5];
+        assert_eq!(output.elements, SYSTEM_BATCHES * QUERIES);
+        verify_buffer(output, &fixture_expected_bytes(output)).expect("complete integer output");
+        assert!(verify_buffer(output, &output.initial).is_err());
+    }
+    let edge = &plans[1];
+    let Some(ExpectedOutput::I32(values)) = &edge.buffers[5].expected else {
+        panic!("integer output")
+    };
+    for batch in 0..SYSTEM_BATCHES {
+        assert_eq!(
+            &values[batch * QUERIES..(batch + 1) * QUERIES],
+            &[
+                -16_777_219,
+                i32::MAX,
+                i32::MIN,
+                -1,
+                i32::MAX,
+                -123_456_789,
+                -1,
+                -1
+            ]
+        );
+    }
+    let mut corrupted = fixture_expected_bytes(&edge.buffers[5]);
+    let last = GUARD_BYTES + (SYSTEM_BATCHES * QUERIES - 1) * 4;
+    corrupted[last] ^= 1;
+    assert!(verify_buffer(&edge.buffers[5], &corrupted).is_err());
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+fn muon_tile_and_simt_keep_complete_independent_arithmetic_reference() {
+    assert_eq!(MUON_TILE, MUON);
+    let plans = systems_plans(MUON_TILE).expect("Muon plans");
+    assert_eq!(plans.len(), 1);
+    let plan = &plans[0];
+    assert_eq!(
+        plan.buffers[0].elements,
+        SYSTEM_BATCHES * GRADIENT_SHARDS * MUON_ELEMENTS
+    );
+    for (buffer, count) in [(&plan.buffers[1], 256), (&plan.buffers[2], 16)] {
+        assert_eq!(buffer.elements, count);
+        let Some(ExpectedOutput::F32 {
+            values,
+            absolute_tolerance,
+            relative_tolerance,
+            exact_mask,
+        }) = &buffer.expected
+        else {
+            panic!("full Muon arithmetic oracle")
+        };
+        assert_eq!(values.len(), count);
+        assert!(values.iter().all(|value| value.is_finite()));
+        assert_eq!(*absolute_tolerance, 2.0e-6);
+        assert_eq!(*relative_tolerance, 0.0);
+        assert!(exact_mask.is_none());
+        verify_buffer(buffer, &fixture_expected_bytes(buffer)).expect("full reference output");
+        let mut corrupted = fixture_expected_bytes(buffer);
+        let last = GUARD_BYTES + (count - 1) * 4;
+        corrupted[last..last + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert!(verify_buffer(buffer, &corrupted).is_err());
+    }
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+fn speculative_oracle_rejects_every_corrupted_output_word() {
+    for case in [SPECULATIVE] {
+        let plans = plans_for(case).expect("complete existing oracle plans");
+        assert_eq!(plans.len(), 1);
+        let mut output_sizes = Vec::new();
+        for buffer in &plans[0].buffers {
+            if buffer.immutable {
+                assert!(buffer.expected.is_none());
+                continue;
+            }
+            let expected = buffer
+                .expected
+                .as_ref()
+                .expect("every output has an oracle");
+            let (bytes, floating) = match expected {
+                ExpectedOutput::F32 {
+                    values, exact_mask, ..
+                } => {
+                    if let Some(mask) = exact_mask {
+                        assert_eq!(mask.len(), values.len());
+                        assert!(mask.iter().any(|&exact| exact));
+                        assert!(mask.iter().any(|&exact| !exact));
+                    }
+                    (value_bytes(values), true)
+                }
+                ExpectedOutput::U32(values) => (value_bytes(values), false),
+                ExpectedOutput::I32(_) => panic!("these kernels have no signed output"),
+            };
+            output_sizes.push(expected.element_count());
+            let mut valid = buffer.initial.clone();
+            valid[buffer.body_offset..buffer.body_offset + bytes.len()].copy_from_slice(&bytes);
+            verify_buffer(buffer, &valid).expect("full original expected output accepted");
+            assert!(verify_buffer(buffer, &buffer.initial).is_err());
+            for word in 0..expected.element_count() {
+                let offset = buffer.body_offset + word * 4;
+                let saved: [u8; 4] = valid[offset..offset + 4].try_into().unwrap();
+                let corrupt = if floating {
+                    f32::NAN.to_le_bytes()
+                } else {
+                    (u32::from_le_bytes(saved) ^ 1).to_le_bytes()
+                };
+                valid[offset..offset + 4].copy_from_slice(&corrupt);
+                assert!(
+                    verify_buffer(buffer, &valid).is_err(),
+                    "unverified {} word {word}",
+                    buffer.name
+                );
+                valid[offset..offset + 4].copy_from_slice(&saved);
+            }
+        }
+        output_sizes.sort_unstable();
+        assert_eq!(output_sizes, [128, 128, 1024]);
+    }
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+fn gfx950_moe_modes_preserve_independent_oracle_payloads() {
+    for (tile, simt) in [
+        (MOE_ROUTE, MOE_ROUTE_TILE),
+        (MOE_EXPERT, MOE_EXPERT_SIMT),
+        (COMBINE, COMBINE_TILE),
+    ] {
+        assert_eq!(tile.static_lds_bytes, 0);
+        assert_eq!(simt.static_lds_bytes, 0);
+        assert_eq!(tile.export, simt.export);
+        assert_eq!(tile.descriptor, simt.descriptor);
+        assert_eq!(tile.args, simt.args);
+        assert_eq!(tile.workgroup_x, simt.workgroup_x);
+        let tile_plans = plans_for(tile).expect("tile oracle plans");
+        let simt_plans = plans_for(simt).expect("SIMT oracle plans");
+        assert_eq!(tile_plans.len(), simt_plans.len());
+        for (tile_plan, simt_plan) in tile_plans.iter().zip(&simt_plans) {
+            assert_eq!(tile_plan.args.len(), simt_plan.args.len());
+            for (left, right) in tile_plan.args.iter().zip(&simt_plan.args) {
+                match (left, right) {
+                    (
+                        PlannedArg::Slice {
+                            buffer: a,
+                            elements: x,
+                        },
+                        PlannedArg::Slice {
+                            buffer: b,
+                            elements: y,
+                        },
+                    ) => {
+                        assert_eq!(a, b);
+                        assert_eq!(x, y);
+                    }
+                    (PlannedArg::Pointer { buffer: a }, PlannedArg::Pointer { buffer: b }) => {
+                        assert_eq!(a, b)
+                    }
+                    (PlannedArg::U32(a), PlannedArg::U32(b)) => assert_eq!(a, b),
+                    _ => panic!("MoE mode ABI argument kinds differ"),
+                }
+            }
+            assert_eq!(tile_plan.buffers.len(), simt_plan.buffers.len());
+            for (tile_buffer, simt_buffer) in tile_plan.buffers.iter().zip(&simt_plan.buffers) {
+                assert_eq!(tile_buffer.name, simt_buffer.name);
+                assert_eq!(tile_buffer.initial, simt_buffer.initial);
+                assert_eq!(tile_buffer.body_offset, simt_buffer.body_offset);
+                assert_eq!(tile_buffer.elements, simt_buffer.elements);
+                assert_eq!(tile_buffer.immutable, simt_buffer.immutable);
+                match (&tile_buffer.expected, &simt_buffer.expected) {
+                    (None, None) => {}
+                    (
+                        Some(ExpectedOutput::F32 {
+                            values: tile_values,
+                            absolute_tolerance: tile_absolute,
+                            relative_tolerance: tile_relative,
+                            exact_mask: tile_mask,
+                        }),
+                        Some(ExpectedOutput::F32 {
+                            values: simt_values,
+                            absolute_tolerance: simt_absolute,
+                            relative_tolerance: simt_relative,
+                            exact_mask: simt_mask,
+                        }),
+                    ) => {
+                        assert_eq!(value_bytes(tile_values), value_bytes(simt_values));
+                        assert_eq!(tile_absolute, simt_absolute);
+                        assert_eq!(tile_relative, simt_relative);
+                        assert_eq!(tile_mask, simt_mask);
+                    }
+                    (
+                        Some(ExpectedOutput::U32(tile_values)),
+                        Some(ExpectedOutput::U32(simt_values)),
+                    ) => {
+                        assert_eq!(tile_values, simt_values);
+                    }
+                    (Some(ExpectedOutput::I32(left)), Some(ExpectedOutput::I32(right))) => {
+                        assert_eq!(left, right);
+                    }
+                    _ => panic!("MoE mode oracle output contracts differ"),
+                }
+            }
+        }
+    }
+}

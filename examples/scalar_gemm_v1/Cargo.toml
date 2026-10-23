@@ -11,4 +11,11 @@ publish = false
 fe2o3-device.workspace = true
 
 [target.'cfg(not(target_arch = "amdgpu"))'.dependencies]
+fe2o3-core = { path = "../../crates/fe2o3-core", optional = true }
 fe2o3-host.workspace = true
+
+[features]
+default = []
+structured-tile = []
+gfx950-target = []
+qualification-legacy-hip = ["dep:fe2o3-core", "fe2o3-core/qualification-unsafe-launch"]

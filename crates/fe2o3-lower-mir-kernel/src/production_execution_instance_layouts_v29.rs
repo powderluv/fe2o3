@@ -374,6 +374,7 @@ impl<'a, 'source> ExecutionInstanceLayoutsV29<'a, 'source> {
                     declarations: layout.parameter_declarations,
                     signature: LoweredFunctionSignatureV1 {
                         bf16_nominal: false,
+                wave64_nominal: false,
                         parameter_semantic_types: semantic_types,
                         call_arguments: layout.call_arguments,
                         parameter_types: layout.parameter_types,

@@ -780,15 +780,51 @@ fn ordinary_place_resolution_accounts_slot_lookups_and_preserves_missing_local_e
     // Two empty-map searches at 32 work each, two identity checks, one copy.
     const SLOT_LOOKUP_WORK: usize = 2 * (2 * 16) + 2;
     const READ_WORK: usize = SLOT_LOOKUP_WORK + 1;
+    // Measure construction separately; every case below still constructs and
+    // resolves on one finite, unchanged ledger.
+    let (constructor_work, constructor_storage, constructor_peak) = {
+        let mut baseline_work = CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+        let mut baseline_budget = ArgumentBudgetV1::new(&mut baseline_work, 16 * 1024 * 1024);
+        baseline_budget.reserve_storage(37).unwrap();
+        let baseline = SemanticFunctionLoweringV1::new(
+            semantic.types(),
+            semantic.callables(),
+            function,
+            SemanticParameterBindingsV1 {
+                declarations: &[],
+                values: &[],
+                types: &[],
+                local_bindings: None,
+            },
+            None,
+            None,
+            BTreeSet::new(),
+            1,
+            false,
+            1000,
+            &mut baseline_budget,
+        )
+        .unwrap();
+        drop(baseline);
+        (
+            baseline_budget.work(),
+            baseline_budget.storage() - 37,
+            baseline_budget.peak_storage() - 37,
+        )
+    };
+    eprintln!(
+        "place-resolution constructor prefix: work={constructor_work} storage={constructor_storage} peak={constructor_peak}"
+    );
     for (limit, has_binding) in [
         (0, true),
         (READ_WORK - 1, true),
         (READ_WORK, true),
         (SLOT_LOOKUP_WORK, false),
     ] {
-        let mut work = CanonicalKernelIrWorkBudgetV1::new(limit);
-        let mut budget = ArgumentBudgetV1::new(&mut work, 37);
+        let mut work = CanonicalKernelIrWorkBudgetV1::new(constructor_work + limit);
+        let mut budget = ArgumentBudgetV1::new(&mut work, 37 + constructor_peak);
         budget.reserve_storage(37).unwrap();
+        let ledger = budget.work_ledger_identity_v1();
         let mut lowering = SemanticFunctionLoweringV1::new(
             semantic.types(),
             semantic.callables(),
@@ -805,9 +841,13 @@ fn ordinary_place_resolution_accounts_slot_lookups_and_preserves_missing_local_e
             1,
             false,
             1000,
+            &mut budget,
         )
         .unwrap();
-        lowering.emission_work = Some(&mut budget);
+        let attached = lowering.emission_work.as_deref().unwrap();
+        assert_eq!(attached.emission_service_work_v1(), Some(constructor_work));
+        assert_eq!(attached.storage(), 37 + constructor_storage);
+        assert!(attached.work_ledger_identity_v1() == ledger);
         lowering.locals[0] = has_binding.then_some(SemanticValueBindingV1::Unit);
         let mut operations = Vec::new();
         let result = lowering.resolve_place(
@@ -840,8 +880,8 @@ fn ordinary_place_resolution_accounts_slot_lookups_and_preserves_missing_local_e
         }
         assert!(operations.is_empty());
         drop(lowering);
-        assert_eq!(budget.storage(), 37);
-        assert_eq!(budget.work(), limit);
+        assert_eq!(budget.storage(), 37 + constructor_storage);
+        assert_eq!(budget.work(), constructor_work + limit);
     }
 }
 

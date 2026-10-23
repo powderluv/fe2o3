@@ -11,11 +11,17 @@ publish = false
 # registration and protected runtime execution are implemented.
 [workspace]
 
+# This standalone workspace does not inherit the root test profile.
+# Keep dependency archives within the ordinary CLI file bound.
+[profile.test]
+debug = 0
+
 [features]
 default = ["lds-kernel", "scoped-atomic-kernel"]
 lds-kernel = []
 lds-u32-kernel = []
 row-affine-u32-kernel = []
+row-affine-u32-tile-kernel = []
 lds-f32-kernel = []
 lds-scan-u32-kernel = []
 lds-scan-u32-65-kernel = []
@@ -45,7 +51,7 @@ fe2o3-host = { path = "../../crates/fe2o3-host" }
 
 [dev-dependencies]
 fe2o3-hsaco = { path = "../../crates/fe2o3-hsaco" }
-syn = { version = "2", features = ["full", "visit"] }
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
 
 [lib]
 name = "fe2o3_workgroup_sync_v1"

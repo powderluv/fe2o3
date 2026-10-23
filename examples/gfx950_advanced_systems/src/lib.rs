@@ -124,6 +124,12 @@ compile_error!("ablation-stage-tile4 requires kernel-stage-gradient-shard");
 compile_error!("ablation-muon-broadcast16 requires kernel-muon-update");
 
 mod dimensions;
+#[cfg(feature = "kernel-moe-expert-rank-simt")]
+mod kernel_simt_moe_expert_rank;
+#[cfg(feature = "kernel-moe-route-tile")]
+mod kernel_tile_moe_route;
+#[cfg(feature = "kernel-combine-expert-ranks-tile")]
+mod kernel_tile_combine_expert_ranks;
 pub mod kernel;
 pub use dimensions::*;
 #[cfg(not(target_arch = "amdgpu"))]
@@ -135,3 +141,12 @@ pub const GFX950_ADVANCED_SYSTEMS_RUST_SOURCE_PRESENT_V1: bool = true;
 pub const GFX950_ADVANCED_SYSTEMS_SOURCE_LOWERING_SUPPORTED: bool = true;
 /// Boundary not established by the production source-lowering and runtime suite.
 pub const GFX950_ADVANCED_SYSTEMS_SOURCE_BLOCKER: &str = "the retained production extraction, finalization, ISA inspection, and gfx950 numerical runs do not establish formal compiler refinement, protected publication authority, performance, distributed-runtime behavior, or full-model behavior";
+
+#[cfg(feature = "kernel-stage-gradient-shard-tile")]
+mod kernel_tile_stage_gradient_shard;
+
+#[cfg(feature = "kernel-qwen-ngram-gather-tile")]
+mod kernel_tile_qwen_ngram_gather;
+
+#[cfg(feature = "kernel-muon-update-tile")]
+mod kernel_tile_muon_update;

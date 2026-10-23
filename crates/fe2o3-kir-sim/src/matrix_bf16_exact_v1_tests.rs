@@ -88,6 +88,33 @@ fn domain_has_exact_integer_edges_and_no_nonfinite_fractional_or_signed_zero_inp
 }
 
 #[test]
+fn finite_observation_domain_is_explicit_exhaustive_and_default_stays_exact() {
+    let finite = MatrixBf16NumericsV1::FiniteSequentialFmaV1;
+    assert_eq!(
+        MatrixBf16NumericsV1::default(),
+        MatrixBf16NumericsV1::ExactV1
+    );
+    assert_eq!(
+        (0..=u16::MAX)
+            .filter(|bits| finite.accepts_bf16(*bits))
+            .count(),
+        65_280
+    );
+    for bits in [0, 0x8000, 1, 0x8001, 0x3f81, 0x7f7f, 0xff7f] {
+        assert!(finite.accepts_bf16(bits));
+    }
+    for bits in [0x7f80, 0xff80, 0x7fc0, 0x7f81, 0xffff] {
+        assert!(!finite.accepts_bf16(bits));
+    }
+    for bits in [0, 0x8000_0000, 1, 0x8000_0001, 0x7f7f_ffff] {
+        assert!(finite.accepts_accumulator(bits));
+    }
+    for bits in [0x7f80_0000, 0xff80_0000, 0x7f80_0001, 0x7fc0_0000] {
+        assert!(!finite.accepts_accumulator(bits));
+    }
+}
+
+#[test]
 fn bf16_domain_exhaustion_matches_independent_integer_encoding_roster() {
     // Exactly33 encodings: -16..-1, +0, +1..+16.
     let mut accepted = Vec::new();

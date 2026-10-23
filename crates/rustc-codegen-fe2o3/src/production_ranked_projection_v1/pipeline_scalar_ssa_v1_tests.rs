@@ -100,6 +100,13 @@ fn sequential() -> Vec<SemanticBasicBlockV1> {
 fn make_uncaptured_owner(
     blocks: Vec<SemanticBasicBlockV1>,
 ) -> Result<ProductionSemanticSsaOwnerV1, fe2o3_pliron::ProductionSemanticSsaErrorV1> {
+    make_uncaptured_owner_with_guard(blocks, false)
+}
+
+fn make_uncaptured_owner_with_guard(
+    blocks: Vec<SemanticBasicBlockV1>,
+    guarded: bool,
+) -> Result<ProductionSemanticSsaOwnerV1, fe2o3_pliron::ProductionSemanticSsaErrorV1> {
     let scalar = SemanticBackendScalarV1::initialized(
         SemanticBackendPrimitiveV1::integer(false, 64, 8),
         SemanticScalarValidityRangeV1::new(0, u64::MAX.into()),
@@ -108,7 +115,7 @@ fn make_uncaptured_owner(
         SemanticBackendPrimitiveV1::pointer(0, 8, 8),
         SemanticScalarValidityRangeV1::new(0, u64::MAX.into()),
     );
-    let types = vec![
+    let mut types = vec![
         SemanticTypeDeclV1::new(
             SemanticTypeIdentityV1::from_sha256(bytes(1)),
             SemanticLayoutIdentityV1::from_sha256(bytes(1)),
@@ -165,6 +172,23 @@ fn make_uncaptured_owner(
             ),
         ),
     ];
+    if guarded {
+        types.push(SemanticTypeDeclV1::new(
+            SemanticTypeIdentityV1::from_sha256(bytes(4)),
+            SemanticLayoutIdentityV1::from_sha256(bytes(4)),
+            SemanticTypeLayoutV1::new_with_backend_repr(
+                Some(1),
+                1,
+                SemanticBackendReprV1::scalar(SemanticBackendScalarV1::initialized(
+                    SemanticBackendPrimitiveV1::integer(false, 8, 1),
+                    SemanticScalarValidityRangeV1::new(0, 1),
+                )),
+                false,
+            )
+            .unwrap(),
+            SemanticTypeShapeV1::Scalar(SemanticScalarTypeV1::Bool),
+        ));
+    }
     let dimensions = SemanticWorkgroupDimensionsV1::new([64, 1, 1]).unwrap();
     let source_contract = SemanticKernelSourceContractV1::new(
         Some(SemanticKernelLaunchBoundsV1::new(Some(dimensions), Some(dimensions), None).unwrap()),
@@ -214,7 +238,15 @@ fn make_uncaptured_owner(
             local(20, UNIT, SemanticLocalRoleV1::Return),
             local(21, WORD, SemanticLocalRoleV1::Argument(0)),
             local(22, WORD, SemanticLocalRoleV1::Temporary),
-            local(23, WORD, SemanticLocalRoleV1::Temporary),
+            local(
+                23,
+                if guarded {
+                    SemanticTypeIdV1::from_index(3)
+                } else {
+                    WORD
+                },
+                SemanticLocalRoleV1::Temporary,
+            ),
             local(24, PTR, SemanticLocalRoleV1::Temporary),
         ],
         SemanticBlockIdV1::from_index(0),
@@ -1118,3 +1150,5 @@ fn actual_use_ssa_cycle_keys_are_distinct_source_sites_not_local_numbers() {
     assert!(completed.get());
     assert_eq!(budget.storage(), 0);
 }
+
+include!("pipeline_scalar_ssa_captured_guard_tests.rs");

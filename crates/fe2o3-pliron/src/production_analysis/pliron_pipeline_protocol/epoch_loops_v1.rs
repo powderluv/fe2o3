@@ -23,7 +23,7 @@ fn discover_epoch_loops(
         }
     }
     let dominators = pipeline_dominators_v1(&cfg_successors, &predecessors);
-    let mut loops = Vec::new();
+    let mut candidates = Vec::new();
     'headers: for (header_index, header) in inventory.blocks().iter().copied().enumerate() {
         let header_ref = header.deref(context);
         let Some(terminator) = header_ref.get_terminator(context) else {
@@ -183,9 +183,8 @@ fn discover_epoch_loops(
             .copied()
             .filter(|block| *block != header_index)
             .collect::<HashSet<_>>();
-        let Some(body) = acyclic_loop_body_order_v1(&body_members, &cfg_successors) else {
-            continue;
-        };
+        // Resolve nested children bottom-up after discovering all candidates.
+        let body = Vec::new();
         let mut prologue = vec![*entry];
         let mut current = *entry;
         while let [predecessor] = predecessors[current].as_slice() {
@@ -220,22 +219,265 @@ fn discover_epoch_loops(
             current = *successor;
         }
         inductions.remove(&header_index);
-        loops.push(CanonicalEpochLoopV1 {
-            prologue,
-            header: header_index,
-            body,
-            body_members,
-            drain,
-            inductions,
-            header_induction: induction,
-            bound: branch.rhs(context),
-        });
+        candidates.push((
+            CanonicalEpochLoopV1 {
+                prologue,
+                header: header_index,
+                body,
+                body_members,
+                drain,
+                inductions,
+                header_induction: induction,
+                bound: branch.rhs(context),
+                repeated_blocks: HashSet::new(),
+                optional_blocks: HashSet::new(),
+            },
+            *latch,
+            exit,
+        ));
     }
+    // Strict containment bounds depth by the authenticated block count.
+    // No recursive walk and no dynamic trip count is unrolled.
+    candidates.sort_by_key(|(summary, _, _)| (summary.body_members.len(), summary.header));
+    let mut resolved = Vec::<(CanonicalEpochLoopV1, usize, usize, bool)>::new();
+    for (mut summary, latch, exit) in candidates {
+        let mut order_edges = cfg_successors.clone();
+        for (child, child_latch, child_exit, repeatable) in &resolved {
+            if !summary.body_members.contains(&child.header)
+                || !child
+                    .body_members
+                    .iter()
+                    .all(|block| summary.body_members.contains(block))
+                || !repeatable
+            {
+                continue;
+            }
+            order_edges[*child_latch].retain(|target| *target != child.header);
+            // Proof ordering only: false-edge exit follows the complete
+            // child region, even at trip zero. The CFG is never rewritten.
+            order_edges[*child_latch].push(*child_exit);
+            summary.repeated_blocks.insert(child.header);
+            summary
+                .repeated_blocks
+                .extend(child.body_members.iter().copied());
+            if index_constant(context, child.bound) == Some(0)
+                || !dominators[latch].contains(&child.header)
+            {
+                summary.optional_blocks.insert(child.header);
+                summary
+                    .optional_blocks
+                    .extend(child.body_members.iter().copied());
+            }
+            summary
+                .optional_blocks
+                .extend(child.optional_blocks.iter().copied());
+            for block in child.body_members.iter().copied() {
+                if !dominators[*child_latch].contains(&block) {
+                    summary.optional_blocks.insert(block);
+                }
+            }
+        }
+        let Some(body) = acyclic_loop_body_order_v1(&summary.body_members, &order_edges) else {
+            continue;
+        };
+        // One successful incoming edge is not an invariant: every edge,
+        // including nested latches, must preserve the exact outer phase.
+        if !summary.repeated_blocks.is_empty()
+            && !epoch_loop_edges_v1(
+                context,
+                inventory,
+                &summary,
+                latch,
+                exit,
+                &predecessors,
+                &cfg_successors,
+                equivalence_resources,
+            )
+        {
+            continue;
+        }
+        summary.body = body;
+        let repeatable = repeatable_epoch_child_v1(
+            context,
+            inventory,
+            &summary,
+            latch,
+            exit,
+            &predecessors,
+            &cfg_successors,
+            equivalence_resources,
+        );
+        resolved.push((summary, latch, exit, repeatable));
+    }
+    let loops = resolved
+        .into_iter()
+        .map(|(summary, _, _, _)| summary)
+        .collect();
     EpochLoopDiscoveryV1 {
         loops,
         dominators,
         cfg_successors,
     }
+}
+
+// Deliberately read/index-only: unknown effects, storage lifetimes, writes
+// (including another owner's), async, barriers, collectives and pipeline
+// authority cannot be hidden in a repeated region.
+fn repeatable_epoch_child_v1(
+    context: &Context,
+    inventory: &BoundedPlironFunctionInventoryV1,
+    child: &CanonicalEpochLoopV1,
+    latch: usize,
+    exit: usize,
+    predecessors: &[Vec<usize>],
+    successors: &[Vec<usize>],
+    resources: &mut EquivalenceResourceMeterV1,
+) -> bool {
+    if index_constant(context, child.bound).is_none()
+        || !epoch_loop_edges_v1(
+            context,
+            inventory,
+            child,
+            latch,
+            exit,
+            predecessors,
+            successors,
+            resources,
+        )
+    {
+        return false;
+    }
+    if (0..inventory.blocks().len())
+        .filter(|block| *block == child.header || child.body_members.contains(block))
+        .any(|block| {
+            inventory.blocks()[block]
+                .deref(context)
+                .arguments()
+                .any(|value| !dialect_kernel::is_index_type(value, context))
+        })
+    {
+        return false;
+    }
+    for source in (0..inventory.blocks().len())
+        .filter(|block| *block == child.header || child.body_members.contains(block))
+    {
+        for target in successors[source].iter().copied() {
+            let Some(arguments) = edge_arguments_v1(
+                context,
+                inventory.blocks()[source],
+                inventory.blocks()[target],
+            ) else {
+                return false;
+            };
+            if arguments
+                .iter()
+                .any(|value| !dialect_kernel::is_index_type(*value, context))
+            {
+                return false;
+            }
+        }
+    }
+    inventory
+        .operations()
+        .iter()
+        .filter(|site| site.block() == child.header || child.body_members.contains(&site.block()))
+        .all(|site| {
+            let op = Operation::get_op_dyn(site.pointer(), context);
+            if let Some(binary) = op.downcast_ref::<IndexBinaryOp>() {
+                return match binary.kind(context) {
+                    Some(IndexBinaryKindAttr::Add | IndexBinaryKindAttr::Multiply) => true,
+                    Some(IndexBinaryKindAttr::Divide | IndexBinaryKindAttr::Remainder) => {
+                        index_constant(context, binary.rhs(context))
+                            .is_some_and(|divisor| divisor != 0)
+                    }
+                    None => false,
+                };
+            }
+            if let Some(access) = op.downcast_ref::<RankedAccessOp>() {
+                return access.kind(context) == Some(AccessKindAttr::Read);
+            }
+            op.downcast_ref::<IndexConstantOp>().is_some()
+                || op.downcast_ref::<IndexUnsignedCastOp>().is_some()
+                || op.downcast_ref::<DeterministicJoinOp>().is_some()
+                || op.downcast_ref::<BranchArgsOp>().is_some()
+                || op.downcast_ref::<dialect_kernel::BranchOp>().is_some()
+                || op.downcast_ref::<IndexLessThanBranchArgsOp>().is_some()
+                || op.downcast_ref::<IndexEqualBranchArgsOp>().is_some()
+                || op.downcast_ref::<AnalysisSplitOp>().is_some()
+        })
+}
+
+fn epoch_loop_edges_v1(
+    context: &Context,
+    inventory: &BoundedPlironFunctionInventoryV1,
+    summary: &CanonicalEpochLoopV1,
+    latch: usize,
+    exit: usize,
+    predecessors: &[Vec<usize>],
+    successors: &[Vec<usize>],
+    resources: &mut EquivalenceResourceMeterV1,
+) -> bool {
+    let inside = |block| block == summary.header || summary.body_members.contains(&block);
+    let induction = |block| {
+        if block == summary.header {
+            Some(summary.header_induction)
+        } else {
+            summary.inductions.get(&block).copied()
+        }
+    };
+    for source in (0..inventory.blocks().len()).filter(|block| inside(*block)) {
+        if source != summary.header && predecessors[source].iter().any(|pred| !inside(*pred)) {
+            return false;
+        }
+        let Some(source_iv) = induction(source) else {
+            return false;
+        };
+        if successors[source].is_empty() {
+            return false;
+        }
+        if successors[source]
+            .iter()
+            .enumerate()
+            .any(|(i, target)| successors[source][..i].contains(target))
+        {
+            return false;
+        }
+        for target in successors[source].iter().copied() {
+            if !inside(target) {
+                if source == summary.header && target == exit {
+                    continue;
+                }
+                return false;
+            }
+            let Some(target_iv) = induction(target) else {
+                return false;
+            };
+            let target_block = inventory.blocks()[target];
+            let target_ref = target_block.deref(context);
+            let Some(argument) = (0..target_ref.get_num_arguments())
+                .find(|argument| target_ref.get_argument(*argument) == target_iv)
+            else {
+                return false;
+            };
+            let Some(arguments) =
+                edge_arguments_v1(context, inventory.blocks()[source], target_block)
+            else {
+                return false;
+            };
+            let Some(value) = arguments.get(argument).copied() else {
+                return false;
+            };
+            let preserved = if target == summary.header {
+                source == latch && index_offset(context, value, source_iv, resources) == Some(1)
+            } else {
+                index_values_equivalent(context, value, source_iv, resources)
+            };
+            if !preserved {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn pipeline_dominators_v1(

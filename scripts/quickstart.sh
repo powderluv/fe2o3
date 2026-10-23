@@ -41,7 +41,8 @@ Commands:
       extraction-only evidence, not GPU equivalence.
 
   simulate-source --crate NAME --request FILE [--target gfx942|gfx950]
-      [--bundle-version 1|5] [--output BUNDLE] [--expectation FILE]
+      [--bundle-version 1|5|6] [--output BUNDLE] [--expectation FILE]
+                  [--matrix-bf16-numerics exact-v1|finite-sequential-fma-v1]
       -- <Cargo package/feature/target selection>
       Export and simulate any admitted kernel crate through the same general
       source/MIR/KIR path. A temporary bundle is removed unless --output is set.
@@ -104,10 +105,11 @@ run_exact_kir_fixture() {
 
 run_simulate_source() {
   local crate_name='' request='' output='' expectation='' target=gfx942 bundle_version=1
-  local -a cargo_args=()
+  local matrix_bf16_numerics=''
+  local -a cargo_args=() simulator_args=()
   while (($# > 0)); do
     case "$1" in
-      --crate | --request | --output | --target | --bundle-version | --expectation)
+      --crate | --request | --output | --target | --bundle-version | --expectation | --matrix-bf16-numerics)
         (($# >= 2)) || {
           printf 'quickstart: %s requires a value\n' "$1" >&2
           return 2
@@ -118,6 +120,13 @@ run_simulate_source() {
           --output) output="$2" ;;
           --target) target="$2" ;;
           --bundle-version) bundle_version="$2" ;;
+          --matrix-bf16-numerics)
+            [[ -n "$2" && -z "${matrix_bf16_numerics}" ]] || {
+              printf '%s\n' 'quickstart: --matrix-bf16-numerics requires one nonempty value' >&2
+              return 2
+            }
+            matrix_bf16_numerics="$2"
+            ;;
           --expectation)
             [[ -n "$2" && -z "${expectation}" ]] || {
               printf '%s\n' 'quickstart: --expectation requires one nonempty value' >&2
@@ -147,10 +156,26 @@ run_simulate_source() {
     printf '%s\n' 'quickstart: --target must be exactly gfx942 or gfx950' >&2
     return 2
   }
-  [[ "${bundle_version}" == 1 || "${bundle_version}" == 5 ]] || {
-    printf '%s\n' 'quickstart: --bundle-version must be exactly 1 or 5' >&2
+  [[ "${bundle_version}" == 1 || "${bundle_version}" == 5 || "${bundle_version}" == 6 ]] || {
+    printf '%s\n' 'quickstart: --bundle-version must be exactly 1, 5, or 6' >&2
     return 2
   }
+  if [[ -n "${matrix_bf16_numerics}" ]]; then
+    case "${matrix_bf16_numerics}" in
+      exact-v1) ;;
+      finite-sequential-fma-v1)
+        [[ "${bundle_version}" == 6 ]] || {
+          printf '%s\n' 'quickstart: nondefault --matrix-bf16-numerics requires --bundle-version 6' >&2
+          return 2
+        }
+        ;;
+      *)
+        printf '%s\n' 'quickstart: unknown --matrix-bf16-numerics mode' >&2
+        return 2
+        ;;
+    esac
+    simulator_args=(--matrix-bf16-numerics "${matrix_bf16_numerics}")
+  fi
   request="$(realpath --canonicalize-existing -- "${request}")"
   [[ -f "${request}" && ! -L "${request}" ]] || {
     printf 'quickstart: request is not a regular file: %s\n' "${request}" >&2
@@ -197,6 +222,8 @@ run_simulate_source() {
   local simulator_input=--bundle
   if [[ "${bundle_version}" == 5 ]]; then
     simulator_input=--bundle-v5
+  elif [[ "${bundle_version}" == 6 ]]; then
+    simulator_input=--bundle-v6
   fi
   cargo_workspace run --locked --quiet -p rustc-codegen-fe2o3 \
     --bin fe2o3-export-sim -- \
@@ -206,14 +233,14 @@ run_simulate_source() {
   if [[ -n "${expectation}" ]]; then
     local result="${temporary_root}/result.json"
     cargo_workspace run --locked --quiet -p fe2o3-kir-sim-cli \
-      --bin fe2o3-kir-sim -- "${simulator_input}" "${bundle}" --request "${request}" \
+      --bin fe2o3-kir-sim -- "${simulator_input}" "${bundle}" --request "${request}" "${simulator_args[@]}" \
       >"${result}"
     python3 -I -B "${SCRIPT_DIR}/check-simulation-expectation.py" \
       --expectation "${expectation}" --result "${result}"
     cat -- "${result}"
   else
     cargo_workspace run --locked --quiet -p fe2o3-kir-sim-cli \
-      --bin fe2o3-kir-sim -- "${simulator_input}" "${bundle}" --request "${request}"
+      --bin fe2o3-kir-sim -- "${simulator_input}" "${bundle}" --request "${request}" "${simulator_args[@]}"
   fi
 
   if ((remove_bundle == 0)); then

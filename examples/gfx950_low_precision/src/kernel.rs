@@ -498,401 +498,97 @@ pub fn gfx950_fp8_attention_rust(
     let mut result2 = 0.0;
     let mut result3 = 0.0;
     let bits0 = value.load_or(0, lane_column, 0);
-    let exponent0 = (bits0 >> 3_u8) & 0xf;
-    let mantissa0 = bits0 & 0x7;
-    let magnitude0 = if exponent0 == 0xf && mantissa0 == 0x7 {
-        let nan_source = f32::from(mantissa0.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent0 == 0 {
-        f32::from(mantissa0) / 512.0
-    } else {
-        let scale = if exponent0 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent0 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent0.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa0) / 8.0) * scale
-    };
-    let value0 = if bits0 & 0x80 == 0 {
-        magnitude0
-    } else {
-        -magnitude0
-    };
+    let value0 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits0);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 0) * value0;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 0) * value0;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 0) * value0;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 0) * value0;
     let bits1 = value.load_or(1, lane_column, 0);
-    let exponent1 = (bits1 >> 3_u8) & 0xf;
-    let mantissa1 = bits1 & 0x7;
-    let magnitude1 = if exponent1 == 0xf && mantissa1 == 0x7 {
-        let nan_source = f32::from(mantissa1.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent1 == 0 {
-        f32::from(mantissa1) / 512.0
-    } else {
-        let scale = if exponent1 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent1 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent1.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa1) / 8.0) * scale
-    };
-    let value1 = if bits1 & 0x80 == 0 {
-        magnitude1
-    } else {
-        -magnitude1
-    };
+    let value1 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits1);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 1) * value1;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 1) * value1;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 1) * value1;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 1) * value1;
     let bits2 = value.load_or(2, lane_column, 0);
-    let exponent2 = (bits2 >> 3_u8) & 0xf;
-    let mantissa2 = bits2 & 0x7;
-    let magnitude2 = if exponent2 == 0xf && mantissa2 == 0x7 {
-        let nan_source = f32::from(mantissa2.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent2 == 0 {
-        f32::from(mantissa2) / 512.0
-    } else {
-        let scale = if exponent2 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent2 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent2.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa2) / 8.0) * scale
-    };
-    let value2 = if bits2 & 0x80 == 0 {
-        magnitude2
-    } else {
-        -magnitude2
-    };
+    let value2 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits2);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 2) * value2;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 2) * value2;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 2) * value2;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 2) * value2;
     let bits3 = value.load_or(3, lane_column, 0);
-    let exponent3 = (bits3 >> 3_u8) & 0xf;
-    let mantissa3 = bits3 & 0x7;
-    let magnitude3 = if exponent3 == 0xf && mantissa3 == 0x7 {
-        let nan_source = f32::from(mantissa3.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent3 == 0 {
-        f32::from(mantissa3) / 512.0
-    } else {
-        let scale = if exponent3 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent3 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent3.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa3) / 8.0) * scale
-    };
-    let value3 = if bits3 & 0x80 == 0 {
-        magnitude3
-    } else {
-        -magnitude3
-    };
+    let value3 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits3);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 3) * value3;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 3) * value3;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 3) * value3;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 3) * value3;
     let bits4 = value.load_or(4, lane_column, 0);
-    let exponent4 = (bits4 >> 3_u8) & 0xf;
-    let mantissa4 = bits4 & 0x7;
-    let magnitude4 = if exponent4 == 0xf && mantissa4 == 0x7 {
-        let nan_source = f32::from(mantissa4.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent4 == 0 {
-        f32::from(mantissa4) / 512.0
-    } else {
-        let scale = if exponent4 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent4 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent4.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa4) / 8.0) * scale
-    };
-    let value4 = if bits4 & 0x80 == 0 {
-        magnitude4
-    } else {
-        -magnitude4
-    };
+    let value4 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits4);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 4) * value4;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 4) * value4;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 4) * value4;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 4) * value4;
     let bits5 = value.load_or(5, lane_column, 0);
-    let exponent5 = (bits5 >> 3_u8) & 0xf;
-    let mantissa5 = bits5 & 0x7;
-    let magnitude5 = if exponent5 == 0xf && mantissa5 == 0x7 {
-        let nan_source = f32::from(mantissa5.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent5 == 0 {
-        f32::from(mantissa5) / 512.0
-    } else {
-        let scale = if exponent5 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent5 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent5.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa5) / 8.0) * scale
-    };
-    let value5 = if bits5 & 0x80 == 0 {
-        magnitude5
-    } else {
-        -magnitude5
-    };
+    let value5 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits5);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 5) * value5;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 5) * value5;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 5) * value5;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 5) * value5;
     let bits6 = value.load_or(6, lane_column, 0);
-    let exponent6 = (bits6 >> 3_u8) & 0xf;
-    let mantissa6 = bits6 & 0x7;
-    let magnitude6 = if exponent6 == 0xf && mantissa6 == 0x7 {
-        let nan_source = f32::from(mantissa6.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent6 == 0 {
-        f32::from(mantissa6) / 512.0
-    } else {
-        let scale = if exponent6 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent6 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent6.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa6) / 8.0) * scale
-    };
-    let value6 = if bits6 & 0x80 == 0 {
-        magnitude6
-    } else {
-        -magnitude6
-    };
+    let value6 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits6);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 6) * value6;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 6) * value6;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 6) * value6;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 6) * value6;
     let bits7 = value.load_or(7, lane_column, 0);
-    let exponent7 = (bits7 >> 3_u8) & 0xf;
-    let mantissa7 = bits7 & 0x7;
-    let magnitude7 = if exponent7 == 0xf && mantissa7 == 0x7 {
-        let nan_source = f32::from(mantissa7.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent7 == 0 {
-        f32::from(mantissa7) / 512.0
-    } else {
-        let scale = if exponent7 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent7 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent7.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa7) / 8.0) * scale
-    };
-    let value7 = if bits7 & 0x80 == 0 {
-        magnitude7
-    } else {
-        -magnitude7
-    };
+    let value7 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits7);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 7) * value7;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 7) * value7;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 7) * value7;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 7) * value7;
     let bits8 = value.load_or(8, lane_column, 0);
-    let exponent8 = (bits8 >> 3_u8) & 0xf;
-    let mantissa8 = bits8 & 0x7;
-    let magnitude8 = if exponent8 == 0xf && mantissa8 == 0x7 {
-        let nan_source = f32::from(mantissa8.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent8 == 0 {
-        f32::from(mantissa8) / 512.0
-    } else {
-        let scale = if exponent8 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent8 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent8.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa8) / 8.0) * scale
-    };
-    let value8 = if bits8 & 0x80 == 0 {
-        magnitude8
-    } else {
-        -magnitude8
-    };
+    let value8 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits8);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 8) * value8;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 8) * value8;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 8) * value8;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 8) * value8;
     let bits9 = value.load_or(9, lane_column, 0);
-    let exponent9 = (bits9 >> 3_u8) & 0xf;
-    let mantissa9 = bits9 & 0x7;
-    let magnitude9 = if exponent9 == 0xf && mantissa9 == 0x7 {
-        let nan_source = f32::from(mantissa9.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent9 == 0 {
-        f32::from(mantissa9) / 512.0
-    } else {
-        let scale = if exponent9 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent9 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent9.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa9) / 8.0) * scale
-    };
-    let value9 = if bits9 & 0x80 == 0 {
-        magnitude9
-    } else {
-        -magnitude9
-    };
+    let value9 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits9);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 9) * value9;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 9) * value9;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 9) * value9;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 9) * value9;
     let bits10 = value.load_or(10, lane_column, 0);
-    let exponent10 = (bits10 >> 3_u8) & 0xf;
-    let mantissa10 = bits10 & 0x7;
-    let magnitude10 = if exponent10 == 0xf && mantissa10 == 0x7 {
-        let nan_source = f32::from(mantissa10.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent10 == 0 {
-        f32::from(mantissa10) / 512.0
-    } else {
-        let scale = if exponent10 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent10 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent10.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa10) / 8.0) * scale
-    };
-    let value10 = if bits10 & 0x80 == 0 {
-        magnitude10
-    } else {
-        -magnitude10
-    };
+    let value10 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits10);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 10) * value10;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 10) * value10;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 10) * value10;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 10) * value10;
     let bits11 = value.load_or(11, lane_column, 0);
-    let exponent11 = (bits11 >> 3_u8) & 0xf;
-    let mantissa11 = bits11 & 0x7;
-    let magnitude11 = if exponent11 == 0xf && mantissa11 == 0x7 {
-        let nan_source = f32::from(mantissa11.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent11 == 0 {
-        f32::from(mantissa11) / 512.0
-    } else {
-        let scale = if exponent11 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent11 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent11.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa11) / 8.0) * scale
-    };
-    let value11 = if bits11 & 0x80 == 0 {
-        magnitude11
-    } else {
-        -magnitude11
-    };
+    let value11 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits11);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 11) * value11;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 11) * value11;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 11) * value11;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 11) * value11;
     let bits12 = value.load_or(12, lane_column, 0);
-    let exponent12 = (bits12 >> 3_u8) & 0xf;
-    let mantissa12 = bits12 & 0x7;
-    let magnitude12 = if exponent12 == 0xf && mantissa12 == 0x7 {
-        let nan_source = f32::from(mantissa12.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent12 == 0 {
-        f32::from(mantissa12) / 512.0
-    } else {
-        let scale = if exponent12 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent12 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent12.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa12) / 8.0) * scale
-    };
-    let value12 = if bits12 & 0x80 == 0 {
-        magnitude12
-    } else {
-        -magnitude12
-    };
+    let value12 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits12);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 12) * value12;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 12) * value12;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 12) * value12;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 12) * value12;
     let bits13 = value.load_or(13, lane_column, 0);
-    let exponent13 = (bits13 >> 3_u8) & 0xf;
-    let mantissa13 = bits13 & 0x7;
-    let magnitude13 = if exponent13 == 0xf && mantissa13 == 0x7 {
-        let nan_source = f32::from(mantissa13.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent13 == 0 {
-        f32::from(mantissa13) / 512.0
-    } else {
-        let scale = if exponent13 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent13 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent13.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa13) / 8.0) * scale
-    };
-    let value13 = if bits13 & 0x80 == 0 {
-        magnitude13
-    } else {
-        -magnitude13
-    };
+    let value13 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits13);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 13) * value13;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 13) * value13;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 13) * value13;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 13) * value13;
     let bits14 = value.load_or(14, lane_column, 0);
-    let exponent14 = (bits14 >> 3_u8) & 0xf;
-    let mantissa14 = bits14 & 0x7;
-    let magnitude14 = if exponent14 == 0xf && mantissa14 == 0x7 {
-        let nan_source = f32::from(mantissa14.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent14 == 0 {
-        f32::from(mantissa14) / 512.0
-    } else {
-        let scale = if exponent14 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent14 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent14.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa14) / 8.0) * scale
-    };
-    let value14 = if bits14 & 0x80 == 0 {
-        magnitude14
-    } else {
-        -magnitude14
-    };
+    let value14 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits14);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 14) * value14;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 14) * value14;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 14) * value14;
     result3 += subgroup.broadcast_f32::<16>(normalized3, 14) * value14;
     let bits15 = value.load_or(15, lane_column, 0);
-    let exponent15 = (bits15 >> 3_u8) & 0xf;
-    let mantissa15 = bits15 & 0x7;
-    let magnitude15 = if exponent15 == 0xf && mantissa15 == 0x7 {
-        let nan_source = f32::from(mantissa15.wrapping_sub(7_u8));
-        nan_source / nan_source
-    } else if exponent15 == 0 {
-        f32::from(mantissa15) / 512.0
-    } else {
-        let scale = if exponent15 < 8 {
-            f32::from(1_u8.wrapping_shl(exponent15 as u32)) / 128.0
-        } else {
-            f32::from(1_u8.wrapping_shl(exponent15.wrapping_sub(7_u8) as u32))
-        };
-        (1.0 + f32::from(mantissa15) / 8.0) * scale
-    };
-    let value15 = if bits15 & 0x80 == 0 {
-        magnitude15
-    } else {
-        -magnitude15
-    };
+    let value15 = crate::kernel_simt::decode_fp8_e4m3_scalar!(bits15);
     result0 += subgroup.broadcast_f32::<16>(normalized0, 15) * value15;
     result1 += subgroup.broadcast_f32::<16>(normalized1, 15) * value15;
     result2 += subgroup.broadcast_f32::<16>(normalized2, 15) * value15;

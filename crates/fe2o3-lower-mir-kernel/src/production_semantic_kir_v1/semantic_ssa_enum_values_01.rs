@@ -1186,6 +1186,68 @@ fn issued_reference_binding_v1(
     compiler_issued.get(&reference.pointee()).copied()
 }
 
+// Observe the arithmetic field of an already-issued lane carrier. The result
+// deliberately loses the nominal capability and cannot authorize wave execution.
+fn wave_lane_arithmetic_field_v1(
+    types: &[SemanticTypeDeclV1],
+    compiler_issued: &BTreeMap<SemanticTypeIdV1, SemanticPromotedBindingV1>,
+    carrier_type: SemanticTypeIdV1,
+    projection: &SemanticProjectionV1,
+    binding: &SemanticValueBindingV1,
+    budget: &mut dyn SemanticEmissionBudgetV1,
+) -> Result<Option<SemanticValueBindingV1>, ProductionSemanticKirErrorV1> {
+    budget.charge_work(4)?;
+    let SemanticValueBindingV1::WaveLane { value, wave } = binding else {
+        return Ok(None);
+    };
+    let SemanticProjectionKindV1::Field(selected_field) = projection.kind() else {
+        return Ok(None);
+    };
+    if wave.width != 64 {
+        return Ok(None);
+    }
+    charge_execution_cfg_lookup_v29(compiler_issued.len(), budget)?;
+    if !matches!(compiler_issued.get(&carrier_type),
+        Some(SemanticPromotedBindingV1::WaveLane { wave_width: 64 }))
+    {
+        return Ok(None);
+    }
+    let Some(SemanticTypeShapeV1::Aggregate(fields)) = types
+        .get(carrier_type.index() as usize).map(SemanticTypeDeclV1::shape)
+    else {
+        return Ok(None);
+    };
+    // Match the closed source ancestry relation: one ordinary u32 runtime
+    // field, at most eight fields total, and only zero-sized marker siblings.
+    if fields.fields().len() > 8 {
+        return Ok(None);
+    }
+    let mut runtime_field = None;
+    for (index, field_type) in fields.fields().iter().copied().enumerate() {
+        budget.charge_work(2)?;
+        let Some(field) = types.get(field_type.index() as usize) else {
+            return Ok(None);
+        };
+        if field.layout().size_bytes() == Some(0) {
+            continue;
+        }
+        if field.rust_type_kind() != fe2o3_mir_model::semantic_mir_v1::SemanticRustTypeKindV1::Ordinary
+            || !matches!(field.shape(), SemanticTypeShapeV1::Scalar(
+                SemanticScalarTypeV1::Integer { signed: false, bits: 32 }))
+            || runtime_field.replace((index as u32, field_type)).is_some()
+        {
+            return Ok(None);
+        }
+    }
+    if runtime_field != Some((selected_field, projection.result_type())) {
+        return Ok(None);
+    }
+    Ok(Some(SemanticValueBindingV1::Value {
+        id: *value,
+        ty: Type::Scalar(ScalarType::U32),
+    }))
+}
+
 fn wave_lane_reference_dereference_matches_v1(
     types: &[SemanticTypeDeclV1],
     compiler_issued: &BTreeMap<SemanticTypeIdV1, SemanticPromotedBindingV1>,

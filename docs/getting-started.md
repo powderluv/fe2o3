@@ -286,6 +286,8 @@ the absence of a GPU command in this guide is intentional.
 
 ## Next steps
 
+- Inspect [target-specific tutorial reproduction plans](tutorial-reproduction.md)
+  before choosing a registered SIMT/tile/U32 source or interpreting a result.
 - Check the [support matrix](support-matrix.md) before selecting a target or
   tool workflow.
 - Read [Architecture V2](architecture-v2.md) for compiler and runtime ownership.

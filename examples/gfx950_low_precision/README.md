@@ -27,11 +27,39 @@ execute the same stage, publication, uniform workgroup barrier, and
 transpose-read lifecycle, while wave-relative LDS addresses prevent aliasing.
 No output element is shared between waves or workgroups.
 
-Run the Rust source and oracle checks with:
+## Setup
+
+From the repository root, use the pinned toolchain and fetch the locked
+dependencies before offline builds. ROCm LLVM and runtime development libraries
+must be installed; the runners default to `/opt/rocm` and accept `ROCM_PATH`.
 
 ```bash
-cargo fe2o3 test --all-targets --manifest-path Cargo.toml
+rustup toolchain install nightly-2026-04-03 --component rust-src --component rustc-dev
+export CARGO_BUILD_JOBS=2
+export CARGO_INCREMENTAL=0
+cargo fetch --locked
+cargo fetch --locked --manifest-path examples/gfx950_low_precision/Cargo.toml
 ```
+
+The job and incremental settings bound ordinary Cargo build parallelism.
+The standalone package uses a checked-in test profile with debug information
+disabled; assertions and overflow checks retain their normal test defaults.
+
+## Host Source Checks
+
+From the repository root, build the maintained Cargo frontend for the source
+and oracle tests. The native runners do not require a separately installed
+frontend; they build their own default extractor.
+
+```bash
+cargo build --locked -p cargo-fe2o3 --bin cargo-fe2o3
+export PATH="$PWD/target/debug:$PATH"
+cargo fe2o3 test --locked --all-targets \
+  --manifest-path examples/gfx950_low_precision/Cargo.toml
+```
+
+The checked-in test profile keeps the standalone test executables within the
+pinned host runner's 512 MiB hashing bound without profile environment overrides.
 
 The production rustc importer, V8/V9 Kernel IR schemas, exact gfx950 target
 profile, and full-module AMDGPU lowering consume all of these device terminals.
@@ -45,20 +73,82 @@ LLVM profile, finalizes a COV6 object, checks symbol-scoped ISA and metadata,
 and executes a digest-pinned HSA numerical test:
 
 ```bash
-./run-fp4-gemm-gfx950.sh
-./run-fp8-gemm-gfx950.sh
-./run-fp4-attention-gfx950.sh
-./run-fp8-attention-gfx950.sh
+bash examples/gfx950_low_precision/run-fp4-gemm-gfx950.sh tile
+bash examples/gfx950_low_precision/run-fp4-gemm-gfx950.sh simt
+bash examples/gfx950_low_precision/run-fp8-gemm-gfx950.sh tile
+bash examples/gfx950_low_precision/run-fp8-gemm-gfx950.sh simt
+bash examples/gfx950_low_precision/run-fp4-attention-gfx950.sh tile
+bash examples/gfx950_low_precision/run-fp4-attention-gfx950.sh simt
+bash examples/gfx950_low_precision/run-fp8-attention-gfx950.sh tile
+bash examples/gfx950_low_precision/run-fp8-attention-gfx950.sh simt
 ```
+
+The FP4 and FP8 GEMM runners default to `tile`. Their `simt` selections compile
+`src/kernel_simt_fp4.rs::gfx950_fp4_gemm_simt` and
+`src/kernel_simt.rs::gfx950_fp8_gemm_simt`. They decode actual OCP E2M1 low
+nibbles or E4M3 bytes and accumulate scalar F32 products. Each pair uses the same
+16-batch, WG256/grid4 geometry, three-slice ABI, independent CPU oracle,
+immutable-input checks, and output canaries. Tile retains its scaled-MFMA
+checks; SIMT requires byte loads and scalar F32 arithmetic with no MFMA.
+Both selections require `gfx950:xnack-`; this does not add gfx942 support.
+The historical hardware receipts below cover the four original tile kernels,
+not the new SIMT counterparts.
+
+The FP4 and FP8 attention runners also accept `tile` (the default) and `simt`.
+Their SIMT selections compile
+`src/kernel_simt_fp4_attention.rs::gfx950_fp4_attention_simt` and
+`src/kernel_simt_attention.rs::gfx950_fp8_attention_simt`: scalar E2M1 or E4M3
+decoding, F32 dot products, stable softmax, and F32 value accumulation. Each uses
+the same four-slice ABI, 16 independent heads, WG256/grid4 geometry, full
+CPU oracle, immutable inputs, and output canaries as tile. Tile uses 4 KiB
+(FP4) or 8 KiB (FP8) of static LDS per workgroup; SIMT uses none. The FP8 value
+paths use the complete E4M3 decoder, including subnormals, signed zero,
+exponent-15 finite values, and NaNs. Historical receipts do not qualify these
+changed pairs.
+
+For compilation and ISA validation without GPU execution, prefix a command
+with `FE2O3_EXAMPLE_COMPILE_ONLY=1`.
+
+To compile the GEMM artifacts and build the host fixtures without GPU
+execution, run the following ordinary CPU steps from the repository root:
+
+```bash
+for precision in fp8 fp4; do
+  for variant in tile simt; do
+    FE2O3_EXAMPLE_COMPILE_ONLY=1 \
+      bash "examples/gfx950_low_precision/run-$precision-gemm-gfx950.sh" "$variant"
+  done
+done
+cargo test --locked --offline -p fe2o3-hsa-runtime \
+  --features hardware-qualification \
+  --test gfx950_fp8_gemm_hardware --test gfx950_fp4_gemm_hardware --no-run
+```
+
+For the compiler prebuild, CI uses the following explicit debug profile. This
+is an ordinary CPU build phase, separate from the bounded native run:
+
+```bash
+CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked -p rustc-codegen-fe2o3 \
+  --lib --bin fe2o3-rustc-extract
+```
+
+This optional prebuild executes no GPU tests. It uses a different dev profile
+from the unprefixed runner commands above, so those commands may rebuild the
+compiler with their default dev profile. This command establishes no bounded
+warm-cache or default-bootstrap result. The full runner retains its normal
+build steps; no private extractor or absolute scratch path is needed.
+With all required inputs cached, `CARGO_NET_OFFLINE=true` selects a no-network run.
 
 The attention runner disables Clang's implicit GPU libraries and links only an
 ordered nine-file closure accepted by the shared digest validator. It defaults
 to `gfx950-ocml-rocm-7.2.1.manifest`; the separately reviewed
 `gfx950-ocml-rocm-7.2.4.manifest` is selected explicitly with
 `FE2O3_GFX950_OCML_MANIFEST`. Both manifests pin every device library plus
-Clang and LLD. The runner requires one scaled gfx950 MFMA, two B4 or four B8
+Clang and LLD. The tile runner requires one scaled gfx950 MFMA, two B4 or four B8
 transpose reads, one uniform publication barrier, and the exact static LDS
-allocation before dispatch.
+allocation before dispatch. The FP4 and FP8 SIMT selections instead check scalar
+arithmetic and byte loads, absence of MFMA and transpose operations, and
+zero static LDS.
 
 The selected root compiler binding is portable across checkout paths.
 Cargo's original ordered metadata remains a separate build observation; only
@@ -71,7 +161,7 @@ and reject caller-supplied providers. A measured native protected-worker build
 still requires matching LLVM/LLD development packages; this does not block the
 ordinary Rust-to-HSACO runners above.
 
-## Current WG256/grid4 numerical qualification
+## Historical WG256/grid4 tile receipts
 
 On 2026-09-03, all four production Rust wrappers completed extraction,
 gfx950:xnack- COV6 finalization, symbol-scoped ISA inspection, and numerical
@@ -186,3 +276,32 @@ Symbol-scoped disassembly reported:
 An earlier compile-only run on SSH host `mi350-2` used ROCm 6.4.1 and produced
 the same required instruction families, but that host exposed only
 `AMD Radeon Graphics (gfx1036)`. The executable correctly refused that device.
+
+### FP8 Attention SIMT Counterpart
+
+`./run-fp8-attention-gfx950.sh` retains the tile default;
+`./run-fp8-attention-gfx950.sh simt` selects the ordinary scalar Rust counterpart.
+Both consume real OCP E4M3 Q/K/V bytes and produce the same sixteen
+16-token, 128-depth, 16-value-column attention problems (4,096 F32 outputs).
+The SIMT kernel recomputes scores in increasing depth order, then performs
+max-subtracted F32 exponential normalization and PV accumulation without MFMA,
+LDS, or subgroup operations. It retains WG256/grid4 and the four-slice ABI.
+The hardware fixture uses the unchanged independent full-output reference,
+input-immutability checks, tolerances, and prefix/suffix canaries. These are
+gfx950-only paths; source presence is not compilation, hardware qualification,
+native MFMA numerical equivalence, or protected proof evidence.
+
+### FP4 Attention SIMT Counterpart
+
+`./run-fp4-attention-gfx950.sh` retains the tile default;
+`./run-fp4-attention-gfx950.sh simt` selects ordinary scalar Rust attention.
+Q, K, and V each store one OCP E2M1 value in the low nibble of a byte;
+the high nibble is ignored, not treated as a second packed value. The existing
+SIMT decoder's independent all-256-byte test covers this representation,
+including signed zero. Sixteen 16-token, 128-depth, 16-value-column problems
+produce all 4,096 F32 outputs with the unchanged four-slice ABI and WG256/grid4.
+The SIMT path uses increasing-depth F32 MACs, two score passes and max-subtracted
+F32 exponential normalization/PV, without MFMA, LDS, or subgroup operations.
+It uses the original independent full-output oracle, input-immutability checks,
+tolerances and canaries. This is gfx950-only source; compilation, numerical
+hardware validation, native MFMA equivalence and protected proof are separate.

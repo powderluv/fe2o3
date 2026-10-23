@@ -30,6 +30,60 @@ wrapper-managed package.
 
 ## Generic validation
 
+The current tutorial compiler checks use the package that owns production
+PLIRON analysis. Each command must execute a nonempty test selection:
+
+```sh
+cargo test --locked -p fe2o3-pliron --test production_ranked_constant_fold
+cargo test --locked -p fe2o3-pliron --lib pliron_analysis_witness
+cargo test --locked -p fe2o3-pliron --lib textual_pliron_lit_suite
+```
+
+The former `fe2o3-kernel-analysis --lib pliron_analysis_witness` command selects
+zero tests after the analysis move; its former `--test pliron_lit` target no
+longer exists. Those spellings remain meaningful only at their explicitly
+pinned historical source. The current witness tests retain positive replay,
+incomplete cases, mutation refusals, and resource-bound controls; the textual
+suite checks the existing sorted positive and diagnostic-refusal fixtures.
+None of these commands executes a GPU artifact.
+
+### Retained source-model proof replays
+
+Historical model commands require their stated public source, not just the
+current checkout and a pinned prover. Start each block at the repository root
+and use a new, absent neighboring worktree. Existing source/model guards must
+remain unchanged. Keep rustup's normal environment active (`. "$HOME/.cargo/env"`).
+
+For the bounded MoE expert model, follow
+[`examples/moe_expert_v1/README.md`](../examples/moe_expert_v1/README.md): source
+`e3c7018f428192c350c9c425df8e4c031c788272`, Verus
+`0.2026.08.02.b677dd5`, 15 verified obligations and six intended rejections.
+For causal Flash attention, follow
+[`examples/flash_attention_v1/README.md`](../examples/flash_attention_v1/README.md):
+source `af0fd523e3b774377a9c5192cf0511e34fa19735`, the same Verus release,
+25 verified obligations and ten intended rejections. Its retained companion
+`examples/flash_attention_v1/run-memory-verus.sh` must also run from that
+detached source; it uses Verus `0.2026.08.09.92f466f` and checks 13 obligations
+plus eight intended rejections.
+
+The removed LDS GEMM example remains replayable at its public historical pin:
+
+```sh
+git worktree add --detach ../fe2o3-proof-gemm-5a452 5a45239aeeda3ca64cf16beb7fb1d3589e649bfe
+(
+  cd ../fe2o3-proof-gemm-5a452
+  cargo test --locked --manifest-path examples/tiled_gemm_v1/Cargo.toml --test lds_source_refinement
+  VERUS=/absolute/path/to/pinned/verus examples/tiled_gemm_v1/run-verus.sh
+)
+```
+
+Use Verus `0.2026.08.02.b677dd5` for this replay. The wrapper checks all six
+retained proof groups (including the 96-obligation source/model group) and all
+21 intended rejections. This is bounded source/model evidence only, not proof
+of current Rust kernels, numerical SIMT/tile lowering, ISA, or GPU execution.
+Current workgroup, row-softmax, and Wave64 model commands remain current; they
+do not need these historical worktrees and retain their own explicit scopes.
+
 The standalone numerical reference models have a focused CPU-only lane:
 
 ```text
@@ -679,8 +733,11 @@ FE2O3_TEST_SOURCE_AUTH_LDS_GFX942_HSACO=/absolute/path/to/lds.hsaco \
   scripts/ci-local.sh hardware-smoke
 ```
 
-The smoke suite builds and runs all supported examples. Each example copies its
-result back to the host and checks it against a CPU-computed expected value.
+This lane does not build or run every registered tutorial kernel or SIMT/tile
+variant. Its individual fixture checks retain their own output comparisons;
+device/queue checks are not numerical kernel results. Use the
+[tutorial reproduction plans](tutorial-reproduction.md) to inspect the separate
+manifest-declared inputs and correctness obligations without executing them.
 
 The scalar-GEMM compiler lane extracts the real single-source
 `#[kernel(typed)]` example through semantic MIR, ranked PLIRON, Kernel IR, and

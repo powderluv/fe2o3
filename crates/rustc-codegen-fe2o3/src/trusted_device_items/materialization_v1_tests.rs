@@ -108,8 +108,57 @@ fn admit_reviewed_materialization(
     )
 }
 
+// Restore only the two lossless-widening spellings in a historical fixture.
+// This does not add either historical closure to the current admission policy.
+fn restore_subgroup_tile_from_widening(fixture: &ProviderPackageFixture) {
+    let path = fixture.source_root().join("group.rs");
+    let mut source = fs::read_to_string(&path).unwrap();
+    for (current, previous) in [
+        (
+            "fn size(&self) -> u64 {\n        N as u64\n    }",
+            "fn size(&self) -> u64 {\n        u64::from(N)\n    }",
+        ),
+        (
+            "fn thread_rank(&self) -> u64 {\n        (self.lane % N) as u64\n    }",
+            "fn thread_rank(&self) -> u64 {\n        u64::from(self.lane % N)\n    }",
+        ),
+    ] {
+        assert_eq!(source.matches(current).count(), 1);
+        source = source.replacen(current, previous, 1);
+    }
+    fs::write(path, source).unwrap();
+}
+
+#[test]
+fn subgroup_widening_refresh_replaces_both_previous_materializations() {
+    assert_eq!(super::REVIEWED_SAFE_EXECUTION_SOURCE_CLOSURES_V1.len(), 2);
+    for (vendored, previous) in [
+        (
+            false,
+            "cc33bc488a6f9db3d07e2078d4026ef57c8190466f9a8bc508ba983bb4238352",
+        ),
+        (
+            true,
+            "ab247e81428067d8567b9f69eca5ec4967a4bab8b359a5416ab066034486f24d",
+        ),
+    ] {
+        let fixture = reviewed_materialization_fixture(vendored);
+        admit_reviewed_materialization(&fixture).unwrap();
+        restore_subgroup_tile_from_widening(&fixture);
+        let identity = reviewed_provider_source_closure_identity(
+            &fixture.root,
+            WORKGROUP_SYNC_PROVIDER_SOURCE_CLOSURE_DOMAIN_V1,
+        )
+        .unwrap();
+        assert_eq!(identity, digest(previous));
+        assert!(!super::REVIEWED_SAFE_EXECUTION_SOURCE_CLOSURES_V1.contains(&identity));
+        assert!(admit_reviewed_materialization(&fixture).is_err());
+    }
+}
+
 // Reconstruct the exact historical package; never admit it as a fallback.
 fn remove_fp4_materialization_delta(fixture: &ProviderPackageFixture, vendored: bool) {
+    restore_subgroup_tile_from_widening(fixture);
     fs::remove_file(fixture.source_root().join("fp4.rs")).unwrap();
     let path = fixture.source_root().join("lib.rs");
     let mut source = fs::read_to_string(&path).unwrap();

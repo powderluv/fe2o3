@@ -130,6 +130,24 @@ const FP8_CASE: AttentionCase = AttentionCase {
 };
 
 #[cfg(feature = "hardware-test-hooks")]
+const FP8_SIMT_CASE: AttentionCase = AttentionCase {
+    label: "gfx950 FP8 SIMT attention",
+    export: "gfx950_fp8_attention_simt",
+    descriptor: "gfx950_fp8_attention_simt.kd",
+    static_lds_bytes: 0,
+    ..FP8_CASE
+};
+
+#[cfg(feature = "hardware-test-hooks")]
+const FP4_SIMT_CASE: AttentionCase = AttentionCase {
+    label: "gfx950 FP4 SIMT attention",
+    export: "gfx950_fp4_attention_simt",
+    descriptor: "gfx950_fp4_attention_simt.kd",
+    static_lds_bytes: 0,
+    ..FP4_CASE
+};
+
+#[cfg(feature = "hardware-test-hooks")]
 fn require(condition: bool, message: impl Into<String>) -> Result<(), BoxError> {
     if condition {
         Ok(())
@@ -784,6 +802,24 @@ fn gfx950_fp8_attention_rust_cov6_runs_multigrid_and_matches_every_cpu_reference
 -> Result<(), BoxError> {
     let (bytes, digest) = read_pinned_hsaco(FP8_CASE)?;
     run_hardware(FP8_CASE, bytes, digest)
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+#[ignore = "non-authoritative: requires a Rust-produced digest-pinned gfx950:xnack- FP8 SIMT attention COV6 HSACO and MI350"]
+fn gfx950_fp8_attention_simt_cov6_runs_multigrid_and_matches_every_cpu_reference_output()
+-> Result<(), BoxError> {
+    let (bytes, digest) = read_pinned_hsaco(FP8_SIMT_CASE)?;
+    run_hardware(FP8_SIMT_CASE, bytes, digest)
+}
+
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+#[ignore = "non-authoritative: requires a Rust-produced digest-pinned gfx950:xnack- FP4 SIMT attention COV6 HSACO and MI350"]
+fn gfx950_fp4_attention_simt_cov6_runs_multigrid_and_matches_every_cpu_reference_output()
+-> Result<(), BoxError> {
+    let (bytes, digest) = read_pinned_hsaco(FP4_SIMT_CASE)?;
+    run_hardware(FP4_SIMT_CASE, bytes, digest)
 }
 
 #[cfg(all(test, feature = "hardware-test-hooks"))]

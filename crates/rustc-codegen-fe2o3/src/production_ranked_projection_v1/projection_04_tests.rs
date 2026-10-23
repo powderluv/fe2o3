@@ -132,6 +132,7 @@
             },
         ];
         let guarded = GuardedRankedAccessV1 {
+            failure: GuardedAccessFailureV1::Trap,
             view,
             indices: vec![ProductionRankedValueV1::Local(invocation)],
             checked_success: None,
@@ -175,6 +176,7 @@
             7, ProductionRankedValueV1::Local(view), extent, index,
         );
         let guarded = GuardedRankedAccessV1 {
+            failure: GuardedAccessFailureV1::Trap,
             view,
             indices: vec![index],
             checked_success: None,
@@ -556,6 +558,7 @@
     fn guarded_access_and_barrier_retain_semantic_source_order() {
         let guarded = || {
             ProjectedBlockItemV1::Guarded(GuardedRankedAccessV1 {
+                failure: GuardedAccessFailureV1::Trap,
                 view: ProductionRankedValueIdV1::new(0),
                 indices: vec![ProductionRankedValueV1::Argument(0)],
                 checked_success: None,
@@ -676,6 +679,7 @@
             },
         ];
         let guarded = GuardedRankedAccessV1 {
+            failure: GuardedAccessFailureV1::Trap,
             view,
             indices: vec![ProductionRankedValueV1::Local(shifted)],
             checked_success: None,

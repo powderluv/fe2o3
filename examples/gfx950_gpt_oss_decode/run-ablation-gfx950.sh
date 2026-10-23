@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-    printf 'usage: %s <optimized|serial-router|held-fragments|scalar-attention|pipelined-attention|interleaved-stores|materialized|materialized-router|materialized-attention|materialized-expert>\n' "$0" >&2
+    printf 'usage: %s <optimized|serial-router|held-fragments|scalar-attention|pipelined-attention|interleaved-stores|materialized|materialized-router|materialized-attention|materialized-expert|<selection>-simt|<selection>-tile>\n' "$0" >&2
     exit 2
 fi
 
@@ -10,6 +10,16 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)
 COMMON=$SCRIPT_DIR/../gfx950_advanced_attention/run-gfx950.sh
 VARIANT=$1
+case "$VARIANT" in
+    optimized-simt|optimized-tile|serial-router-simt|serial-router-tile|held-fragments-simt|held-fragments-tile|scalar-attention-simt|scalar-attention-tile|pipelined-attention-simt|pipelined-attention-tile|interleaved-stores-simt|interleaved-stores-tile|materialized-router-simt|materialized-router-tile|materialized-attention-simt|materialized-attention-tile|materialized-expert-simt|materialized-expert-tile)
+        MODE=${VARIANT##*-}
+        VARIANT=${VARIANT%-*}
+        if [[ -n ${FE2O3_GFX950_ADVANCED_MODE:-} && $FE2O3_GFX950_ADVANCED_MODE != "$MODE" ]]; then
+            printf 'GPT-OSS alias conflicts with FE2O3_GFX950_ADVANCED_MODE\n' >&2
+            exit 2
+        fi
+        export FE2O3_GFX950_ADVANCED_MODE=$MODE ;;
+esac
 case "$VARIANT" in
     optimized) FEATURE=kernel-gpt-oss-decode ;;
     serial-router) FEATURE=kernel-gpt-oss-decode-router-serial ;;
@@ -28,12 +38,18 @@ case "$VARIANT" in
     *) printf 'unknown GPT-OSS ablation variant: %s\n' "$VARIANT" >&2; exit 2 ;;
 esac
 
-GPU=${ROCR_VISIBLE_DEVICES:-5}
-if [[ $GPU != 5 && $GPU != 6 ]]; then
-    printf 'GPT-OSS ablations require physical GPU 5 or 6, got %s\n' "$GPU" >&2
+GPU=${ROCR_VISIBLE_DEVICES:-}
+if [[ -z $GPU && ${FE2O3_EXAMPLE_COMPILE_ONLY:-0} != 1 ]]; then
+    printf 'GPT-OSS runtime requires one explicit ROCR_VISIBLE_DEVICES UUID or ordinal\n' >&2
     exit 2
 fi
-export ROCR_VISIBLE_DEVICES=$GPU
+if [[ -n $GPU ]]; then
+    if [[ ! $GPU =~ ^([0-9]+|GPU-[[:xdigit:]]{16})$ ]]; then
+        printf 'GPT-OSS runtime requires a single GPU UUID or ordinal, got %s\n' "$GPU" >&2
+        exit 2
+    fi
+    export ROCR_VISIBLE_DEVICES=$GPU
+fi
 unset HIP_VISIBLE_DEVICES
 TARGET_DIR=${CARGO_TARGET_DIR:-$REPO_ROOT/target}
 if [[ $TARGET_DIR != /* ]]; then

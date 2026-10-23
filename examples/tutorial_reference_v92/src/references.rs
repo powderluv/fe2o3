@@ -7,6 +7,7 @@ pub fn kernels() -> Vec<&'static str> {
     let mut names = vec![
         "gemm_autoresearch_v1",
         "tiled_gemm_general_v1",
+        "simt_gemm_general_v1",
         "row_softmax_general_v1",
         "flash_attention_general_v1",
         "moe_grouped_expert_general_v1",
@@ -54,11 +55,18 @@ pub fn generate(kernel: &str) -> Result<Request, String> {
         return crate::reference_systems::generate(kernel);
     }
     let (groups, arguments) = match kernel {
-        "gemm_autoresearch_v1" | "tiled_gemm_general_v1" => {
+        "gemm_autoresearch_v1" | "tiled_gemm_general_v1" | "simt_gemm_general_v1" => {
             let mut arguments = vec![bf16(256), bf16(256), output(256)];
             arguments.extend([16, 16, 16, 16, 16, 16].map(scalar));
             arguments.extend([float_scalar(1.0), float_scalar(0.0)]);
-            (1, arguments)
+            (
+                if kernel == "simt_gemm_general_v1" {
+                    4
+                } else {
+                    1
+                },
+                arguments,
+            )
         }
         "row_softmax_general_v1" => {
             let mut arguments = vec![input(128), output(128)];
@@ -111,11 +119,18 @@ pub fn evaluate(request: &Request) -> Result<Vec<Output>, String> {
         return crate::reference_systems::evaluate(request);
     }
     let expected = generate(&request.kernel)?;
-    request.launch(
-        expected.workgroup[0],
-        expected.grid[0] / u64::from(expected.workgroup[0]),
-        expected.arguments.len(),
-    )?;
+    if matches!(
+        request.kernel.as_str(),
+        "tiled_gemm_general_v1" | "simt_gemm_general_v1"
+    ) {
+        request.corpus_shape(&expected)?;
+    } else {
+        request.launch(
+            expected.workgroup[0],
+            expected.grid[0] / u64::from(expected.workgroup[0]),
+            expected.arguments.len(),
+        )?;
+    }
     let n = |index| -> Result<u32, String> {
         let value = request.scalar(index, "u32")?;
         if value > 4096 {
@@ -160,13 +175,13 @@ pub fn evaluate(request: &Request) -> Result<Vec<Output>, String> {
             .map_err(str::to_owned)?;
             (2, result, 0.00001)
         }
-        "tiled_gemm_general_v1" => {
+        "tiled_gemm_general_v1" | "simt_gemm_general_v1" => {
             use crate::host_cpu::tiled_gemm::{ReferenceProblemV1, evaluate_reference_v1};
             exact_count(11)?;
             let result = evaluate_reference_v1(
                 &request.u16s(0)?,
                 &request.u16s(1)?,
-                &request.f32s(2)?,
+                &request.bf16_gemm_initial()?,
                 ReferenceProblemV1 {
                     rows: n(3)?,
                     columns: n(4)?,
@@ -277,6 +292,7 @@ mod tests {
         for kernel in [
             "gemm_autoresearch_v1",
             "tiled_gemm_general_v1",
+            "simt_gemm_general_v1",
             "row_softmax_general_v1",
             "flash_attention_general_v1",
             "moe_grouped_expert_general_v1",

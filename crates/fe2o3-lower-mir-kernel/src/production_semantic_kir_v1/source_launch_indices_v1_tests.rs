@@ -56,7 +56,9 @@ mod source_launch_u32_tests {
                             assert_eq!(lowering.locals[1].as_ref().unwrap().value().unwrap(),
                                 (operations[2].results[0].id, Type::Scalar(ScalarType::U32)));
 
-                            let mut internal = fixture.lowering();
+                            let mut internal_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+                            let mut internal_budget = ArgumentBudgetV1::new(&mut internal_work, 16 * 1024 * 1024);
+                            let mut internal = fixture.lowering(&mut internal_budget);
                             internal.launch_rank = rank;
                             let mut internal_operations = Vec::new();
                             assert_eq!(internal.emit_launch_index_v1(&mut internal_operations, kind, axis)

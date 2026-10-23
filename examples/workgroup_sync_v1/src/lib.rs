@@ -13,8 +13,15 @@ pub mod contract;
 pub mod kernel;
 #[cfg(feature = "lds-f32-kernel")]
 mod kernel_f32;
+#[cfg(all(
+    feature = "row-affine-u32-kernel",
+    feature = "row-affine-u32-tile-kernel"
+))]
+compile_error!("select only one row-affine kernel feature");
 #[cfg(feature = "row-affine-u32-kernel")]
 mod kernel_row_affine_u32;
+#[cfg(feature = "row-affine-u32-tile-kernel")]
+mod kernel_row_affine_u32_tile;
 #[cfg(any(
     feature = "lds-scan-f32-kernel",
     feature = "lds-scan-f32-3-kernel",

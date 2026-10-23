@@ -127,13 +127,70 @@ class CurrentSimulation(unittest.TestCase):
         census = gate.gate.load_module("census_v92_test", ROOT / "scripts/tutorial_source_census.py")
         manifest = json.loads((ROOT / "config/tutorial-kernel-manifest-v1.json").read_bytes())
         rows = census.registered_invocations(manifest)
-        self.assertEqual(len(rows), 64)
+        self.assertEqual(len(rows), 109)
         self.assertEqual(sum(row[2] for row in rows.values()), 3)
         self.assertEqual(len({name for fixture, _, neg in rows.values() if not neg
                               for name in fixture["compilerInput"]["kernelSymbols"]}), 45)
-        for fixture, refs, neg in rows.values():
-            if neg:
-                self.assertEqual(gate.expectation(manifest, {"references": refs})["outputArtifact"], "absent")
+        paired_families = (
+            "attnres-aggregate", "compressed-hybrid-attention", "content-sparse-attention",
+            "deepseek-sparse-attention", "four-branch-residual", "gpt-oss-decode",
+            "gpt-oss-held-fragments", "gpt-oss-interleaved-stores", "gpt-oss-materialized-attention",
+            "gpt-oss-materialized-expert", "gpt-oss-materialized-router", "gpt-oss-pipelined-attention",
+            "gpt-oss-scalar-attention", "gpt-oss-serial-router", "kda-decode", "kda-prefill",
+            "mhc-sinkhorn-mix", "row-softmax", "scalar-gemm",
+        )
+        added_ids = {f"gfx950-{family}-{mode}" for family in paired_families
+                     for mode in ("simt", "tile")} | {
+            "gfx950-combine-expert-ranks-tile", "gfx950-moe-expert-rank-simt",
+            "gfx950-moe-route-tile", "gfx950-muon-update-tile", "gfx950-qwen-ngram-gather-tile",
+            "gfx950-speculative-transaction-tile", "gfx950-stage-gradient-shard-tile",
+        }
+        self.assertEqual(len(added_ids), 45)
+        self.assertLessEqual(added_ids, rows.keys())
+        added = {key: rows[key] for key in added_ids}
+        retained = {key: value for key, value in rows.items() if key not in added_ids}
+        self.assertEqual(len(retained), 64)
+        self.assertTrue(all(fixture["target"] == "gfx950" and not negative
+                            for fixture, _, negative in added.values()))
+
+        # Compare semantic identities, not source-derived hashes that legitimately changed.
+        # The retained digest is independently captured from public main c4b2cda1.
+        fields = ("packageManifest", "cargoLockPath", "sourcePaths", "cargoTarget",
+                  "defaultFeatures", "features", "kernelSymbols")
+        def identity_digest(selected):
+            values = {key: {"fixtureId": fixture["fixtureId"], "target": fixture["target"],
+                           "compilerInput": {field: fixture["compilerInput"][field] for field in fields},
+                           "references": refs, "negative": negative}
+                      for key, (fixture, refs, negative) in selected.items()}
+            raw = json.dumps(values, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+            return hashlib.sha256(raw).hexdigest()
+        retained_sha = "fa8cb94dd6686c68c4ebd288e498ea43b66b95912a8293f01c663cbe5c431081"
+        self.assertEqual(identity_digest(retained), retained_sha)
+        self.assertEqual(identity_digest(added),
+                         "a59bfcf3f627436b2b955164458b1c0fd1008f13925207ece7ebc6c791ca73db")
+        for mutation in ("identity", "feature", "reference", "negative"):
+            changed = copy.deepcopy(retained)
+            key = sorted(changed)[0]
+            fixture, refs, negative = changed[key]
+            if mutation == "identity":
+                changed["unregistered"] = changed.pop(key)
+            elif mutation == "feature":
+                fixture["compilerInput"]["features"].append("unregistered")
+            elif mutation == "reference":
+                changed[key] = (fixture, [], negative)
+            else:
+                changed[key] = (fixture, refs, not negative)
+            self.assertNotEqual(identity_digest(changed), retained_sha, mutation)
+        negatives = {key: gate.expectation(manifest, {"references": refs})
+                     for key, (_, refs, negative) in rows.items() if negative}
+        self.assertEqual(negatives, {
+            f"source-driver-cpu-semantic-simulation-tab0-case{index}": {
+                "kind": "rejected", "bundleVersion": 4, "diagnosticContains": diagnostic,
+                "outputArtifact": "absent"}
+            for index, diagnostic in ((6, "variant-aware packing evidence"),
+                                      (7, "contains a pointer or reference"),
+                                      (8, "Drop requiring drop glue"))
+        })
 
 
 class CurrentQualificationOrchestration(unittest.TestCase):
@@ -243,7 +300,9 @@ class CurrentQualificationOrchestration(unittest.TestCase):
         expected = [(key, kernel) for key, (fixture, _, negative) in sorted(self.roster.items())
                     if not negative for kernel in fixture["compilerInput"]["kernelSymbols"]]
         self.assertEqual(self.simulated, expected)
-        self.assertEqual(len(report["cases"]), 64)
+        self.assertEqual(len(report["cases"]), 109)
+        self.assertEqual((report["registeredInvocations"], report["positiveInvocations"],
+                          report["negativeInvocations"]), (109, 106, 3))
         self.assertEqual(sum(case["expectedNegative"] for case in report["cases"]), 3)
         self.assertTrue(report["complete"] and report["currentCompilerSimulationPassed"])
         for name in ["qualified", "authority", "hardwareExecuted",

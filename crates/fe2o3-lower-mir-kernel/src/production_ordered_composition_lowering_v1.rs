@@ -39,7 +39,8 @@ fn lower_one_semantic_function_v1<'facts>(
         execution,
         None,
         None,
-    )
+        None,
+)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -84,7 +85,8 @@ fn lower_one_semantic_function_with_calls_v29<'facts>(
         lifecycle,
         None,
         None,
-    )
+        None,
+)
 }
 
 fn propagate_ordered_composition_capabilities_v1(

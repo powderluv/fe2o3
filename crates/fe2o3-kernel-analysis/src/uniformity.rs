@@ -39,6 +39,51 @@ pub fn analyze_function(function: &Function) -> AnalysisReport {
     )
 }
 
+/// Analyzes an actual module-owned helper without assuming uniform parameters.
+///
+/// Every formal parameter of this helper is varying. Existing context-free,
+/// argument-sensitive summaries may classify calls to pure helpers in `module`;
+/// unknown, recursive, and context-dependent callees remain unsupported.
+/// The report contains the real helper value and block-control facts. It has no
+/// kernel launch, workgroup-size, physical-participation, or entry-call context.
+/// A caller must separately prove any convergence obligation at the call site.
+///
+/// Returns `None` for foreign, ambiguous, non-helper, or kernel-aliased owners.
+/// As with the other analyses, the caller should first verify the module. This
+/// query grants no helper-admission, execution, or assurance authority.
+pub fn analyze_module_helper_v1(module: &Module, function: &Function) -> Option<AnalysisReport> {
+    if function.role != FunctionRole::InternalHelper
+        || module.functions.len() > MAX_INTERPROCEDURAL_EFFECT_FUNCTIONS_V1
+        || module
+            .kernels
+            .iter()
+            .any(|kernel| kernel.entry == function.id)
+    {
+        return None;
+    }
+    let mut matches = module
+        .functions
+        .iter()
+        .filter(|candidate| candidate.id == function.id);
+    if !matches
+        .next()
+        .is_some_and(|member| std::ptr::eq(member, function))
+        || matches.next().is_some()
+    {
+        return None;
+    }
+    let (summarized_calls, uniform_input_calls) = summarize_uniform_helpers(module, function);
+    let parameters = vec![Variation::Varying; function.signature.parameters.len()];
+    Some(analyze_function_with_contract(
+        function,
+        &parameters,
+        &summarized_calls,
+        &uniform_input_calls,
+        None,
+        None,
+    ))
+}
+
 /// Classifies one kernel entry using uniform ABI parameters and conservative
 /// summaries for reachable pure helpers.
 pub fn analyze_kernel_entry(module: &Module, function: &Function) -> AnalysisReport {

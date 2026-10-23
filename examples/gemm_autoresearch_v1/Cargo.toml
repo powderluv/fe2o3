@@ -11,6 +11,14 @@ publish = false
 members = []
 resolver = "3"
 
+[features]
+kernel-simt-autoresearch = []
+
+[profile.test]
+debug = 0
+debug-assertions = true
+overflow-checks = true
+
 [dependencies]
 fe2o3-device = { path = "../../crates/fe2o3-device" }
 

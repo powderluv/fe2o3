@@ -207,14 +207,18 @@ mod wrapping_arithmetic_v1_tests {
             }
         }
 
-        fn lowering(&self) -> SemanticFunctionLoweringV1<'_, '_> {
-            self.lowering_with_callables(&[])
+        fn lowering<'a, 'service, 'work>(
+            &'a self,
+            budget: &'service mut ArgumentBudgetV1<'work>,
+        ) -> SemanticFunctionLoweringV1<'a, 'service> {
+            self.lowering_with_callables(&[], budget)
         }
 
-        fn lowering_with_callables<'a>(
+        fn lowering_with_callables<'a, 'service, 'work>(
             &'a self,
             callables: &'a [SemanticCallableDeclV1],
-        ) -> SemanticFunctionLoweringV1<'a, 'a> {
+            budget: &'service mut ArgumentBudgetV1<'work>,
+        ) -> SemanticFunctionLoweringV1<'a, 'service> {
             let scalar_type = SemanticTypeIdV1::from_index(1);
             let mut lowering = SemanticFunctionLoweringV1::new(
                 &self.types,
@@ -232,6 +236,7 @@ mod wrapping_arithmetic_v1_tests {
                 1,
                 false,
                 64,
+                budget,
             )
             .unwrap();
             lowering.next_value = 4;
@@ -339,7 +344,9 @@ mod wrapping_arithmetic_v1_tests {
                 types: self.types.clone(),
                 function,
             };
-            let mut lowering = fixture.lowering_with_callables(&callables);
+            let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+            let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
+            let mut lowering = fixture.lowering_with_callables(&callables, &mut lowering_budget);
             lowering.launch_rank = rank;
             run(&mut lowering, &call)
         }
@@ -385,7 +392,9 @@ mod wrapping_arithmetic_v1_tests {
         }
 
         fn module(&self, operation: SemanticBinaryOpV1, checked: bool) -> Module {
-            let mut lowering = self.lowering();
+            let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+            let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
+            let mut lowering = self.lowering(&mut lowering_budget);
             let mut operations = Vec::new();
             let result = self
                 .lower(&mut lowering, operation, checked, &mut operations)
@@ -606,7 +615,9 @@ mod wrapping_arithmetic_v1_tests {
         for scalar in SCALARS {
             let fixture = Fixture::new(scalar);
             for (operation, _, _, _) in OPERATIONS {
-                let mut exact = fixture.lowering();
+                let mut exact_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+                let mut exact_budget = ArgumentBudgetV1::new(&mut exact_work, 16 * 1024 * 1024);
+                let mut exact = fixture.lowering(&mut exact_budget);
                 exact.max_operations = 1;
                 let mut operations = Vec::new();
                 fixture
@@ -615,7 +626,9 @@ mod wrapping_arithmetic_v1_tests {
                 assert_eq!(exact.emitted_operations, 1);
                 assert_eq!(operations.len(), 1);
 
-                let mut empty = fixture.lowering();
+                let mut empty_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+                let mut empty_budget = ArgumentBudgetV1::new(&mut empty_work, 16 * 1024 * 1024);
+                let mut empty = fixture.lowering(&mut empty_budget);
                 empty.max_operations = 0;
                 assert!(matches!(
                     fixture.lower(&mut empty, operation, false, &mut Vec::new()),
@@ -627,7 +640,9 @@ mod wrapping_arithmetic_v1_tests {
                 ));
                 assert_eq!(empty.emitted_operations, 0);
 
-                let mut cumulative = fixture.lowering();
+                let mut cumulative_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+                let mut cumulative_budget = ArgumentBudgetV1::new(&mut cumulative_work, 16 * 1024 * 1024);
+                let mut cumulative = fixture.lowering(&mut cumulative_budget);
                 let mut prefix = Vec::new();
                 cumulative
                     .emit_id(
@@ -655,7 +670,9 @@ mod wrapping_arithmetic_v1_tests {
     fn ordinary_arithmetic_rejects_mismatched_dynamic_operand_types_before_emission() {
         let fixture = Fixture::new(ScalarType::U32);
         for (operation, _, _, _) in OPERATIONS {
-            let mut lowering = fixture.lowering();
+            let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+            let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
+            let mut lowering = fixture.lowering(&mut lowering_budget);
             lowering.locals[2] = Some(SemanticValueBindingV1::Value {
                 id: ValueId(1),
                 ty: Type::Scalar(ScalarType::I32),

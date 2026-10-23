@@ -25,9 +25,28 @@ use fe2o3_hsa_runtime::{
 use fe2o3_hsaco::{CodeObjectVersion, ExplicitValueKind};
 
 #[cfg(feature = "hardware-test-hooks")]
-const KERNEL_EXPORT: &str = "gfx950_fp8_gemm_rust";
+#[derive(Clone, Copy)]
+enum KernelVariant {
+    Tile,
+    Simt,
+}
+
 #[cfg(feature = "hardware-test-hooks")]
-const KERNEL_DESCRIPTOR: &str = "gfx950_fp8_gemm_rust.kd";
+impl KernelVariant {
+    fn export(self) -> &'static str {
+        match self {
+            Self::Tile => "gfx950_fp8_gemm_rust",
+            Self::Simt => "gfx950_fp8_gemm_simt",
+        }
+    }
+
+    fn descriptor(self) -> &'static str {
+        match self {
+            Self::Tile => "gfx950_fp8_gemm_rust.kd",
+            Self::Simt => "gfx950_fp8_gemm_simt.kd",
+        }
+    }
+}
 #[cfg(feature = "hardware-test-hooks")]
 const M: usize = 16;
 #[cfg(feature = "hardware-test-hooks")]
@@ -149,7 +168,7 @@ fn read_pinned_hsaco() -> Result<(Vec<u8>, PayloadDigest), BoxError> {
 }
 
 #[cfg(feature = "hardware-test-hooks")]
-fn inspect_profile(bytes: &[u8]) -> Result<(), BoxError> {
+fn inspect_profile(bytes: &[u8], variant: KernelVariant) -> Result<(), BoxError> {
     let bound = fe2o3_hsaco::inspect_and_bind_kernel_descriptors(bytes)?;
     let inspected = bound.inspection();
     require(
@@ -169,7 +188,7 @@ fn inspect_profile(bytes: &[u8]) -> Result<(), BoxError> {
         return Err("gfx950 FP8 GEMM HSACO must declare exactly one kernel".into());
     };
     require(
-        kernel.name() == KERNEL_EXPORT && kernel.symbol() == KERNEL_DESCRIPTOR,
+        kernel.name() == variant.export() && kernel.symbol() == variant.descriptor(),
         "gfx950 FP8 GEMM HSACO has a substituted kernel or descriptor symbol",
     )?;
     require(
@@ -369,6 +388,7 @@ impl Drop for RuntimeKernarg {
 
 #[cfg(feature = "hardware-test-hooks")]
 unsafe fn dispatch_multigrid(
+    variant: KernelVariant,
     adapter: &mut ReviewedHsaRuntimeAdapterV1,
     executable: &ReviewedHsaExecutableV1,
     kernel: &ReviewedHsaKernelV1,
@@ -376,7 +396,7 @@ unsafe fn dispatch_multigrid(
     explicit: &[u8; EXPLICIT_KERNARG_BYTES],
 ) -> Result<(), BoxError> {
     require(
-        resolution.export_symbol() == KERNEL_EXPORT
+        resolution.export_symbol() == variant.export()
             && resolution.kernarg_segment_size() == COMPLETE_KERNARG_BYTES as u64
             && resolution.kernarg_segment_alignment() == HSA_KERNARG_ALIGNMENT,
         "runtime resolution differs from the exact gfx950 FP8 GEMM ABI",
@@ -416,7 +436,8 @@ unsafe fn dispatch_multigrid(
             }
             durations.sort_unstable();
             println!(
-                "PERF gfx950_fp8_gemm_rust warmups={WARMUPS} samples={SAMPLES} p50_ns={} p05_ns={} p95_ns={}",
+                "PERF {} warmups={WARMUPS} samples={SAMPLES} p50_ns={} p05_ns={} p95_ns={}",
+                variant.export(),
                 durations[SAMPLES / 2],
                 durations[SAMPLES / 20],
                 durations[SAMPLES * 19 / 20],
@@ -479,8 +500,12 @@ fn verify_output(actual: &[f32], expected: &[f32]) -> Result<(), BoxError> {
 }
 
 #[cfg(feature = "hardware-test-hooks")]
-fn run_hardware(bytes: Vec<u8>, digest: PayloadDigest) -> Result<(), BoxError> {
-    inspect_profile(&bytes)?;
+fn run_hardware(
+    bytes: Vec<u8>,
+    digest: PayloadDigest,
+    variant: KernelVariant,
+) -> Result<(), BoxError> {
+    inspect_profile(&bytes, variant)?;
     let context = GpuContext::new(0)?;
     let mut adapter = ReviewedHsaRuntimeAdapterV1::new_gfx950(context)?;
     require(
@@ -516,7 +541,7 @@ fn run_hardware(bytes: Vec<u8>, digest: PayloadDigest) -> Result<(), BoxError> {
         )?;
         // SAFETY: inspection admitted exactly this export and descriptor.
         let (kernels, resolutions) =
-            unsafe { adapter.resolve_kernel_set(&executable, [KERNEL_EXPORT]) }?;
+            unsafe { adapter.resolve_kernel_set(&executable, [variant.export()]) }?;
         let kernel = kernels.get(0).ok_or("runtime omitted gfx950 FP8 GEMM")?;
         require(
             kernels.len() == 1
@@ -527,6 +552,7 @@ fn run_hardware(bytes: Vec<u8>, digest: PayloadDigest) -> Result<(), BoxError> {
         // SAFETY: dispatch_multigrid owns the reviewed raw launch boundary.
         unsafe {
             dispatch_multigrid(
+                variant,
                 &mut adapter,
                 &executable,
                 kernel,
@@ -575,7 +601,17 @@ fn run_hardware(bytes: Vec<u8>, digest: PayloadDigest) -> Result<(), BoxError> {
 fn gfx950_fp8_gemm_rust_cov6_runs_multigrid_and_matches_every_cpu_reference_output()
 -> Result<(), BoxError> {
     let (bytes, digest) = read_pinned_hsaco()?;
-    run_hardware(bytes, digest)
+    run_hardware(bytes, digest, KernelVariant::Tile)
+}
+
+/// Executes scalar OCP E4M3 with the same ABI, oracle, input checks and canaries.
+#[cfg(feature = "hardware-test-hooks")]
+#[test]
+#[ignore = "non-authoritative: requires a Rust-produced digest-pinned gfx950:xnack- FP8 SIMT GEMM COV6 HSACO and MI350"]
+fn gfx950_fp8_gemm_simt_cov6_runs_multigrid_and_matches_every_cpu_reference_output()
+-> Result<(), BoxError> {
+    let (bytes, digest) = read_pinned_hsaco()?;
+    run_hardware(bytes, digest, KernelVariant::Simt)
 }
 
 #[cfg(all(test, feature = "hardware-test-hooks"))]

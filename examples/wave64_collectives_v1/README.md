@@ -104,8 +104,8 @@ These are historical pins, not identities of current source or general Kernel IR
 abstract-model theorem suite with 10 obligations and three expected negatives.
 Its runner labels it historical; it does not establish a current source-to-KIR
 proof or bind the present compiler output. Current source/CPU proof identities
-are updated separately. Fresh Verus qualification of those current identities
-remains pending; earlier proof execution is not inherited.
+are updated separately. The command below reruns the current identity proofs with the pinned
+Verus release; earlier proof execution is not inherited.
 
 The live exact-syntax source/CPU checker now requires the current trap-only
 spelling. Reinserting the retired `return` or substituting its exact old source
@@ -118,6 +118,73 @@ cargo fe2o3 test --locked --all-targets \
   --manifest-path examples/wave64_collectives_v1/Cargo.toml
 VERUS=/absolute/path/to/verus examples/wave64_collectives_v1/run-verus.sh
 ```
+
+## Checked 8x8 output-tile variant
+
+The opt-in `tile-kernel` feature selects `src/tiled_kernel.rs` alongside the
+unchanged default SIMT source. All three outputs use
+`DisjointSlice<f32, Tiled2D<Index1D, 64, 8, 8, 1>>`, one checked tile witness,
+and `get_tiled_2d_mut(&tile, 0, 8, 8, 8)`. Physical lane `lane` owns coordinate
+`(lane / 8, lane % 8)` and therefore flat output index `lane` in each distinct
+allocation. The mask, input and output guards, three convergent collective
+calls, arithmetic, and inactive positive-zero publication remain unchanged.
+This is structured output ownership; collective arithmetic remains explicit.
+
+`tests/tile_source_model_correspondence.rs` admits only a separately encoded
+whole-file AST, checks semantic and tile-geometry mutations, interprets the
+8x8 publication mapping, and compares all 4,359 masks across the same four
+input families with the independent oracle. Its process check requires the
+exact tile source, checker, oracle and feature selection in the current outer
+commit. The original checker, committed-tree check, mutation cases, source
+identities and Verus proofs remain unchanged. The original 13-obligation
+source/CPU proof is **not** a formal receipt for the tile source. These new
+checks establish reviewed structural/model correspondence, not semantic Rust
+refinement or device execution. No current source-to-KIR relation is supplied.
+
+Run the feature-isolated host checks after committing the exact files:
+
+```sh
+cargo fe2o3 test --locked --all-targets \
+  --manifest-path examples/wave64_collectives_v1/Cargo.toml --features tile-kernel
+```
+
+Device compilation must still enter the ordinary general compiler for each
+selection. Compiler failures, historical source/KIR theorems, and pending
+protected execution keep their separate roles; this addition grants no
+artifact, load, launch, or GPU qualification.
+
+## gfx950 compile-only source path
+
+Compile both current source selections from this checkout with the pinned
+`nightly-2026-04-03` toolchain and ROCm 7.2.4:
+
+```sh
+ROCM_PATH=/opt/rocm-7.2.4 bash examples/wave64_collectives_v1/run-gfx950.sh
+# Or select one source:
+ROCM_PATH=/opt/rocm-7.2.4 bash examples/wave64_collectives_v1/run-gfx950.sh simt
+ROCM_PATH=/opt/rocm-7.2.4 bash examples/wave64_collectives_v1/run-gfx950.sh tile
+```
+
+The runner builds the general compiler from this checkout using the checked-in
+normal test profile (`cargo build --locked --profile test`). Device compilation
+uses ordinary `cargo check --release --locked -Zbuild-std=core`, with Wave64
+and XNACK-off target features. Each selection gets a fresh attempt directory,
+source binding, LLVM output, linked gfx950 code object, metadata and disassembly.
+No private compiler or runtime directory is required. `FE2O3_ROOT_TARGET_DIR`
+and `FE2O3_OUTPUT_DIR` select build/output directories; an explicitly supplied
+`FE2O3_RUSTC_EXTRACTOR` selects an existing compiler executable.
+
+This command performs CPU compilation and artifact inspection only. It does not
+launch a GPU kernel, validate numerical device output, prove LLVM/ISA refinement,
+or grant artifact or execution authority. Unsupported compiler behavior fails
+the command; there is no fixture or historical-template fallback.
+The existing `run-gfx942.sh` remains a separate compile-only entry point.
+The deleted Worker V2 launcher and pending Worker V3 hardware route retain the
+status described below.
+
+The standalone package also declares its normal test profile in `Cargo.toml`.
+This keeps the genuine `cargo fe2o3 test` executables within the existing
+host-test image limit; it does not change the oracle or structural assertions.
 
 ## Boundary
 

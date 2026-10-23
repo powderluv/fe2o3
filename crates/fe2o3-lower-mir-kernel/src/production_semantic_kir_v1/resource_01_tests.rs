@@ -30,6 +30,465 @@
         compile_ranked_kernel_for_lowering_v1,
     };
 
+    // Private materializer fixture only. It supplies already-classified bindings;
+    // it does not mint a production provider, source receipt or convergence proof.
+    fn raw_shuffle_materializer_fixture(
+        scalar: ScalarType,
+        source_scalar: ScalarType,
+        source_bound: Option<u128>,
+        source_constant: Option<u32>,
+        context: SemanticValueBindingV1,
+        value_scalar: ScalarType,
+        matching_destination: bool,
+    ) -> Result<Vec<Operation>, ProductionSemanticKirErrorV1> {
+        let unit = SemanticTypeIdV1::from_index(0);
+        let element = SemanticTypeIdV1::from_index(1);
+        let source_type = SemanticTypeIdV1::from_index(2);
+        let source = SemanticSourceProvenanceV1::unavailable();
+        let scalar_decl = |tag: u8, scalar: ScalarType| {
+            let bits = scalar.bit_width().unwrap();
+            SemanticTypeDeclV1::new(
+                SemanticTypeIdentityV1::from_sha256([tag; 32]),
+                SemanticLayoutIdentityV1::from_sha256([tag + 1; 32]),
+                SemanticTypeLayoutV1::new(Some(u64::from(bits / 8)), u64::from(bits / 8)).unwrap(),
+                SemanticTypeShapeV1::Scalar(
+                    if scalar == ScalarType::F32 || scalar == ScalarType::F64 {
+                        SemanticScalarTypeV1::Float { bits }
+                    } else {
+                        SemanticScalarTypeV1::Integer {
+                            signed: scalar.is_signed_integer(),
+                            bits,
+                        }
+                    },
+                ),
+            )
+        };
+        let types = [
+            unit_type(),
+            scalar_decl(101, scalar),
+            scalar_decl(103, source_scalar),
+        ];
+        let abi = SemanticFunctionAbiV1::from_rustc(
+            SemanticAbiIdentityV1::from_sha256([105; 32]),
+            SemanticLayoutIdentityV1::from_sha256([106; 32]),
+            SemanticCanonAbiV1::Rust,
+            SemanticExternAbiV1::Rust,
+            false,
+            false,
+            0,
+            vec![],
+            SemanticAbiValueV1::new(unit, SemanticAbiPassModeV1::Ignore),
+        )
+        .unwrap();
+        let local = |tag, ty, role| {
+            SemanticLocalDeclV1::new(
+                SemanticLocalIdentityV1::from_sha256([tag; 32]),
+                ty,
+                role,
+                source,
+            )
+        };
+        let function = SemanticFunctionDeclV1::new(
+            SemanticFunctionIdentityV1::from_sha256([107; 32]),
+            SemanticFunctionRoleV1::InternalHelper,
+            SemanticItemDefinitionIdentityV1::from_sha256([108; 32]),
+            SemanticMonomorphizationIdentityV1::from_sha256([109; 32]),
+            SemanticGenericTypeArgumentsIdentityV1::from_sha256([110; 32]),
+            SemanticConstGenericArgumentsIdentityV1::from_sha256([111; 32]),
+            source,
+            abi,
+            vec![
+                local(112, unit, SemanticLocalRoleV1::Return),
+                local(113, unit, SemanticLocalRoleV1::Temporary),
+                local(114, element, SemanticLocalRoleV1::Temporary),
+                local(115, source_type, SemanticLocalRoleV1::Temporary),
+                local(
+                    116,
+                    if matching_destination { element } else { unit },
+                    SemanticLocalRoleV1::Temporary,
+                ),
+            ],
+            SemanticBlockIdV1::from_index(0),
+            vec![
+                SemanticBasicBlockV1::new(
+                    SemanticBlockIdentityV1::from_sha256([117; 32]),
+                    source,
+                    vec![],
+                    SemanticTerminatorV1::new(source, SemanticTerminatorKindV1::Return),
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        // The current transport planner needs a real shared ledger even when
+        // this private fixture has no nominal references or source owner.
+        let semantic_function = SemanticFunctionIdV1::from_index(0);
+        let semantic_ssa = plan_semantic_function_ssa_with_module_v1(
+            semantic_function,
+            &function,
+            &types,
+            &[],
+            ProductionSemanticSsaLimitsV1::default(),
+        )
+        .map_err(ProductionSemanticKirErrorV1::SemanticSsa)?;
+        let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+        let mut budget = ArgumentBudgetV1::new(&mut work, 1_000_000);
+        let call_returns =
+            CallReturnBufferV1::for_function(&function, &[], &BTreeMap::new(), 0, &mut budget)?;
+        let mut lowering = SemanticFunctionLoweringV1::new_interprocedural(
+            &types,
+            &[],
+            &function,
+            &semantic_ssa,
+            semantic_function,
+            semantic_function,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Vec::new(),
+            SemanticParameterBindingsV1 {
+                declarations: &[],
+                values: &[],
+                types: &[],
+                local_bindings: None,
+            },
+            None,
+            Some([64, 1, 1]),
+            BTreeSet::new().into(),
+            1,
+            false,
+            64,
+            PrivateArrayRecorderWorkV1::Owned(PrivateArrayLazyBudgetV1::new(1, 64)),
+            None,
+            call_returns,
+            Some(&mut budget),
+            SemanticEmissionPlacementV1::default(),
+            None,
+            None,
+            None,
+        )?;
+        lowering.next_value = 50;
+        lowering.locals[1] = Some(context);
+        lowering.locals[2] = Some(SemanticValueBindingV1::Value {
+            id: ValueId(40),
+            ty: Type::Scalar(value_scalar),
+        });
+        let mut operations = Vec::new();
+        let lane = if let Some(lane) = source_constant {
+            let lane = lowering.emit_id(
+                &mut operations,
+                Type::Scalar(ScalarType::U32),
+                OperationKind::Constant(Constant::U32(lane)),
+            )?;
+            operations.clear();
+            lane
+        } else {
+            if let Some(bound) = source_bound {
+                lowering
+                    .emitted_unsigned_exclusive_bounds
+                    .insert(ValueId(41), bound);
+            }
+            ValueId(41)
+        };
+        lowering.locals[3] = Some(SemanticValueBindingV1::Value {
+            id: lane,
+            ty: Type::Scalar(source_scalar),
+        });
+        let place =
+            |index, ty| SemanticPlaceV1::new(SemanticLocalIdV1::from_index(index), vec![], ty).unwrap();
+        let call = SemanticDirectCallV1::new_callable(
+            SemanticCallableIdV1::from_index(0),
+            vec![
+                SemanticOperandV1::Copy(place(1, unit)),
+                SemanticOperandV1::Copy(place(2, element)),
+                SemanticOperandV1::Copy(place(3, source_type)),
+            ],
+            Some(SemanticCallDestinationV1::new(
+                place(4, if matching_destination { element } else { unit }),
+                SemanticControlFlowEdgeV1::new(
+                    SemanticEdgeRoleV1::CallReturn,
+                    SemanticBlockIdV1::from_index(0),
+                ),
+            )),
+            SemanticUnwindActionV1::Unreachable,
+        )
+        .unwrap();
+        let result = lowering.lower_intrinsic_gfx942_wave64_shuffle_index_v1(
+            SemanticBlockIdV1::from_index(0),
+            &call,
+            element,
+            &mut operations,
+        )?;
+        let (_, result_ty) = result.value().unwrap();
+        assert_eq!(result_ty, Type::Scalar(scalar));
+        Ok(operations)
+    }
+
+    #[test]
+    fn raw_wave64_materializer_preserves_exact_bit_transport_and_lane_operand() {
+        for scalar in [ScalarType::U32, ScalarType::I32, ScalarType::F32] {
+            let operations = raw_shuffle_materializer_fixture(
+                scalar,
+                ScalarType::U32,
+                Some(64),
+                None,
+                SemanticValueBindingV1::CollectiveContext,
+                scalar,
+                true,
+            )
+            .unwrap();
+            let shuffle_index = usize::from(scalar != ScalarType::U32);
+            assert_eq!(
+                operations.len(),
+                if scalar == ScalarType::U32 { 1 } else { 3 }
+            );
+            let OperationKind::Wave(wave) = &operations[shuffle_index].kind else {
+                panic!("missing shuffle")
+            };
+            assert_eq!(wave.width, WaveWidth::Wave64);
+            assert_eq!(wave.active_lanes, 64);
+            assert_eq!(
+                wave.convergence,
+                Convergence::uniform(SynchronizationScope::Subgroup)
+            );
+            let WaveOperationKind::ShuffleIndex {
+                value,
+                source_lane,
+                tile_width,
+            } = wave.kind
+            else {
+                panic!("wrong wave operation")
+            };
+            assert_eq!(source_lane, ValueId(41));
+            assert_eq!(tile_width, 64);
+            assert_eq!(
+                operations[shuffle_index].results[0].ty,
+                Type::Scalar(ScalarType::U32)
+            );
+            if scalar == ScalarType::U32 {
+                assert_eq!(value, ValueId(40));
+            } else {
+                assert!(matches!(&operations[0].kind, OperationKind::Cast {
+                        kind: CastKind::Bitcast, value: ValueId(40), to,
+                    } if *to == Type::Scalar(ScalarType::U32)));
+                assert_eq!(value, operations[0].results[0].id);
+                assert!(matches!(&operations[2].kind, OperationKind::Cast {
+                        kind: CastKind::Bitcast, value, to,
+                    } if *value == operations[1].results[0].id && *to == Type::Scalar(scalar)));
+            }
+        }
+    }
+
+    #[test]
+    fn raw_wave64_materializer_refuses_unissued_context_and_invalid_lane_or_types() {
+        for context in [
+            SemanticValueBindingV1::Unit,
+            SemanticValueBindingV1::MathContext,
+        ] {
+            let error = raw_shuffle_materializer_fixture(
+                ScalarType::F32,
+                ScalarType::U32,
+                Some(64),
+                None,
+                context,
+                ScalarType::F32,
+                true,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&error, ProductionSemanticKirErrorV1::Unsupported {
+                    detail: "Wave64 shuffle lacks compiler-issued collective context", ..
+                }),
+                "expected an actual context refusal, got {error:?}",
+            );
+        }
+        for (source_scalar, bound, constant, scalar, value_scalar, destination) in [
+            (
+                ScalarType::U32,
+                Some(65),
+                None,
+                ScalarType::F32,
+                ScalarType::F32,
+                true,
+            ),
+            (
+                ScalarType::U32,
+                None,
+                Some(64),
+                ScalarType::F32,
+                ScalarType::F32,
+                true,
+            ),
+            (
+                ScalarType::U32,
+                None,
+                None,
+                ScalarType::F32,
+                ScalarType::F32,
+                true,
+            ),
+            (
+                ScalarType::I32,
+                Some(64),
+                None,
+                ScalarType::F32,
+                ScalarType::F32,
+                true,
+            ),
+            (
+                ScalarType::U32,
+                Some(64),
+                None,
+                ScalarType::F64,
+                ScalarType::F64,
+                true,
+            ),
+            (
+                ScalarType::U32,
+                Some(64),
+                None,
+                ScalarType::F32,
+                ScalarType::U32,
+                true,
+            ),
+            (
+                ScalarType::U32,
+                Some(64),
+                None,
+                ScalarType::F32,
+                ScalarType::F32,
+                false,
+            ),
+        ] {
+            let error = raw_shuffle_materializer_fixture(
+                scalar,
+                source_scalar,
+                bound,
+                constant,
+                SemanticValueBindingV1::CollectiveContext,
+                value_scalar,
+                destination,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&error, ProductionSemanticKirErrorV1::Unsupported {
+                    detail: "Wave64 shuffle requires exact u32/i32/f32 and an authenticated u32 lane below 64", ..
+                }),
+                "expected an actual lane/type refusal, got {error:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn raw_wave64_lane_range_rules_are_sound_against_enumeration() {
+        let ty = Type::Scalar(ScalarType::U32);
+        let lhs = ValueId(0);
+        let rhs = ValueId(1);
+        // All narrow, asymmetric intervals, including the exact Wave64 boundary.
+        for left_bound in 1..=65_u128 {
+            for right_bound in 1..=65_u128 {
+                let bounds = BTreeMap::from([(lhs, left_bound), (rhs, right_bound)]);
+                for op in [BinaryOp::BitXor, BinaryOp::BitAnd] {
+                    let bound = wave64_unsigned_bound_v1(
+                        &ty,
+                        &OperationKind::Binary { op, lhs, rhs },
+                        &bounds,
+                        &BTreeMap::new(),
+                    )
+                    .unwrap();
+                    for left in 0..left_bound {
+                        for right in 0..right_bound {
+                            let actual = if op == BinaryOp::BitXor {
+                                left ^ right
+                            } else {
+                                left & right
+                            };
+                            assert!(actual < bound, "{left} {op:?} {right} >= {bound}");
+                        }
+                    }
+                }
+            }
+        }
+        let bounds = BTreeMap::from([(lhs, 64)]);
+        for divisor in [1_u64, 3, 8, 64, 65, u64::from(u32::MAX)] {
+            let constants = BTreeMap::from([(rhs, divisor)]);
+            let bound = wave64_unsigned_bound_v1(
+                &ty,
+                &OperationKind::Binary {
+                    op: BinaryOp::Remainder,
+                    lhs,
+                    rhs,
+                },
+                &bounds,
+                &constants,
+            )
+            .unwrap();
+            for lane in 0..64_u64 {
+                assert!(u128::from(lane % divisor) < bound);
+            }
+        }
+        assert!(
+            wave64_unsigned_bound_v1(
+                &ty,
+                &OperationKind::Binary {
+                    op: BinaryOp::Remainder,
+                    lhs,
+                    rhs
+                },
+                &bounds,
+                &BTreeMap::from([(rhs, 0)]),
+            )
+            .is_none()
+        );
+        assert!(
+            wave64_unsigned_bound_v1(
+                &ty,
+                &OperationKind::Binary {
+                    op: BinaryOp::BitXor,
+                    lhs,
+                    rhs
+                },
+                &bounds,
+                &BTreeMap::new(),
+            )
+            .is_none()
+        );
+        assert_eq!(
+            wave64_unsigned_bound_v1(
+                &Type::Scalar(ScalarType::U64),
+                &OperationKind::Cast {
+                    kind: CastKind::ZeroExtend,
+                    value: lhs,
+                    to: Type::Scalar(ScalarType::U64),
+                },
+                &bounds,
+                &BTreeMap::new(),
+            ),
+            Some(64)
+        );
+        assert!(
+            wave64_unsigned_bound_v1(
+                &Type::Scalar(ScalarType::U8),
+                &OperationKind::Cast {
+                    kind: CastKind::Truncate,
+                    value: lhs,
+                    to: Type::Scalar(ScalarType::U8),
+                },
+                &BTreeMap::from([(lhs, 257)]),
+                &BTreeMap::new(),
+            )
+            .is_none()
+        );
+        assert!(
+            wave64_unsigned_bound_v1(
+                &Type::Scalar(ScalarType::I32),
+                &OperationKind::Constant(Constant::I32(-1)),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            )
+            .is_none()
+        );
+    }
+
     #[test]
     fn workgroup_reduction_accepts_only_the_closed_scalar_and_geometry_contract() {
         assert_eq!(truncate_unsigned_constant_v1(64, &Type::INDEX), Some(64),);
@@ -209,9 +668,7 @@
         let u32_ty = SemanticTypeIdV1::from_index(3);
         let source = SemanticSourceProvenanceV1::unavailable();
         let size = u8::try_from(options.bits / 8).unwrap();
-        let place = |local, ty| {
-            SemanticPlaceV1::new(SemanticLocalIdV1::from_index(local), vec![], ty).unwrap()
-        };
+        let place = |local, ty| SemanticPlaceV1::new(SemanticLocalIdV1::from_index(local), vec![], ty).unwrap();
         let operand = |local, ty| SemanticOperandV1::Copy(place(local, ty));
         let constant = |ty, value| {
             SemanticOperandV1::Constant(SemanticConstantV1::new(
@@ -228,9 +685,7 @@
                 )),
             )
         };
-        let edge = |role, target| {
-            SemanticControlFlowEdgeV1::new(role, SemanticBlockIdV1::from_index(target))
-        };
+        let edge = |role, target| SemanticControlFlowEdgeV1::new(role, SemanticBlockIdV1::from_index(target));
         let block = |tag, statements, terminator| {
             SemanticBasicBlockV1::new(
                 SemanticBlockIdentityV1::from_sha256([tag; 32]),

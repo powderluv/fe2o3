@@ -331,7 +331,8 @@ fn run_closure(
                                 },
                                 Some(cursor),
                                 None,
-                            )?;
+                                None,
+)?;
                             let mut block = BasicBlock::new(BlockId(0));
                             parent.begin_block(SemanticBlockIdV1::from_index(0), &mut block)?;
                             let prepared = parent.prepare_defined_call_arguments_v1(

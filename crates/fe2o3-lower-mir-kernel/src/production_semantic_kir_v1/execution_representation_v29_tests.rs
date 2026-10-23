@@ -213,6 +213,8 @@ fn constant(
         ],
     )
     .unwrap();
+    let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+    let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
     let mut lowering = SemanticFunctionLoweringV1::new(
         types,
         &[],
@@ -229,6 +231,7 @@ fn constant(
         1,
         false,
         128,
+        &mut lowering_budget,
     )?;
     let bytes = vec![0; types[ty.index() as usize].layout().size_bytes().unwrap() as usize];
     lowering.lower_constant_bytes(

@@ -633,4 +633,287 @@ mod guarded_opaque_divisor_tests {
             ));
         });
     }
+
+    #[derive(Clone, Copy, Debug)]
+    enum ComputedGuard {
+        Direct,
+        Copy,
+        Widen,
+        RawCopy,
+        RawWiden,
+        Narrow,
+        AfterCapture,
+        AfterComparison,
+        AfterEdge,
+        LoopWrite,
+        WrongLocal,
+        WrongEdge,
+        Bypass,
+        Late,
+    }
+
+    fn computed_guard_fixture(
+        operation: SemanticBinaryOpV1,
+        comparison: SemanticBinaryOpV1,
+        zero_left: bool,
+        shape: ComputedGuard,
+    ) -> SemanticFunctionDeclV1 {
+        let base = fixture(SCALAR_TYPE, operation, Shape::Guarded, None);
+        let alias_type = match shape {
+            ComputedGuard::Widen | ComputedGuard::RawWiden => U64_TYPE,
+            ComputedGuard::Narrow => U8_TYPE,
+            _ => SCALAR_TYPE,
+        };
+        let mut locals = base.locals().to_vec();
+        locals[2] = local(213, SCALAR_TYPE, SemanticLocalRoleV1::Temporary);
+        locals[4] = local(215, alias_type, SemanticLocalRoleV1::Temporary);
+        locals[6] = local(217, SCALAR_TYPE, SemanticLocalRoleV1::Argument(1));
+        locals.push(local(219, BOOL_TYPE, SemanticLocalRoleV1::Temporary));
+        // A computed unsigned denominator may be zero; only the guard excludes it.
+        let mut entry = vec![typed_assignment(
+            2,
+            SCALAR_TYPE,
+            SemanticRvalueKindV1::Binary {
+                operation: SemanticBinaryOpV1::Divide,
+                left: typed_operand(6, SCALAR_TYPE),
+                right: typed_constant(SCALAR_TYPE, 16, 4),
+            },
+        )];
+        let source = typed_operand(
+            if matches!(shape, ComputedGuard::WrongLocal) {
+                1
+            } else {
+                2
+            },
+            SCALAR_TYPE,
+        );
+        entry.push(typed_assignment(
+            4,
+            alias_type,
+            if alias_type == SCALAR_TYPE {
+                SemanticRvalueKindV1::Use(source)
+            } else {
+                SemanticRvalueKindV1::Cast {
+                    kind: SemanticCastKindV1::Integer,
+                    operand: source,
+                }
+            },
+        ));
+        let overwrite = || {
+            typed_assignment(
+                2,
+                SCALAR_TYPE,
+                SemanticRvalueKindV1::Use(typed_constant(SCALAR_TYPE, 0, 4)),
+            )
+        };
+        if matches!(shape, ComputedGuard::AfterCapture) {
+            entry.push(overwrite());
+        }
+        let compared = if matches!(
+            shape,
+            ComputedGuard::Direct | ComputedGuard::AfterComparison
+        ) {
+            typed_operand(2, SCALAR_TYPE)
+        } else {
+            typed_operand(4, alias_type)
+        };
+        let zero = typed_constant(
+            compared.ty(),
+            0,
+            if alias_type == U64_TYPE {
+                8
+            } else if alias_type == U8_TYPE {
+                1
+            } else {
+                4
+            },
+        );
+        entry.push(typed_assignment(
+            8,
+            BOOL_TYPE,
+            SemanticRvalueKindV1::Binary {
+                operation: comparison,
+                left: if zero_left {
+                    zero.clone()
+                } else {
+                    compared.clone()
+                },
+                right: if zero_left { compared } else { zero },
+            },
+        ));
+        if matches!(shape, ComputedGuard::AfterComparison) {
+            entry.push(overwrite());
+        }
+        let safe = if matches!(shape, ComputedGuard::AfterEdge | ComputedGuard::LoopWrite) {
+            4
+        } else {
+            1
+        };
+        let (mut false_target, mut true_target) = match comparison {
+            SemanticBinaryOpV1::Equal => (safe, 2),
+            SemanticBinaryOpV1::NotEqual => (2, safe),
+            _ => unreachable!(),
+        };
+        if matches!(shape, ComputedGuard::WrongEdge) {
+            std::mem::swap(&mut false_target, &mut true_target);
+        }
+        let guard = || zero_switch(8, BOOL_TYPE, false_target, true_target);
+        let entry_end = match shape {
+            ComputedGuard::RawCopy | ComputedGuard::RawWiden => zero_switch(4, alias_type, 2, safe),
+            ComputedGuard::Bypass => zero_switch(7, BOOL_TYPE, 1, 3),
+            ComputedGuard::Late => {
+                SemanticTerminatorKindV1::Goto(cfg_edge(SemanticEdgeRoleV1::Goto, 1))
+            }
+            _ => guard(),
+        };
+        projection_function_with_locals(
+            vec![
+                block(231, entry, entry_end),
+                block(
+                    232,
+                    base.blocks()[1].statements().to_vec(),
+                    if matches!(shape, ComputedGuard::Late) {
+                        SemanticTerminatorKindV1::Goto(cfg_edge(SemanticEdgeRoleV1::Goto, 3))
+                    } else {
+                        base.blocks()[1].terminator().kind().clone()
+                    },
+                ),
+                block(233, vec![], SemanticTerminatorKindV1::Return),
+                block(234, vec![], guard()),
+                block(
+                    235,
+                    if matches!(shape, ComputedGuard::AfterEdge) {
+                        vec![overwrite()]
+                    } else {
+                        vec![]
+                    },
+                    if matches!(shape, ComputedGuard::LoopWrite) {
+                        zero_switch(7, BOOL_TYPE, 1, 5)
+                    } else {
+                        SemanticTerminatorKindV1::Goto(cfg_edge(SemanticEdgeRoleV1::Goto, 1))
+                    },
+                ),
+                block(
+                    236,
+                    if matches!(shape, ComputedGuard::LoopWrite) {
+                        vec![overwrite()]
+                    } else {
+                        vec![]
+                    },
+                    SemanticTerminatorKindV1::Goto(cfg_edge(SemanticEdgeRoleV1::Goto, 4)),
+                ),
+            ],
+            locals,
+        )
+    }
+
+    #[test]
+    fn computed_unsigned_guards_accept_only_the_captured_value() {
+        for operation in [SemanticBinaryOpV1::Divide, SemanticBinaryOpV1::Remainder] {
+            for comparison in [SemanticBinaryOpV1::Equal, SemanticBinaryOpV1::NotEqual] {
+                for zero_left in [false, true] {
+                    for shape in [
+                        ComputedGuard::Direct,
+                        ComputedGuard::Copy,
+                        ComputedGuard::Widen,
+                        ComputedGuard::RawCopy,
+                        ComputedGuard::RawWiden,
+                    ] {
+                        let function =
+                            computed_guard_fixture(operation, comparison, zero_left, shape);
+                        let before = function.clone();
+                        with_projector(&function, |p| {
+                            assert!(
+                                check_actual(p).unwrap(),
+                                "{operation:?} {comparison:?} {zero_left} {shape:?}"
+                            );
+                            assert!(matches!(
+                                p.resolve_local(3).unwrap(),
+                                Some(DeterministicScalarSummaryV1::Derived(_))
+                            ));
+                        });
+                        assert_eq!(function, before);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn computed_unsigned_guards_reject_mutation_bypass_narrowing_and_wrong_values() {
+        for shape in [
+            ComputedGuard::Narrow,
+            ComputedGuard::AfterCapture,
+            ComputedGuard::AfterComparison,
+            ComputedGuard::AfterEdge,
+            ComputedGuard::LoopWrite,
+            ComputedGuard::WrongLocal,
+            ComputedGuard::WrongEdge,
+            ComputedGuard::Bypass,
+            ComputedGuard::Late,
+        ] {
+            for operation in [SemanticBinaryOpV1::Divide, SemanticBinaryOpV1::Remainder] {
+                for comparison in [SemanticBinaryOpV1::Equal, SemanticBinaryOpV1::NotEqual] {
+                    for zero_left in [false, true] {
+                        let function =
+                            computed_guard_fixture(operation, comparison, zero_left, shape);
+                        with_projector(&function, |p| {
+                            assert!(
+                                !check_actual(p).unwrap(),
+                                "{operation:?} {comparison:?} {zero_left} {shape:?}"
+                            );
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn computed_guard_suffix_scan_preserves_exact_work_boundaries() {
+        let function = computed_guard_fixture(
+            SemanticBinaryOpV1::Divide,
+            SemanticBinaryOpV1::NotEqual,
+            true,
+            ComputedGuard::Copy,
+        );
+        let measured = with_projector(&function, |p| {
+            assert!(check_actual(p).unwrap());
+            p.guarded_divisor_proofs.as_ref().unwrap().work
+        });
+        assert!(measured > 8 && measured < MAX_PROJECTED_LOOP_GRAPH_WORK_V1);
+        for extra in [0, 1] {
+            with_projector(&function, |p| {
+                let mut proof = SemanticAssertProofsV1::new(p.types, p.function).unwrap();
+                proof.work = MAX_PROJECTED_LOOP_GRAPH_WORK_V1 - measured + extra;
+                p.guarded_divisor_proofs = Some(proof);
+                let result = check_actual(p);
+                if extra == 0 {
+                    assert!(result.unwrap());
+                    assert_eq!(
+                        p.guarded_divisor_proofs.as_ref().unwrap().work,
+                        MAX_PROJECTED_LOOP_GRAPH_WORK_V1
+                    );
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(ProductionRankedProjectionErrorV1::Unsupported(
+                            "uniform induction CFG analysis exceeds its work limit"
+                        ))
+                    ));
+                }
+            });
+        }
+        with_projector(&function, |p| {
+            let mut proof = SemanticAssertProofsV1::new(p.types, p.function).unwrap();
+            proof.work = usize::MAX;
+            p.guarded_divisor_proofs = Some(proof);
+            assert!(matches!(
+                check_actual(p),
+                Err(ProductionRankedProjectionErrorV1::Unsupported(
+                    "uniform induction CFG analysis work overflow"
+                ))
+            ));
+        });
+    }
 }

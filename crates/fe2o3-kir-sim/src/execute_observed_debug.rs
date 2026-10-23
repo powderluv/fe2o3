@@ -35,6 +35,7 @@ impl AdmittedSimulationModuleV1 {
                 schedule: Some(ExecutionScheduleRequestV1::Public(schedule)),
                 resident_offset: 0,
                 allocation_reuse: None,
+                matrix_bf16_numerics: crate::MatrixBf16NumericsV1::ExactV1,
             },
             event_sink,
             debug_sink,

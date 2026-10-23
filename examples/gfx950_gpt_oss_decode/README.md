@@ -121,6 +121,81 @@ and `f52d49e23917bc11ac4b2ea1f3d8205d200b9d6ed7365350fc1189392ee837d5`.
 This is an end-to-end compatibility and numerical record, not a performance
 measurement or state-of-the-art claim.
 
+## Explicit SIMT and structured-tile source modes
+
+All nine existing selections retain their names and default roles. Set
+`FE2O3_GFX950_ADVANCED_MODE=simt` or `tile` to select their existing Rust
+counterparts through the same runner; omitting the variable selects the original
+canonical form. This is a bounded kernel tutorial, not a model-serving runtime.
+
+| Selection | Ablation/role | SIMT and tile counterparts |
+| --- | --- | --- |
+| default / `optimized` | Fused layer tile | Both |
+| `serial-router` | Serial 128-expert router control | Both |
+| `held-fragments` | Keep expert partials live until publication | Both |
+| `scalar-attention` | Scalar QK, original FP4 expert MFMA in canonical/tile | Both; SIMT also uses the scalar expert |
+| `pipelined-attention` | Two real double-buffered LDS pipelines | Both |
+| `interleaved-stores` | Paired attention/expert publication | Both |
+| `materialized-router` | Router component | Both |
+| `materialized-attention` | Attention component | Both |
+| `materialized-expert` | Expert component | Both |
+
+`materialized` still runs the three materialized component selections in order.
+Unsupported mode values/pairings fail before compilation or dispatch. Do not
+enable all Cargo features together: the two source modes are mutually exclusive.
+
+Compile the fused pair without executing a GPU:
+
+```bash
+FE2O3_EXAMPLE_COMPILE_ONLY=1 FE2O3_GFX950_ADVANCED_MODE=simt \
+  bash examples/gfx950_gpt_oss_decode/run-gfx950.sh
+FE2O3_EXAMPLE_COMPILE_ONLY=1 FE2O3_GFX950_ADVANCED_MODE=tile \
+  bash examples/gfx950_gpt_oss_decode/run-gfx950.sh
+```
+
+The ablation runner also accepts explicit `<selection>-simt` and
+`<selection>-tile` aliases for each of the nine table rows, using `optimized`
+for the fused default. For example, `run-ablation-gfx950.sh scalar-attention-tile`
+selects only that existing implementation. A conflicting inherited mode is
+rejected. The aggregate `materialized` command retains its three original roles.
+
+The same mode variable applies to `run-ablation-gfx950.sh`, including
+`scalar-attention` and `pipelined-attention`. Runtime commands require one
+explicit `ROCR_VISIBLE_DEVICES` UUID or ordinal. The native compiler/proof,
+binding, OCML, COV6, ABI, ISA, immutable-input, canary and full-output checks are
+not optional. Pipeline source requires the separately reviewed public compiler
+pipeline prerequisites; copying example sources alone does not supply them.
+
+SIMT consumes the same raw BF16 Q/K and OCP E2M1 expert bytes, all four separately
+scaled expert blocks, the full 128-way router over 2,880 hidden values, stable
+top-4 tie rule and all 16 items. Its FP32 operation order and collective stages
+are retained; it uses no MFMA. Tile mode uses actual checked `Tiled2D` output
+authority, not a renamed scalar kernel. Canonical, serial-router,
+scalar-attention and component tile outputs are row-major 16x16 per item.
+Held-fragment, interleaved-store and pipelined tile outputs instead preserve the
+original blocked packing via checked 4x64 tiles. Route outputs retain all 1,024
+replicated packed words. Both layouts retain all 4,096 attention and 4,096 expert
+values, the original independent oracle, input immutability and guards.
+
+Run normal binding-aware host controls for the fused source pair:
+
+```bash
+cargo fe2o3 test --all-targets \
+  --manifest-path examples/gfx950_gpt_oss_decode/Cargo.toml \
+  --features kernel-gpt-oss-decode,kernel-gpt-oss-mode-simt
+cargo fe2o3 test --all-targets \
+  --manifest-path examples/gfx950_gpt_oss_decode/Cargo.toml \
+  --features kernel-gpt-oss-decode,kernel-gpt-oss-mode-tile
+```
+
+The checked-in package test profile disables debug information so normal host
+test images remain within the existing admission bound; assertions, overflow
+checks and all source/oracle controls are unchanged. Host tests cover reference
+math, selected exports, source/phase ordering and physical output geometry.
+They are not GPU numerical qualification. All retained native/GPU tables in this
+README describe earlier campaigns. They do not qualify this public candidate or
+its newly published modes.
+
 ## Current GPU-5 performance audit
 
 The 2026-09-05 campaign measured the current 16-item WG256/grid-`[4, 1, 1]`

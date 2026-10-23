@@ -635,6 +635,8 @@ fn entry_seeds_only_the_certified_implicit_workgroup_lds_scope() {
     )
     .unwrap();
     let callables = [callable];
+    let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+    let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
     let mut lowering = SemanticFunctionLoweringV1::new(
         &types,
         &callables,
@@ -651,6 +653,7 @@ fn entry_seeds_only_the_certified_implicit_workgroup_lds_scope() {
         1,
         false,
         16,
+        &mut lowering_budget,
     )
     .unwrap();
 

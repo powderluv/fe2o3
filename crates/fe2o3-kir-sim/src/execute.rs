@@ -447,6 +447,7 @@ impl SimulationEventSinkV1 for NoopSimulationEventSinkV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SimulationExecutionV1 {
     identity: SimulationKernelIrIdentityV1,
+    matrix_bf16_numerics: crate::MatrixBf16NumericsV1,
     dynamic_workgroup_memory: Option<DynamicWorkgroupMemoryRequestV1>,
     arguments: Vec<SimulationArgumentV1>,
     shared_buffers: Vec<SharedBufferV1>,
@@ -469,6 +470,10 @@ struct SimulationSupplementalV1 {
 }
 
 impl SimulationExecutionV1 {
+    /// Actual interpreter-selected numerical semantics, not hardware authority.
+    pub const fn matrix_bf16_numerics(&self) -> crate::MatrixBf16NumericsV1 {
+        self.matrix_bf16_numerics
+    }
     /// Returns the exact canonical KIR identity that was simulated.
     pub const fn identity(&self) -> &SimulationKernelIrIdentityV1 {
         &self.identity
@@ -782,6 +787,11 @@ pub enum SimulationExecutionErrorKindV1 {
         lane: u8,
         component: u8,
     },
+    NonFiniteMatrixResult {
+        lane: u8,
+        component: u8,
+        reduction: u8,
+    },
     WaveShuffleSourceOutOfRange {
         source_lane: u32,
         tile_width: u32,
@@ -849,6 +859,7 @@ impl SimulationExecutionErrorKindV1 {
             | Self::DivergentWave(_)
             | Self::MismatchedWave(_)
             | Self::UnsupportedMatrixInputDomain { .. }
+            | Self::NonFiniteMatrixResult { .. }
             | Self::WaveShuffleSourceOutOfRange { .. }
             | Self::WorkgroupSchedulerNoProgress { .. }
             | Self::ScheduleDecisionLimit { .. }
@@ -997,6 +1008,7 @@ impl AdmittedSimulationModuleV1 {
                 schedule: None,
                 resident_offset: 0,
                 allocation_reuse: None,
+                matrix_bf16_numerics: crate::MatrixBf16NumericsV1::ExactV1,
             },
             &mut event_sink,
             &mut debug_sink,
@@ -1085,6 +1097,7 @@ impl AdmittedSimulationModuleV1 {
                 schedule: Some(ExecutionScheduleRequestV1::Public(schedule)),
                 resident_offset,
                 allocation_reuse: None,
+                matrix_bf16_numerics: crate::MatrixBf16NumericsV1::ExactV1,
             },
             &mut event_sink,
             &mut debug_sink,
@@ -1132,6 +1145,7 @@ impl AdmittedSimulationModuleV1 {
                 }),
                 resident_offset,
                 allocation_reuse: None,
+                matrix_bf16_numerics: crate::MatrixBf16NumericsV1::ExactV1,
             },
             &mut event_sink,
             &mut debug_sink,
@@ -1188,6 +1202,7 @@ impl AdmittedSimulationModuleV1 {
                 schedule: None,
                 resident_offset: 0,
                 allocation_reuse: None,
+                matrix_bf16_numerics: crate::MatrixBf16NumericsV1::ExactV1,
             },
             sink,
             &mut debug_sink,
@@ -1226,6 +1241,7 @@ impl AdmittedSimulationModuleV1 {
                 schedule: None,
                 resident_offset: 0,
                 allocation_reuse: None,
+                matrix_bf16_numerics: crate::MatrixBf16NumericsV1::ExactV1,
             },
             &mut event_sink,
             debug_sink,
@@ -1261,6 +1277,7 @@ impl AdmittedSimulationModuleV1 {
                 schedule: None,
                 resident_offset: 0,
                 allocation_reuse: None,
+                matrix_bf16_numerics: crate::MatrixBf16NumericsV1::ExactV1,
             },
             &mut event_sink,
             debug_sink,
@@ -1296,6 +1313,7 @@ impl AdmittedSimulationModuleV1 {
                 schedule: Some(ExecutionScheduleRequestV1::Public(schedule)),
                 resident_offset: 0,
                 allocation_reuse: None,
+                matrix_bf16_numerics: crate::MatrixBf16NumericsV1::ExactV1,
             },
             &mut event_sink,
             debug_sink,
@@ -1333,6 +1351,7 @@ impl AdmittedSimulationModuleV1 {
                 schedule: Some(ExecutionScheduleRequestV1::Public(schedule)),
                 resident_offset: 0,
                 allocation_reuse: None,
+                matrix_bf16_numerics: crate::MatrixBf16NumericsV1::ExactV1,
             },
             &mut event_sink,
             debug_sink,
@@ -1364,6 +1383,7 @@ impl AdmittedSimulationModuleV1 {
                 schedule: None,
                 resident_offset: 0,
                 allocation_reuse: None,
+                matrix_bf16_numerics: crate::MatrixBf16NumericsV1::ExactV1,
             },
             sink,
             &mut debug_sink,
@@ -1926,6 +1946,7 @@ struct Engine<'a, S> {
     switch_targets: Vec<Vec<SwitchLookup>>,
     target: SimulationTargetV1,
     dynamic_workgroup_memory: Option<DynamicWorkgroupMemoryRequestV1>,
+    matrix_bf16_numerics: crate::MatrixBf16NumericsV1,
     limits: SimulationLimitsV1,
     policy: EventPolicyV1,
     memory: Memory,
@@ -3679,6 +3700,7 @@ struct ExecutionConfiguration<'a> {
     schedule: Option<ExecutionScheduleRequestV1<'a>>,
     resident_offset: usize,
     allocation_reuse: Option<SimulationAllocationReuseV1>,
+    matrix_bf16_numerics: crate::MatrixBf16NumericsV1,
 }
 
 // Keep one-time layout construction temporaries off the long-lived scheduler
@@ -3836,6 +3858,7 @@ fn execute_with_physical_debug(
         schedule,
         resident_offset,
         allocation_reuse,
+        matrix_bf16_numerics,
     } = configuration;
     let workgroup_participants = usize::try_from(plan.workgroup[0])
         .ok()
@@ -3905,6 +3928,7 @@ fn execute_with_physical_debug(
         switch_targets,
         target,
         dynamic_workgroup_memory: plan.dynamic_workgroup_memory,
+        matrix_bf16_numerics,
         limits,
         policy,
         memory,
@@ -4079,6 +4103,7 @@ fn execute_with_physical_debug(
     let supplemental = collect_supplemental_observations(&engine, schedule.records)?;
     Ok(SimulationExecutionV1 {
         identity: admitted.identity,
+        matrix_bf16_numerics,
         dynamic_workgroup_memory: plan.dynamic_workgroup_memory,
         arguments,
         shared_buffers,
@@ -4611,7 +4636,11 @@ fn resolve_ready_collectives<'a>(
         };
         let matrix_exact = matrix_bf16_exact_v1::is_operation(arrival.operation);
         if matrix_exact {
-            let work = matrix_bf16_exact_v1::resolution_work(machines.len()).ok_or_else(|| {
+            let work = matrix_bf16_exact_v1::resolution_work_with_numerics(
+                machines.len(),
+                engine.matrix_bf16_numerics,
+            )
+            .ok_or_else(|| {
                 engine.at(
                     arrival.site,
                     SimulationExecutionErrorKindV1::StepLimit {
@@ -9115,6 +9144,7 @@ mod tests {
             switch_targets: vec![vec![]],
             target: SimulationTargetV1::amdgpu_64(),
             dynamic_workgroup_memory: None,
+            matrix_bf16_numerics: crate::MatrixBf16NumericsV1::ExactV1,
             limits: SimulationLimitsV1::default(),
             policy: EventPolicyV1::Disabled,
             memory: Memory {

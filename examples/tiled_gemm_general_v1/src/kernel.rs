@@ -19,7 +19,7 @@ fn accessed_extent(rows: u32, columns: u32, stride: u32) -> u64 {
     if rows == 0 || columns == 0 {
         return 0;
     }
-    u64::from(rows - 1) * u64::from(stride) + u64::from(columns)
+    ((rows - 1) as u64) * (stride as u64) + (columns as u64)
 }
 
 /// Computes `C = alpha * A * B + beta * C` for dynamic row-major matrices.
@@ -76,10 +76,25 @@ pub fn tiled_gemm_general_v1(
     let tile_row = tile / tiles_per_row;
     let tile_column = tile % tiles_per_row;
 
+    if tile_row > usize::MAX / 16 {
+        return Err(KernelError::InvalidArgument);
+    }
+    let tile_row_base = tile_row * 16;
+    if tile_column > usize::MAX / 16 {
+        return Err(KernelError::InvalidArgument);
+    }
+    let tile_column_base = tile_column * 16;
+
     // Typed views centralize layout and padding; the output witness captures ownership.
     let output_tile = thread_index.checked_tiled_2d::<64, 16, 16, 4>();
-    let a_matrix = Bf16MfmaAMatrix::row_major(a, 0, m as usize, k as usize, lda as usize)?;
-    let b_matrix = Bf16MfmaBMatrix::row_major(b, 0, k as usize, n as usize, ldb as usize)?;
+    let Ok(a_matrix) = Bf16MfmaAMatrix::row_major(a, 0, m as usize, k as usize, lda as usize)
+    else {
+        return Err(KernelError::InvalidArgument);
+    };
+    let Ok(b_matrix) = Bf16MfmaBMatrix::row_major(b, 0, k as usize, n as usize, ldb as usize)
+    else {
+        return Err(KernelError::InvalidArgument);
+    };
     let wave_lane = WaveLane::<Wave64>::current();
     let matrix = Matrix::current();
     let mut accumulator = F32AccumulatorFragment::zero(&wave_lane);
@@ -92,8 +107,8 @@ pub fn tiled_gemm_general_v1(
     let mut rhs_pipeline =
         WorkgroupPipeline::<Bf16MfmaBFragment<'_>, 2, 64, 1>::current(&mut pipeline_scope);
 
-    let lhs = a_matrix.load_m16k16(&wave_lane, tile_row * 16, 0);
-    let rhs = b_matrix.load_k16n16(&wave_lane, 0, tile_column * 16);
+    let lhs = a_matrix.load_m16k16(&wave_lane, tile_row_base, 0);
+    let rhs = b_matrix.load_k16n16(&wave_lane, 0, tile_column_base);
     lhs_pipeline.stage(0);
     lhs_pipeline.write(0, lane, lhs);
     lhs_pipeline.commit(0);
@@ -105,8 +120,8 @@ pub fn tiled_gemm_general_v1(
     while phase_index < phase_count {
         let future_epoch = phase_index + 1;
         let next_phase = future_epoch * 16;
-        let next_lhs = a_matrix.load_m16k16(&wave_lane, tile_row * 16, next_phase);
-        let next_rhs = b_matrix.load_k16n16(&wave_lane, next_phase, tile_column * 16);
+        let next_lhs = a_matrix.load_m16k16(&wave_lane, tile_row_base, next_phase);
+        let next_rhs = b_matrix.load_k16n16(&wave_lane, next_phase, tile_column_base);
 
         lhs_pipeline.stage(future_epoch);
         lhs_pipeline.write(future_epoch, lane, next_lhs);

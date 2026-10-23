@@ -117,6 +117,7 @@ fn traced_original(
 
 fn project_original_with_work(
     callables: &[SemanticCallableDeclV1],
+    types: &[SemanticTypeDeclV1],
     function: &SemanticFunctionDeclV1,
     enum_payload_dominance: &SemanticEnumPayloadDominanceV1,
     local_allocations: &[Option<AllocationContractV1>],
@@ -144,6 +145,7 @@ fn project_original_with_work(
     )?;
     let pipeline_payloads = collect_workgroup_pipeline_payloads_v1(
         callables,
+        types,
         function,
         enum_payload_dominance,
         &pipeline_owners,
@@ -548,8 +550,8 @@ fn oracle_precharge_precedes_all_independent_expected_payloads() {
     }
     // Rustfmt may retain a trailing argument comma; the arguments stay exact.
     assert!(
-        prepare.contains("project_original_with_work(callables,function,enumeration,&self.allocations,&self.constants)")
-            || prepare.contains("project_original_with_work(callables,function,enumeration,&self.allocations,&self.constants,)")
+        prepare.contains("project_original_with_work(callables,types,function,enumeration,&self.allocations,&self.constants)")
+            || prepare.contains("project_original_with_work(callables,types,function,enumeration,&self.allocations,&self.constants,)")
     );
     assert!(!prepare.contains("actual.initial_entries") && !prepare.contains("actual.layouts"));
 }
@@ -778,6 +780,7 @@ impl OriginalCapabilityOracleV1 {
         )?;
         self.payloads = collect_workgroup_pipeline_payloads_v1(
             callables,
+            types,
             function,
             enumeration,
             &self.owners,
@@ -823,6 +826,7 @@ impl OriginalCapabilityOracleV1 {
         drop(original_initial);
         let original_payloads = collect_workgroup_pipeline_payloads_v1(
             callables,
+            types,
             function,
             enumeration,
             &self.owners,
@@ -850,6 +854,7 @@ impl OriginalCapabilityOracleV1 {
         drop(original_repeated);
         let (effects, original_work) = project_original_with_work(
             callables,
+            types,
             function,
             enumeration,
             &self.allocations,

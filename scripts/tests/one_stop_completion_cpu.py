@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Extraction/runner controls only: no Rust compiler, native owner, or GPU."""
+import errno
 import importlib.util
 import json
 import os
@@ -125,6 +126,107 @@ class ExtractionControls(unittest.TestCase):
             result = cpu.run_child([sys.executable, "-c", "import sys; print('cpu only'); print('note', file=sys.stderr)"], "child", output, {"PATH": "/usr/bin:/bin"}, 5)
             self.assertEqual(result, {"stdout": "cpu only\n", "stderr": "note\n"})
             self.assertEqual((output / "child.stdout").read_text(), "cpu only\n")
+
+    def test_child_live_scratch_allows_disappearing_compiler_temporary(self):
+        with tempfile.TemporaryDirectory(prefix="completion-control-") as name:
+            output = Path(name)
+            transient = output / "compiler.cdtor.o"
+            transient.write_bytes(b"temporary")
+            original_lstat = os.lstat
+            removed = []
+
+            def unlink_before_lstat(path, *args, **kwargs):
+                if Path(path) == transient and not removed:
+                    transient.unlink()
+                    removed.append(path)
+                return original_lstat(path, *args, **kwargs)
+
+            with mock.patch.object(cpu.os, "lstat", side_effect=unlink_before_lstat):
+                result = cpu.run_child(
+                    [sys.executable, "-c", "print('compiled')"], "transient",
+                    output, {"PATH": "/usr/bin:/bin"}, 5)
+            self.assertEqual(len(removed), 1)
+            self.assertEqual(result["stdout"], "compiled\n")
+            self.assertTrue(json.loads((output / "transient.cleanup.json").read_text())["direct_child_reaped"])
+
+    def test_live_scratch_counts_disappeared_input_but_snapshot_refuses(self):
+        with tempfile.TemporaryDirectory(prefix="completion-control-") as name:
+            output = Path(name)
+            required = output / "cpu.rs"
+            required.write_bytes(b"required input")
+            original_lstat = os.lstat
+
+            def unlink_before_lstat(path, *args, **kwargs):
+                required.unlink()
+                return original_lstat(path, *args, **kwargs)
+
+            with mock.patch.object(cpu.os, "lstat", side_effect=unlink_before_lstat):
+                self.assertEqual(cpu.scratch_size(output, live=True),
+                                 {"entries": 1, "logical_bytes": 0})
+            with self.assertRaises(FileNotFoundError):
+                cpu.read_snapshot(required, cpu.SOURCE_CAP)
+
+    def test_live_scratch_disappeared_entries_still_hit_entry_cap(self):
+        with tempfile.TemporaryDirectory(prefix="completion-control-") as name:
+            output = Path(name)
+            for index in range(257):
+                (output / str(index)).touch()
+            original_lstat = os.lstat
+            removed = []
+
+            def unlink_before_lstat(path, *args, **kwargs):
+                Path(path).unlink()
+                removed.append(path)
+                return original_lstat(path, *args, **kwargs)
+
+            with mock.patch.object(cpu.os, "lstat", side_effect=unlink_before_lstat):
+                with self.assertRaisesRegex(ValueError, "scratch entry cap"):
+                    cpu.scratch_size(output, live=True)
+            self.assertEqual(len(removed), 256)
+
+    def test_default_and_explicit_quiescent_scratch_remain_strict(self):
+        for options in ({}, {"live": False}):
+            with self.subTest(options=options), tempfile.TemporaryDirectory(prefix="completion-control-") as name:
+                output = Path(name)
+                transient = output / "compiler.cdtor.o"
+                transient.touch()
+                original_lstat = os.lstat
+
+                def unlink_before_lstat(path, *args, **kwargs):
+                    transient.unlink()
+                    return original_lstat(path, *args, **kwargs)
+
+                with mock.patch.object(cpu.os, "lstat", side_effect=unlink_before_lstat):
+                    with self.assertRaises(FileNotFoundError):
+                        cpu.scratch_size(output, **options)
+
+    def test_scratch_preserves_other_os_errors_in_both_modes(self):
+        for live in (False, True):
+            for error in (PermissionError(errno.EACCES, "denied"), OSError(errno.EIO, "I/O failure")):
+                with self.subTest(live=live, error=error), tempfile.TemporaryDirectory(prefix="completion-control-") as name:
+                    output = Path(name)
+                    (output / "entry").touch()
+                    with mock.patch.object(cpu.os, "lstat", side_effect=error):
+                        with self.assertRaises(type(error)) as caught:
+                            cpu.scratch_size(output, live=live)
+                    self.assertIs(caught.exception, error)
+
+    def test_scratch_preserves_symlink_special_and_byte_refusals_in_both_modes(self):
+        for live in (False, True):
+            for kind, message in (("symlink", "scratch symlink"), ("fifo", "scratch special"),
+                                  ("bytes", "scratch logical byte cap")):
+                with self.subTest(live=live, kind=kind), tempfile.TemporaryDirectory(prefix="completion-control-") as name:
+                    output = Path(name)
+                    entry = output / "entry"
+                    if kind == "symlink":
+                        entry.symlink_to(output / "missing")
+                    elif kind == "fifo":
+                        os.mkfifo(entry)
+                    else:
+                        entry.write_bytes(b"x" * 17)
+                    with mock.patch.object(cpu, "SCRATCH_CAP", 16):
+                        with self.assertRaisesRegex(ValueError, message):
+                            cpu.scratch_size(output, live=live)
 
     def test_child_timeout_is_terminal_and_retains_logs(self):
         with tempfile.TemporaryDirectory(prefix="completion-control-") as name:

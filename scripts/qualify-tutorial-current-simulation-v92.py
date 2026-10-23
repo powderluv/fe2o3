@@ -98,15 +98,15 @@ def run(args, *, runner=gate.run_command, environment=None):
     environment = dict(os.environ if environment is None else environment)
     root, manifest_path = args.repo_root.resolve(strict=True), args.manifest.resolve(strict=True)
     validator, _, manifest, manifest_sha, roster = gate.load_inputs(root, manifest_path)
-    require(len(roster) == 64 and sum(bool(row[2]) for row in roster.values()) == 3,
-            "complete registered 64-case/3-negative corpus required")
+    require(len(roster) == 109 and sum(bool(row[2]) for row in roster.values()) == 3,
+            "complete registered 109-case/3-negative corpus required")
     names = sorted({name for fixture, _, negative in roster.values() if not negative
                     for name in fixture["compilerInput"]["kernelSymbols"]})
     require(len(names) == 45, "complete current positive kernel corpus required")
     output = args.output.resolve()
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
     report = {"schema": "fe2o3-tutorial-current-qualification-v92", "manifestSha256": manifest_sha,
-              "registeredInvocations": 64, "positiveInvocations": 61, "negativeInvocations": 3,
+              "registeredInvocations": 109, "positiveInvocations": 106, "negativeInvocations": 3,
               "complete": False, "qualified": False, "currentCompilerSimulationPassed": False,
               "legacyBundleContractsReinterpreted": False, **simulation.NO_AUTHORITY, "cases": []}
     gate.write_report(output, report)
@@ -133,7 +133,7 @@ def run(args, *, runner=gate.run_command, environment=None):
                             ("gfx942", "gfx950"), args.compile_timeout, gate.MAX_LOG_BYTES,
                             runner=runner, environment=environment, production=True,
                             capture_graphs=True, isolate_negative_outputs=True)
-    require(census["coversAllRegisteredInvocations"] and len(census["cases"]) == 64,
+    require(census["coversAllRegisteredInvocations"] and len(census["cases"]) == 109,
             "actual compilation census dropped invocations")
     for case, (key, (fixture, references, negative)) in zip(
             census["cases"], sorted(roster.items()), strict=True):

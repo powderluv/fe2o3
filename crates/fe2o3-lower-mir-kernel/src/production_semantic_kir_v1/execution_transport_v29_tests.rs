@@ -88,10 +88,11 @@ fn function_with_reference(
     .unwrap()
 }
 
-fn lowering<'a>(
-    types: &'a [SemanticTypeDeclV1],
-    function: &'a SemanticFunctionDeclV1,
-) -> SemanticFunctionLoweringV1<'a, 'a> {
+fn lowering<'source, 'service, 'work>(
+    types: &'source [SemanticTypeDeclV1],
+    function: &'source SemanticFunctionDeclV1,
+    budget: &'service mut ArgumentBudgetV1<'work>,
+) -> SemanticFunctionLoweringV1<'source, 'service> {
     SemanticFunctionLoweringV1::new(
         types,
         &[],
@@ -108,6 +109,7 @@ fn lowering<'a>(
         1,
         false,
         128,
+        budget,
     )
     .unwrap()
 }
@@ -190,9 +192,8 @@ fn outer_emitter_refuses_nominal_execution_without_a_source_cursor() {
     let types = types();
     let function = function(CONTEXT, vec![]);
     let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(10_000);
-    let mut budget = ArgumentBudgetV1::new(&mut work, 0);
-    let mut lowering = lowering(&types, &function);
-    lowering.emission_work = Some(&mut budget);
+    let mut budget = ArgumentBudgetV1::new(&mut work, 16 * 1024 * 1024);
+    let mut lowering = lowering(&types, &function, &mut budget);
     lowering.locals[1] = Some(SemanticValueBindingV1::Execution(context(&types, 100)));
     let mut operations = Vec::new();
     refused(
@@ -291,7 +292,10 @@ fn archive_check_rejects_changed_producers_borrows_and_missing_phi_bindings() {
 fn execution_whole_move_consumes_binding_and_copy_does_not() {
     let types = types();
     let function = function(CONTEXT, vec![]);
-    let mut lowering = lowering(&types, &function);
+    let mut emission_work =
+        fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+    let mut emission_budget = ArgumentBudgetV1::new(&mut emission_work, 16 * 1024 * 1024);
+    let mut lowering = lowering(&types, &function, &mut emission_budget);
     let expected = context(&types, 100);
     lowering.locals[1] = Some(SemanticValueBindingV1::Execution(expected.clone()));
     let mut operations = Vec::new();
@@ -342,7 +346,10 @@ fn execution_projected_moves_preserve_tombstones_and_reject_partial_whole_moves(
         SemanticTypeShapeV1::Tuple(SemanticAggregateTypeV1::new(vec![CONTEXT, CONTEXT]).unwrap()),
     ));
     let function = function(tuple, vec![]);
-    let mut lowering = lowering(&types, &function);
+    let mut emission_work =
+        fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+    let mut emission_budget = ArgumentBudgetV1::new(&mut emission_work, 16 * 1024 * 1024);
+    let mut lowering = lowering(&types, &function, &mut emission_budget);
     let first = context(&types, 100);
     let second = context(&types, 101);
     let aggregate = || {
@@ -446,7 +453,10 @@ fn execution_borrow_requires_the_retained_assignment_not_an_equal_clone() {
     );
     let empty = function(CONTEXT, vec![]);
     let function = function(CONTEXT, vec![statement]);
-    let mut lowering = lowering(&types, &empty);
+    let mut emission_work =
+        fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+    let mut emission_budget = ArgumentBudgetV1::new(&mut emission_work, 16 * 1024 * 1024);
+    let mut lowering = lowering(&types, &empty, &mut emission_budget);
     // The ordinary SSA gate rejects this borrow without an authenticated
     // consumer. Point only the hook's borrowed source declaration at the real
     // assignment; this is not a materialized or admitted source/SSA owner.
@@ -548,6 +558,28 @@ fn ordinary_operands_without_a_cursor_still_require_the_exact_shared_work_budget
     ] {
         let function = function(input, vec![]);
         let expected = binding.values().unwrap();
+        let (constructor_work, constructor_storage, constructor_peak) = {
+            let mut baseline_work =
+                fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+            let mut baseline_budget =
+                ArgumentBudgetV1::new(&mut baseline_work, 16 * 1024 * 1024);
+            baseline_budget.reserve_storage(FLOOR).unwrap();
+            let baseline = lowering(&types, &function, &mut baseline_budget);
+            drop(baseline);
+            (
+                baseline_budget.work(),
+                baseline_budget.storage() - FLOOR,
+                baseline_budget.peak_storage() - FLOOR,
+            )
+        };
+        eprintln!(
+            "ordinary-operand constructor prefix: input={input:?} work={constructor_work} storage={constructor_storage} peak={constructor_peak}"
+        );
+        // Keep constructor scratch headroom occupied as an explicit test floor.
+        // Constructor-owned storage is never released or replaced. The original
+        // operation allowances therefore still test zero/one-under/exact storage.
+        let scratch_floor = constructor_peak.checked_sub(constructor_storage).unwrap();
+        let storage_floor = FLOOR + constructor_peak;
         let mut cases = vec![
             (0, storage, Expected::Work),
             (exact - 1, storage, Expected::Work),
@@ -560,13 +592,20 @@ fn ordinary_operands_without_a_cursor_still_require_the_exact_shared_work_budget
             ]);
         }
         for (limit, storage_limit, outcome) in cases {
-            let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(limit);
-            let mut budget = ArgumentBudgetV1::new(&mut work, FLOOR + storage_limit);
+            let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(
+                constructor_work + limit,
+            );
+            let mut budget = ArgumentBudgetV1::new(&mut work, storage_floor + storage_limit);
             budget.reserve_storage(FLOOR).unwrap();
             let ledger = budget.work_ledger_identity_v1();
-            let mut lowering = lowering(&types, &function);
+            let mut lowering = lowering(&types, &function, &mut budget);
+            let attached = lowering.emission_work.as_deref_mut().unwrap();
+            assert_eq!(attached.emission_service_work_v1(), Some(constructor_work));
+            assert_eq!(attached.storage(), FLOOR + constructor_storage);
+            assert!(attached.work_ledger_identity_v1() == ledger);
+            attached.reserve_storage(scratch_floor).unwrap();
+            assert_eq!(attached.storage(), storage_floor);
             lowering.locals[1] = Some(binding.clone());
-            lowering.emission_work = Some(&mut budget);
             assert!(lowering.execution.is_none());
             let next_value = lowering.next_value;
             let mut operations = Vec::new();
@@ -603,8 +642,8 @@ fn ordinary_operands_without_a_cursor_still_require_the_exact_shared_work_budget
                         _ => 0,
                     };
                     assert_eq!(live, storage);
-                    assert_eq!(budget.storage(), FLOOR + live);
-                    assert_eq!(budget.work(), exact);
+                    assert_eq!(budget.storage(), storage_floor + live);
+                    assert_eq!(budget.work(), constructor_work + exact);
                     drop(copied);
                     budget.release_storage(live).unwrap();
                 }
@@ -614,11 +653,14 @@ fn ordinary_operands_without_a_cursor_still_require_the_exact_shared_work_budget
                         ArgumentResourceV1::Work(error),
                     )),
                 ) => {
-                    assert_eq!(error.actual(), if limit == 0 { 4 } else { exact });
-                    assert_eq!(error.limit(), limit);
+                    assert_eq!(
+                        error.actual(),
+                        constructor_work + if limit == 0 { 4 } else { exact },
+                    );
+                    assert_eq!(error.limit(), constructor_work + limit);
                     failed_work = Some(error.actual());
                     if limit == exact - 1 {
-                        assert_eq!(budget.peak_storage(), FLOOR + storage);
+                        assert_eq!(budget.peak_storage(), storage_floor + storage);
                     }
                 }
                 (
@@ -627,13 +669,13 @@ fn ordinary_operands_without_a_cursor_still_require_the_exact_shared_work_budget
                         ArgumentResourceV1::Storage(_),
                     )),
                 ) => {
-                    assert_eq!(budget.work(), 16 + SLOT_LOOKUPS);
-                    assert_eq!(budget.failed_storage(), Some(FLOOR + storage));
+                    assert_eq!(budget.work(), constructor_work + 16 + SLOT_LOOKUPS);
+                    assert_eq!(budget.failed_storage(), Some(storage_floor + storage));
                 }
                 (outcome, result) => panic!("expected {outcome:?}, got {result:?}"),
             }
-            assert_eq!(budget.storage(), FLOOR);
-            assert!(budget.work() <= limit);
+            assert_eq!(budget.storage(), storage_floor);
+            assert!(budget.work() <= constructor_work + limit);
             assert_eq!(work.failed_work(), failed_work);
         }
     }
@@ -643,12 +685,13 @@ fn ordinary_operands_without_a_cursor_still_require_the_exact_shared_work_budget
 fn emission_ledger_is_restored_after_consumer_unwind() {
     let types = types();
     let function = function(CONTEXT, vec![]);
-    let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(100);
-    let mut budget = ArgumentBudgetV1::new(&mut work, 0);
+    let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+    let mut budget = ArgumentBudgetV1::new(&mut work, 16 * 1024 * 1024);
     let original_ledger = budget.work_ledger_identity_v1();
-    let original_work = budget.work();
-    let mut lowering = lowering(&types, &function);
-    lowering.emission_work = Some(&mut budget);
+    let mut lowering = lowering(&types, &function, &mut budget);
+    let attached = lowering.emission_work.as_deref().unwrap();
+    let original_work = attached.emission_service_work_v1().unwrap();
+    let original_storage = attached.storage();
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = lowering.with_emission_budget_v1::<()>(|this, meter| {
             assert!(this.emission_work.is_none());
@@ -674,7 +717,7 @@ fn emission_ledger_is_restored_after_consumer_unwind() {
     assert!(lowering.emission_work.is_some());
     drop(lowering);
     assert_eq!(budget.work(), original_work + 10);
-    assert_eq!(budget.storage(), 0);
+    assert_eq!(budget.storage(), original_storage);
 }
 
 #[test]
@@ -685,7 +728,10 @@ fn execution_storage_dead_prevents_later_operand_use() {
         SemanticStatementKindV1::StorageDead(SemanticLocalIdV1::from_index(1)),
     );
     let function = function(CONTEXT, vec![statement]);
-    let mut lowering = lowering(&types, &function);
+    let mut emission_work =
+        fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+    let mut emission_budget = ArgumentBudgetV1::new(&mut emission_work, 16 * 1024 * 1024);
+    let mut lowering = lowering(&types, &function, &mut emission_budget);
     lowering.locals[1] = Some(SemanticValueBindingV1::Execution(context(&types, 100)));
     let mut operations = Vec::new();
     lowering
@@ -714,7 +760,10 @@ fn execution_dereference_retains_the_complete_borrow_and_cannot_move_out() {
         (SHARED_CONTEXT, SemanticBorrowKindV1::Shared),
     ] {
         let function = function(reference, vec![]);
-        let mut lowering = lowering(&types, &function);
+        let mut emission_work =
+            fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+        let mut emission_budget = ArgumentBudgetV1::new(&mut emission_work, 16 * 1024 * 1024);
+        let mut lowering = lowering(&types, &function, &mut emission_budget);
         let expected = borrowed(&types, reference, kind);
         lowering.locals[1] = Some(SemanticValueBindingV1::ExecutionBorrow(expected.clone()));
         let mut operations = Vec::new();
@@ -754,7 +803,10 @@ fn execution_dereference_retains_the_complete_borrow_and_cannot_move_out() {
 fn execution_referent_cannot_be_transported_as_an_owned_operand() {
     let types = types();
     let function = function(CONTEXT, vec![]);
-    let mut lowering = lowering(&types, &function);
+    let mut emission_work =
+        fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+    let mut emission_budget = ArgumentBudgetV1::new(&mut emission_work, 16 * 1024 * 1024);
+    let mut lowering = lowering(&types, &function, &mut emission_budget);
     let expected = borrowed(&types, MUT_CONTEXT, SemanticBorrowKindV1::Mutable);
     lowering.locals[1] = Some(SemanticValueBindingV1::ExecutionReferent(expected.clone()));
     let mut operations = Vec::new();
@@ -799,7 +851,10 @@ fn execution_reborrow_hook_requires_retained_source_and_preserves_parent() {
             );
             let empty = function_with_reference(parent_reference, reference, vec![]);
             let source = function_with_reference(parent_reference, reference, vec![statement]);
-            let mut lowering = lowering(&types, &empty);
+            let mut emission_work =
+                fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+            let mut emission_budget = ArgumentBudgetV1::new(&mut emission_work, 16 * 1024 * 1024);
+            let mut lowering = lowering(&types, &empty, &mut emission_budget);
             // Only the retained-assignment hook is exercised, as in the borrow fixture above.
             lowering.function = &source;
             let parent = borrowed(&types, parent_reference, parent_kind);
@@ -867,7 +922,10 @@ fn execution_reborrow_uses_the_actual_root_reference_type() {
     );
     let empty = function_with_reference(SHARED_CONTEXT, SHARED_CONTEXT, vec![]);
     let source = function_with_reference(SHARED_CONTEXT, SHARED_CONTEXT, vec![statement]);
-    let mut lowering = lowering(&types, &empty);
+    let mut emission_work =
+        fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+    let mut emission_budget = ArgumentBudgetV1::new(&mut emission_work, 16 * 1024 * 1024);
+    let mut lowering = lowering(&types, &empty, &mut emission_budget);
     lowering.function = &source;
     let parent = borrowed(&types, MUT_CONTEXT, SemanticBorrowKindV1::Mutable);
     lowering.locals[1] = Some(SemanticValueBindingV1::ExecutionBorrow(parent.clone()));

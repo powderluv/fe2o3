@@ -25,6 +25,10 @@
 
 #[cfg(not(target_arch = "amdgpu"))]
 pub mod contract;
+#[cfg(not(feature = "tile-kernel"))]
+pub mod kernel;
+#[cfg(feature = "tile-kernel")]
+#[path = "tiled_kernel.rs"]
 pub mod kernel;
 #[cfg(not(target_arch = "amdgpu"))]
 pub mod oracle;

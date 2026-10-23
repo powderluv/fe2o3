@@ -122,6 +122,56 @@ pub fn evaluate_reference_v1(
     Ok(output)
 }
 
+/// Checks every finite logical output and every bitwise-preserved padding slot.
+/// Returns the maximum absolute error; nonfinite values cannot satisfy tolerance.
+pub fn validate_output_v1(
+    actual: &[f32],
+    expected: &[f32],
+    initial_output: &[f32],
+    layout: ReferenceLayoutV1,
+) -> Result<f32, String> {
+    let rows = layout
+        .batch_heads
+        .checked_mul(layout.query_rows_padded)
+        .ok_or("output row extent overflow")? as usize;
+    let length = rows
+        .checked_mul(layout.output_stride as usize)
+        .ok_or("output physical extent overflow")?;
+    if layout.value_dimension > layout.output_stride
+        || actual.len() != length
+        || expected.len() != length
+        || initial_output.len() != length
+    {
+        return Err("output validation shape mismatch".into());
+    }
+    let mut maximum_error = 0.0_f32;
+    for row in 0..rows {
+        for column in 0..layout.output_stride as usize {
+            let index = row * layout.output_stride as usize + column;
+            if column < layout.value_dimension as usize {
+                let error = (actual[index] - expected[index]).abs();
+                let tolerance = 5.0e-3_f32.max(expected[index].abs() * 5.0e-3);
+                if !actual[index].is_finite()
+                    || !expected[index].is_finite()
+                    || !error.is_finite()
+                    || error > tolerance
+                {
+                    return Err(format!(
+                        "attention mismatch at ({row}, {column}): got {}, expected {}, tolerance {tolerance}",
+                        actual[index], expected[index]
+                    ));
+                }
+                maximum_error = maximum_error.max(error);
+            } else if actual[index].to_bits() != initial_output[index].to_bits() {
+                return Err(format!(
+                    "attention modified output padding at ({row}, {column})"
+                ));
+            }
+        }
+    }
+    Ok(maximum_error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,5 +243,126 @@ mod tests {
         )
         .unwrap();
         assert!((output[0] - 5.0).abs() < 1.0e-6);
+    }
+
+    fn output_check_layout() -> ReferenceLayoutV1 {
+        ReferenceLayoutV1 {
+            batch_heads: 1,
+            queries: 1,
+            query_rows_padded: 1,
+            keys: 1,
+            keys_padded: 1,
+            depth: 1,
+            value_dimension: 2,
+            query_stride: 1,
+            key_depth_stride: 1,
+            key_head_stride: 1,
+            value_stride: 2,
+            value_head_stride: 2,
+            mask_stride: 1,
+            output_stride: 3,
+            scale: 1.0,
+        }
+    }
+
+    #[test]
+    fn output_validation_rejects_nan_at_each_logical_position_and_padding_damage() {
+        let layout = output_check_layout();
+        let expected = [1.25, -2.5, 37.0];
+        assert_eq!(
+            validate_output_v1(&expected, &expected, &expected, layout),
+            Ok(0.0)
+        );
+        for index in 0..2 {
+            let mut actual = expected;
+            actual[index] = f32::NAN;
+            assert!(validate_output_v1(&actual, &expected, &expected, layout).is_err());
+        }
+        let mut actual = expected;
+        actual[2] = 38.0;
+        assert!(validate_output_v1(&actual, &expected, &expected, layout).is_err());
+        actual[2] = f32::NAN;
+        assert!(validate_output_v1(&actual, &expected, &expected, layout).is_err());
+    }
+
+    #[test]
+    fn output_validation_rejects_nonfinite_expected_error_and_shape() {
+        let layout = output_check_layout();
+        let expected = [1.25, -2.5, 37.0];
+        for nonfinite in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut bad = expected;
+            bad[0] = nonfinite;
+            assert!(validate_output_v1(&bad, &expected, &expected, layout).is_err());
+            assert!(validate_output_v1(&expected, &bad, &expected, layout).is_err());
+        }
+        let actual = [f32::MAX, -2.5, 37.0];
+        let opposite = [-f32::MAX, -2.5, 37.0];
+        assert!(validate_output_v1(&actual, &opposite, &expected, layout).is_err());
+        assert!(validate_output_v1(&expected[..2], &expected, &expected, layout).is_err());
+    }
+
+    #[test]
+    fn reference_excludes_nonfinite_logical_masks_without_reading_padding() {
+        let query = [Bf16::from_f32(1.0).to_bits()];
+        let key = [Bf16::from_f32(1.0).to_bits(); 2];
+        let mut layout = output_check_layout();
+        layout.keys = 2;
+        layout.keys_padded = 2;
+        layout.key_depth_stride = 2;
+        layout.key_head_stride = 2;
+        layout.value_dimension = 1;
+        layout.value_stride = 1;
+        layout.value_head_stride = 2;
+        layout.mask_stride = 3;
+        layout.output_stride = 2;
+        for excluded in [f32::NEG_INFINITY, f32::INFINITY, f32::NAN] {
+            let actual = evaluate_reference_v1(
+                &query,
+                &key,
+                &[2.0, 6.0],
+                &[0.0, excluded, f32::NAN],
+                &[0.0, 37.0],
+                layout,
+            )
+            .unwrap();
+            assert_eq!(actual, [2.0, 37.0]);
+            let fully_masked = evaluate_reference_v1(
+                &query,
+                &key,
+                &[2.0, 6.0],
+                &[excluded, excluded, f32::NAN],
+                &[0.0, 37.0],
+                layout,
+            )
+            .unwrap();
+            assert_eq!(fully_masked, [0.0, 37.0]);
+        }
+    }
+
+    #[test]
+    fn padded_value_rows_do_not_contribute_even_when_nonfinite() {
+        let query = [Bf16::from_f32(1.0).to_bits()];
+        let key = [Bf16::from_f32(1.0).to_bits(); 2];
+        let mut layout = output_check_layout();
+        layout.keys_padded = 2;
+        layout.key_depth_stride = 2;
+        layout.key_head_stride = 2;
+        layout.value_dimension = 1;
+        layout.value_stride = 1;
+        layout.value_head_stride = 2;
+        layout.mask_stride = 2;
+        layout.output_stride = 2;
+        for padding in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let actual = evaluate_reference_v1(
+                &query,
+                &key,
+                &[2.0, padding],
+                &[0.0, f32::NAN],
+                &[0.0, 37.0],
+                layout,
+            )
+            .unwrap();
+            assert_eq!(actual, [2.0, 37.0]);
+        }
     }
 }

@@ -107,7 +107,7 @@ fn assert_row_affine_execution(
     assert!(execution.schedule_coverage().barrier_releases() >= groups as u64);
 }
 
-fn assert_row_affine_bundle(path: &Path, target: &str) {
+fn assert_row_affine_bundle(path: &Path, target: &str, source_file: &str) {
     use fe2o3_kernel_ir::{AccessMode, AddressSpace, ScalarType, Type};
     let bundle = fe2o3_kernel_ir::VerifiedSimulationBundleV5::from_canonical_bytes(
         std::fs::read(path).unwrap(),
@@ -162,23 +162,32 @@ fn assert_row_affine_bundle(path: &Path, target: &str) {
     assert!(
         map.files()
             .iter()
-            .any(|file| file.display_path().ends_with("kernel_row_affine_u32.rs"))
+            .any(|file| file.display_path().ends_with(source_file))
     );
     assert!(!map.sites().is_empty());
 }
 
 fn row_affine_source_matches_oracle_and_replay() {
+    row_affine_variant_matches_oracle_and_replay(
+        "row-affine-u32-kernel",
+        "kernel_row_affine_u32.rs",
+    );
+}
+
+fn row_affine_variant_matches_oracle_and_replay(feature: &str, source_file: &str) {
     use fe2o3_kir_sim::{PersistedSimulationScheduleDocumentV1, SimulationScheduleRequestV1};
     use fe2o3_kir_sim_cli::{load_debug_simulation_bundle_v5, load_debug_simulation_schedule_v1};
 
-    let source = workspace().join("examples/workgroup_sync_v1/src/kernel_row_affine_u32.rs");
+    let source = workspace()
+        .join("examples/workgroup_sync_v1/src")
+        .join(source_file);
     let source_before = std::fs::read(&source).unwrap();
     let cases = row_affine_oracle::row_affine_vectors_v1();
     assert_eq!(cases.len(), 86);
     for (cpu, target) in [("gfx942", "gfx942:xnack-"), ("gfx950", "gfx950:xnack-")] {
         let scratch = ScratchDirectory::new(&format!("row-affine-{cpu}"));
-        let bundle = export_workgroup_bundle(&scratch, "row-affine-u32-kernel", cpu);
-        assert_row_affine_bundle(&bundle, target);
+        let bundle = export_workgroup_bundle(&scratch, feature, cpu);
+        assert_row_affine_bundle(&bundle, target, source_file);
         for (index, case) in cases.iter().enumerate() {
             let request = row_affine_request(case);
             let path =

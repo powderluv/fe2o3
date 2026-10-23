@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Require exact DCO sign-offs across a bounded Git commit range."""
+"""Check contribution DCO and narrowly verified canonical integration provenance."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import os
+import tempfile
 import json
 import re
 import subprocess
@@ -105,6 +108,116 @@ def verified_dependabot(commit: str, author: str, email: str, body: str, repo: s
     )
 
 
+# This is provenance for integration metadata, not an author DCO attestation.
+CANONICAL_REPOSITORY = "harsh-nod/fe2o3"
+CANONICAL_MERGE_DESTINATIONS = frozenset({CANONICAL_REPOSITORY, "powderluv/fe2o3"})
+MAX_PROVENANCE_BYTES = 2 * 1024 * 1024
+
+
+def canonical_api(path: str) -> Any:
+    # This REST version retains the recorded merge_commit_sha; never infer it.
+    try:
+        response = subprocess.check_output(
+            ["gh", "api", "--hostname", "github.com", "-H", "Accept: application/vnd.github+json",
+             "-H", "X-GitHub-Api-Version: 2022-11-28", f"repos/{CANONICAL_REPOSITORY}/{path}"],
+            stderr=subprocess.PIPE, timeout=30,
+        )
+        if len(response) > MAX_PROVENANCE_BYTES:
+            raise DcoError("canonical merge API response exceeds its bound")
+        return json.loads(response)
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        raise DcoError(f"canonical merge provenance API failed: {error}") from error
+
+
+def clean_merge_tree(parents: list[str]) -> str:
+    """Reproduce integration in a fresh bare repository, with no local drivers/hooks."""
+    objects = os.path.realpath(run("git", "rev-parse", "--git-path", "objects").decode().strip())
+    if any(character in objects for character in (":", "\n", "\r")):
+        raise DcoError("unsupported local object directory for canonical merge proof")
+    with tempfile.TemporaryDirectory(prefix="fe2o3-dco-merge-") as temporary:
+        environment = {"PATH": os.defpath, "HOME": temporary, "LC_ALL": "C",
+                       "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                       "GIT_ALTERNATE_OBJECT_DIRECTORIES": objects, "GIT_NO_REPLACE_OBJECTS": "1"}
+        try:
+            subprocess.run(["git", "init", "--bare", "--template=", "-q", temporary],
+                           env=environment, check=True, capture_output=True, timeout=30)
+            result = subprocess.check_output(
+                ["git", f"--git-dir={temporary}", "-c", f"core.attributesFile={os.devnull}",
+                 "merge-tree", "--write-tree", *parents],
+                env=environment, stderr=subprocess.PIPE, timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise DcoError(f"canonical merge tree cannot be reproduced: {error}") from error
+    if len(result) != 41 or result[-1:] != b"\n":
+        raise DcoError("canonical merge proof did not return one exact tree")
+    tree = result[:-1].decode("ascii")
+    if COMMIT_PATTERN.fullmatch(tree) is None:
+        raise DcoError("canonical merge proof returned an invalid tree")
+    return tree
+
+
+def verified_canonical_merge(commit: str, repo: str) -> bool:
+    if repo not in CANONICAL_MERGE_DESTINATIONS:
+        return False
+    raw = run("git", "--no-replace-objects", "cat-file", "commit", commit)
+    if len(raw) > MAX_PROVENANCE_BYTES:
+        raise DcoError(f"{commit}: canonical merge object exceeds its bound")
+    if hashlib.sha1(b"commit " + str(len(raw)).encode("ascii") + b"\0" + raw).hexdigest() != commit:
+        raise DcoError(f"{commit}: local commit bytes do not match the requested identity")
+    try:
+        header, message = raw.split(b"\n\n", 1)
+        fields: list[bytes] = []
+        for line in header.split(b"\n"):
+            if line.startswith(b" "):
+                if not fields:
+                    return False
+                fields[-1] += b"\n" + line
+            else:
+                fields.append(line)
+        # No octopus, repeated signature, mergetag, or unexplained signed header.
+        if [field.split(b" ", 1)[0] for field in fields] != [
+                b"tree", b"parent", b"parent", b"author", b"committer", b"gpgsig"]:
+            return False
+        if not fields[4].startswith(b"committer GitHub <noreply@github.com> "):
+            return False
+        tree = fields[0][5:].decode("ascii")
+        parents = [field[7:].decode("ascii") for field in fields[1:3]]
+        if any(COMMIT_PATTERN.fullmatch(value) is None for value in [tree, *parents]) or parents[0] == parents[1]:
+            return False
+        payload = (b"\n".join(fields[:5]) + b"\n\n" + message).decode("utf-8")
+        signature = fields[5][7:].replace(b"\n ", b"\n").decode("utf-8")
+        document = canonical_api(f"commits/{commit}")
+        verification = document["commit"]["verification"]
+        if (document["sha"] != commit or document["committer"]["login"] != "web-flow"
+                or document["commit"]["committer"]["name"] != "GitHub"
+                or document["commit"]["committer"]["email"] != "noreply@github.com"
+                or document["commit"]["tree"]["sha"] != tree
+                or [parent["sha"] for parent in document["parents"]] != parents
+                or verification["verified"] is not True or verification["reason"] != "valid"
+                or verification["payload"] != payload or verification["signature"] != signature):
+            return False
+        associated = canonical_api(f"commits/{commit}/pulls?per_page=100")
+        if not isinstance(associated, list) or len(associated) >= 100:
+            raise DcoError("canonical merge PR association is malformed or exceeds one bounded page")
+        matches = [pr for pr in associated if pr["merge_commit_sha"] == commit]
+        if len(matches) != 1 or type(matches[0]["number"]) is not int or matches[0]["number"] <= 0:
+            return False
+        number = matches[0]["number"]
+        pr = canonical_api(f"pulls/{number}")
+        if (type(pr["number"]) is not int or pr["number"] != number or pr["merged"] is not True or pr["state"] != "closed"
+                or not isinstance(pr["merged_at"], str) or not pr["merged_at"]
+                or pr["merge_commit_sha"] != commit or pr["head"]["sha"] != parents[1]
+                or pr["base"]["repo"]["full_name"] != CANONICAL_REPOSITORY or pr["base"]["ref"] != "main"
+                or COMMIT_PATTERN.fullmatch(pr["base"]["sha"]) is None):
+            return False
+        # REST can retain a pre-merge base SHA. The signed object's first parent
+        # is authoritative; the PR base must be its ancestor, not necessarily equal.
+        run("git", "--no-replace-objects", "merge-base", "--is-ancestor", pr["base"]["sha"], parents[0])
+        return clean_merge_tree(parents) == tree
+    except (KeyError, IndexError, TypeError, ValueError, UnicodeError) as error:
+        raise DcoError(f"{commit}: malformed canonical merge provenance: {error}") from error
+
+
 def commits_in_range(base: str, head: str) -> list[str]:
     raw = run("git", "rev-list", "--reverse", f"{base}..{head}")
     try:
@@ -136,6 +249,7 @@ def check(base: str, head: str, repo: str) -> int:
     missing = []
     excepted = []
     signed = 0
+    canonical_merges = []
     commits = commits_in_range(base, head)
     for commit in commits:
         author, email, body = commit_identity(commit)
@@ -149,12 +263,18 @@ def check(base: str, head: str, repo: str) -> int:
         if repo in INHERITED_EXCEPTION_REPOSITORIES and commit in INHERITED_EXCEPTION_COMMITS:
             excepted.append(commit)
             continue
+        if verified_canonical_merge(commit, repo):
+            canonical_merges.append(commit)
+            continue
         missing.append(f"{commit}: missing exact trailer {expected}")
     if missing:
         raise DcoError("\n".join(missing))
     for commit in excepted:
         print(f"DCO approved inherited exception: {repo}@{commit}")
-    print(f"DCO sign-off present on {signed} commit(s); {len(excepted)} approved inherited exception(s)")
+    for commit in canonical_merges:
+        print(f"DCO canonical merge provenance (not author signoff): {CANONICAL_REPOSITORY}@{commit}")
+    print(f"DCO sign-off present on {signed} commit(s); {len(excepted)} approved inherited exception(s); "
+          f"{len(canonical_merges)} verified canonical integration merge(s)")
     return len(commits)
 
 

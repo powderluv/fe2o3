@@ -10,6 +10,7 @@ struct SemanticPromotedLocalV1 {
 enum SemanticPromotedTransportV1 {
     Semantic(SemanticPromotedBindingV1),
     DirectParameter { parameter_local: u32 },
+    CheckedWave64Reference(Wave64NominalReferenceDescriptorV1),
     Execution,
     SourceEnumTag,
 }
@@ -925,6 +926,7 @@ impl SemanticPromotedTransportV1 {
                     representation,
                 },
             ),
+            Self::CheckedWave64Reference(_) => Err(unsupported(0,None,None,"checked Wave64 types require live source relation")),
             Self::Execution | Self::SourceEnumTag => Err(execution_cfg_error_v29()),
             Self::DirectParameter { parameter_local } => direct_parameters
                 .get(&parameter_local)
@@ -957,6 +959,7 @@ impl SemanticPromotedTransportV1 {
         visitor.node()?;
         match self {
             Self::Semantic(semantic) => semantic.visit_transport_values(binding, visitor),
+            Self::CheckedWave64Reference(_) => Err(V::invalid("checked Wave64 values require live source relation")),
             Self::Execution | Self::SourceEnumTag => Err(V::invalid(
                 "execution transport requires its captured CFG state",
             )),
@@ -1010,6 +1013,7 @@ impl SemanticPromotedTransportV1 {
                     representation,
                 },
             ),
+            Self::CheckedWave64Reference(_) => Err(unsupported(0,None,None,"checked Wave64 reconstruction requires live source relation")),
             Self::Execution | Self::SourceEnumTag => Err(execution_cfg_error_v29()),
             Self::DirectParameter { .. }
                 if values.len() == 1 && expected.len() == 1 && values[0].ty == expected[0] =>

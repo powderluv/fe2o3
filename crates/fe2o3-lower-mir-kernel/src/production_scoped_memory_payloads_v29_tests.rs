@@ -640,7 +640,8 @@ fn inspect_payload_scopes(
                         placement,
                         Some(cursor),
                         Some(&mut producer),
-                    )?;
+                        None,
+)?;
                     let extra = 13;
                     // Independent lexical envelope premise, not the production helper.
                     let header = extra

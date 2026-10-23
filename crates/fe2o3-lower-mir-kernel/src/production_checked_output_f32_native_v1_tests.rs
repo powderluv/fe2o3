@@ -273,10 +273,9 @@ pub(super) fn check_actual(
     assert_eq!(budget.storage(), entry);
 }
 
-// The source and Policy4 owner are admitted before this native-only refusal.
-// Dynamic NaN inputs are distinct from literal NaNs, which G1 cannot spell
-// without losing some payloads. No source-map or NaN-class relaxation follows.
-pub(super) fn reject_actual_literal_nan(
+// Source and Policy4 admission still require the exact original payload.
+// Native emission uses an equal-width bitcast, not NaN-class equivalence.
+pub(super) fn check_actual_literal_nan(
     owner: &crate::ProductionCheckedOutputOwnerPolicy4V1,
     profile: Profile,
 ) {
@@ -290,28 +289,22 @@ pub(super) fn reject_actual_literal_nan(
         .flat_map(|body| &body.blocks)
         .flat_map(|block| &block.operations)
     {
-        if let OperationKind::Constant(fe2o3_kernel_ir::Constant::F32Bits(bits)) =
-            &operation.kind
+        if let OperationKind::Constant(fe2o3_kernel_ir::Constant::F32Bits(bits)) = &operation.kind
             && f32::from_bits(*bits).is_nan()
         {
             assert_eq!(*bits, 0x7fc0_0042);
             literal_count += 1;
         }
     }
-    assert_eq!(literal_count, 1, "actual O must retain the source NaN literal");
-    let error = match profile {
+    assert_eq!(
+        literal_count, 1,
+        "actual O must retain the source NaN literal"
+    );
+    let llvm = match profile {
         Profile::Gfx942 => lower_942(output),
         Profile::Gfx950 => lower_950(output),
     }
-    .expect_err("native literal-NaN emission remains outside this admission slice");
-    let diagnostics = error.diagnostics();
-    assert_eq!(diagnostics.len(), 1, "{error:?}");
-    assert_eq!(
-        diagnostics[0].code,
-        dialect_amdgcn::LoweringDiagnosticCode::UnsupportedConstant,
-    );
-    assert_eq!(
-        diagnostics[0].message,
-        "G1 rejects NaN f32 constants because LLVM's widened hexadecimal spelling does not preserve every payload",
-    );
+    .expect("the admitted literal NaN has an exact LLVM bitcast encoding");
+    let llvm = bind_production_llvm22_worker_layout_v1(&llvm).unwrap();
+    assert!(llvm.contains("bitcast (i32 2143289410 to float)"));
 }

@@ -258,6 +258,11 @@ impl ProductionPreRankedKirOwnerV1 {
             }
             None => HelperOccurrenceCaptureV1::Absent,
         };
+        if matches!(capture, HelperOccurrenceCaptureV1::Absent) && ordinary_source_has_raw_wave64_shuffle_v1(semantic_ssa.source_semantic()) {
+            let receipt=semantic_ssa.try_capture_occurrences_with_budget_v1(budget).map_err(ProductionPreRankedKirErrorV1::Occurrences)?;
+            budget.reserve_storage(receipt.retained_storage())?;
+            capture=HelperOccurrenceCaptureV1::Transferred(receipt);
+        }
         let mut emitted_origins = AssertOriginEmissionV1::new(budget);
         emitted_origins.scalar_capture = scalar_capture;
         emitted_origins.tiled_capture = tiled_capture;

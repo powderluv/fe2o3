@@ -271,3 +271,166 @@ fn shared_body_active_short_inputs_panic_without_rolling_back_prior_writes() {
         assert_eq!(bits(output.values), bits(&[3.75, 91.5]));
     }
 }
+
+impl TestIndex {
+    fn checked_tiled_2d<const X: usize, const Y: usize, const W: usize, const H: usize>(
+        &self,
+    ) -> Option<Self> {
+        assert_eq!((X, Y, W, H), (64, 1, 64, 1));
+        Some(*self)
+    }
+}
+impl TestOutput<'_> {
+    fn len(&self) -> usize {
+        self.values.len()
+    }
+    fn get_tiled_2d_mut(
+        &mut self,
+        index: &TestIndex,
+        base: usize,
+        rows: usize,
+        columns: usize,
+        stride: usize,
+    ) -> Option<&mut f32> {
+        assert_eq!(
+            (base, rows, columns, stride),
+            (0, 1, self.values.len(), self.values.len())
+        );
+        self.get_mut(*index)
+    }
+}
+fn invoke_tile(
+    linear: usize,
+    a: &TrackedInput<'_>,
+    b: &TrackedInput<'_>,
+    output: &mut TestOutput<'_>,
+) {
+    vecadd_tile_body!(cpu_thread, (linear), production_f32_add, a, b, output);
+}
+
+#[test]
+fn both_bodies_full_nonquarter_oracle_tails_canaries_and_immutable_inputs() {
+    for length in [
+        0_usize, 1, 2, 63, 64, 65, 127, 128, 129, 255, 256, 257, 1023, 1024, 1025,
+    ] {
+        let left = (0..length)
+            .map(|i| ((i % 29) as i32 - 14) as f32 / 7.0)
+            .collect::<Vec<_>>();
+        let right = (0..length)
+            .map(|i| ((i % 31) as i32 - 15) as f32 / 11.0)
+            .collect::<Vec<_>>();
+        let before = (bits(&left), bits(&right));
+        let expected = left
+            .iter()
+            .zip(&right)
+            .map(|(a, b)| a + b)
+            .collect::<Vec<_>>();
+        for body in [invoke, invoke_tile] {
+            let a = TrackedInput::new(&left);
+            let b = TrackedInput::new(&right);
+            let guard = f32::from_bits(0x7fc1_abcd);
+            let mut backing = vec![guard; length + 4];
+            let launched = length.div_ceil(256) * 256 + 3;
+            {
+                let mut output = TestOutput::new(&mut backing[2..2 + length]);
+                for i in 0..launched {
+                    body(i, &a, &b, &mut output);
+                }
+                body(usize::MAX, &a, &b, &mut output);
+                assert_eq!(bits(output.values), bits(&expected));
+            }
+            assert_reads(&a, &b, &(0..length).collect::<Vec<_>>());
+            assert_eq!(bits(&backing[..2]), vec![guard.to_bits(); 2]);
+            assert_eq!(bits(&backing[2 + length..]), vec![guard.to_bits(); 2]);
+            assert_eq!((bits(&left), bits(&right)), before);
+        }
+    }
+}
+#[test]
+fn tile_retains_sufficient_and_short_input_contracts() {
+    let a = TrackedInput::new(&[1.0 / 7.0, -3.0 / 11.0, 99.0]);
+    let b = TrackedInput::new(&[2.0 / 13.0, 1.0 / 17.0, 100.0, 200.0]);
+    let mut values = [0.0; 2];
+    let mut output = TestOutput::new(&mut values);
+    for i in 0..4 {
+        invoke_tile(i, &a, &b, &mut output);
+    }
+    assert_eq!(
+        bits(output.values),
+        bits(&[1.0 / 7.0 + 2.0 / 13.0, -3.0 / 11.0 + 1.0 / 17.0])
+    );
+    assert_reads(&a, &b, &[0, 1]);
+    for short_left in [true, false] {
+        let aa = [1.25, -3.5];
+        let bb = [2.5, 1.25];
+        let a = TrackedInput::new(if short_left { &aa[..1] } else { &aa });
+        let b = TrackedInput::new(if short_left { &bb } else { &bb[..1] });
+        let mut values = [91.5; 2];
+        let mut output = TestOutput::new(&mut values);
+        invoke_tile(0, &a, &b, &mut output);
+        assert!(
+            std::panic::catch_unwind(AssertUnwindSafe(|| invoke_tile(1, &a, &b, &mut output)))
+                .is_err()
+        );
+        assert_eq!(bits(output.values), bits(&[3.75, 91.5]));
+        invoke_tile(usize::MAX, &a, &b, &mut output);
+    }
+}
+
+#[test]
+fn tile_floating_special_values_preserve_observed_host_semantics() {
+    let a = TrackedInput::new(&[
+        0.0,
+        -0.0,
+        -0.0,
+        0.0,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::INFINITY,
+        f32::NAN,
+        1.0,
+        f32::MAX,
+        -f32::MAX,
+    ]);
+    let b = TrackedInput::new(&[
+        0.0,
+        -0.0,
+        0.0,
+        -0.0,
+        2.0,
+        -2.0,
+        f32::NEG_INFINITY,
+        1.0,
+        f32::NAN,
+        f32::MAX,
+        -f32::MAX,
+    ]);
+    // None requires a computed NaN, without requiring its sign or payload.
+    let expected = [
+        Some(0x0000_0000),
+        Some(0x8000_0000),
+        Some(0x0000_0000),
+        Some(0x0000_0000),
+        Some(0x7f80_0000),
+        Some(0xff80_0000),
+        None,
+        None,
+        None,
+        Some(0x7f80_0000),
+        Some(0xff80_0000),
+    ];
+    let mut values = [91.5; 11];
+    let mut output = TestOutput::new(&mut values);
+    for index in 0..expected.len() {
+        invoke_tile(index, &a, &b, &mut output);
+    }
+    for (value, expected) in output.values.iter().zip(expected) {
+        match expected {
+            Some(expected) => assert_eq!(value.to_bits(), expected),
+            None => assert!(value.is_nan()),
+        }
+    }
+    let active = (0..expected.len()).collect::<Vec<_>>();
+    assert_reads(&a, &b, &active);
+    assert_eq!(output.attempts, active);
+}

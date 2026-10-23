@@ -7,8 +7,13 @@
 
 use fe2o3_device::{
     DisjointSlice, Index1D, KernelError, KernelResult, Math, RowStriped2D, StridedReadView2D,
-    Subgroup, kernel, thread,
+    kernel, thread,
 };
+
+#[cfg(feature = "gfx950-target")]
+use fe2o3_device::Gfx950Subgroup as Subgroup;
+#[cfg(not(feature = "gfx950-target"))]
+use fe2o3_device::Subgroup;
 
 pub const ROW_SOFTMAX_WORKGROUP_V1: [u32; 3] = [64, 1, 1];
 pub const ROW_SOFTMAX_MAX_COLUMNS_V1: usize = 4096;
@@ -49,22 +54,24 @@ pub fn row_softmax_general_v1(
     {
         return Err(KernelError::InvalidArgument);
     }
-    let input = StridedReadView2D::from_shared_slice(
+    let Ok(input) = StridedReadView2D::from_shared_slice(
         input,
         0,
         rows as usize,
         columns as usize,
         input_stride as usize,
-    )?;
+    ) else {
+        return Err(KernelError::InvalidArgument);
+    };
 
     // One Wave64 owns one row; each lane owns a 64-column stripe.
     let thread_index = thread::index_1d();
     let raw = thread_index.get();
     let row = raw / 64;
     let lane = raw % 64;
-    let output_stripe = thread_index
-        .checked_row_striped_2d::<64, 64>()
-        .ok_or(KernelError::OutOfBounds)?;
+    let Some(output_stripe) = thread_index.checked_row_striped_2d::<64, 64>() else {
+        return Err(KernelError::OutOfBounds);
+    };
 
     let subgroup = Subgroup::current();
     let math = Math::current();
@@ -80,7 +87,10 @@ pub fn row_softmax_general_v1(
         }
         component += 1;
     }
+    #[cfg(not(feature = "gfx950-target"))]
     let maximum = subgroup.subgroup_reduce_max_f32::<64>(local_max);
+    #[cfg(feature = "gfx950-target")]
+    let maximum = subgroup.reduce_max_f32::<64>(local_max);
 
     // The second uniform reduction forms the row's FP32 normalizer.
     let mut local_sum = 0.0_f32;
@@ -91,7 +101,10 @@ pub fn row_softmax_general_v1(
         local_sum += math.exp_f32(input.load_or(row, column, f32::NEG_INFINITY) - maximum);
         component += 1;
     }
+    #[cfg(not(feature = "gfx950-target"))]
     let denominator = subgroup.subgroup_reduce_sum_f32::<64>(local_sum);
+    #[cfg(feature = "gfx950-target")]
+    let denominator = subgroup.reduce_sum_f32::<64>(local_sum);
 
     let mut component = 0;
     while component < 64 {

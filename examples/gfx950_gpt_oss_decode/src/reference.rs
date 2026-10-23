@@ -267,6 +267,22 @@ pub fn deterministic_batch_inputs() -> GptOssBatchInputs {
     }
 }
 
+/// Full 16-item numerical fixture with finite BF16-exact router logits below -1e30.
+/// Attention, expert inputs, scales and output dimensions retain the ordinary fixture.
+pub fn finite_router_edge_batch_inputs() -> GptOssBatchInputs {
+    let mut inputs = deterministic_batch_inputs();
+    inputs.hidden_f32.fill(0.0);
+    for item in 0..PROFILE_ITEMS {
+        inputs.hidden_f32[item * HIDDEN_SIZE] = 1.0;
+    }
+    inputs.router_f32.fill(0.0);
+    for expert in 0..EXPERTS {
+        // -(2^104): finite in F32 and exactly representable in BF16.
+        inputs.router_f32[expert * HIDDEN_SIZE] = f32::from_bits(0xf380_0000);
+    }
+    inputs
+}
+
 fn stable_top4(inputs: &GptOssTileInputs) -> [u32; TOP_K] {
     let mut logits = vec![0.0_f32; EXPERTS];
     for expert in 0..EXPERTS {

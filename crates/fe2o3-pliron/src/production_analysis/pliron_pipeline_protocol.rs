@@ -728,6 +728,8 @@ struct CanonicalEpochLoopV1 {
     inductions: HashMap<usize, Value>,
     header_induction: Value,
     bound: Value,
+    repeated_blocks: HashSet<usize>,
+    optional_blocks: HashSet<usize>,
 }
 
 struct EpochLoopDiscoveryV1 {
@@ -861,6 +863,46 @@ fn verify_one_pipeline(
         };
         return Err(invalid(pipeline, None, detail));
     }
+    if !summary.repeated_blocks.is_empty() {
+        let Some(latch) = summary.body.last().copied() else {
+            return Err(invalid(pipeline, None, "nested epoch body has no latch"));
+        };
+        // Nested repetition may not turn a conditional event into authority
+        // for a sibling path. All steady-state events execute on every path.
+        if accesses.iter().any(|access| {
+            access.kind == AccessKindAttr::Write
+                && summary.body_members.contains(&access.site.block())
+                && !discovery.dominators[latch].contains(&access.site.block())
+        }) {
+            return Err(invalid(
+                pipeline,
+                None,
+                "nested epoch has a bypassable staging write",
+            ));
+        }
+        if schedule.iter().any(|event| {
+            summary.body_members.contains(&event.site.block())
+                && !discovery.dominators[latch].contains(&event.site.block())
+        }) {
+            return Err(invalid(
+                pipeline,
+                None,
+                "nested epoch has a bypassable pipeline event",
+            ));
+        }
+    }
+    let domain_reads = full_workgroup_initialized_reads_v1(
+        context,
+        control,
+        concrete_indices,
+        pipeline,
+        summary,
+        schedule,
+        accesses,
+        uniform_roots,
+        uniformity_visit_limit,
+        equivalence_resources,
+    )?;
     let (staged_writes, consuming_reads, access_refinement_proven) = verify_dynamic_schedule(
         context,
         pipeline,
@@ -870,6 +912,7 @@ fn verify_one_pipeline(
             schedule,
             accesses,
             summary,
+            domain_reads: &domain_reads,
         },
         equivalence_resources,
     )?;
@@ -1348,3 +1391,7 @@ include!("pliron_pipeline_protocol/concrete_cfg_v1_tests.rs");
 #[cfg(test)]
 #[path = "pliron_pipeline_protocol/concrete_index_facts_v1_tests.rs"]
 mod concrete_index_facts_v1_tests;
+
+#[cfg(test)]
+#[path = "pliron_pipeline_protocol/nested_epoch_v1_tests.rs"]
+mod nested_epoch_v1_tests;

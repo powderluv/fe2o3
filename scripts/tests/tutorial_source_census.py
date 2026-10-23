@@ -259,16 +259,19 @@ class SourceCensusTests(unittest.TestCase):
                 suite["coverage"] = [{"lessonId": "gemm-tiling", "fixtureIds": [fixture_id]}]
                 suites.append(suite)
         document["qualification"]["suites"] = suites
-        lesson = copy.deepcopy(next(row for row in original["curriculum"]["lessons"] if row["lessonId"] == "gemm-tiling"))
-        lesson["codeTabs"] = lesson["codeTabs"][:1]
+        # Reuse the checked current-source projection, not the historical site tab.
+        current = self.fixture_tests.WholeFileFixtureBindingTests
+        current.setUpClass()
+        current_document, current_runtime = current().document()
+        lesson = next(row for row in current_document["curriculum"]["lessons"]
+                      if row["lessonId"] == "gemm-tiling")
         document["curriculum"]["lessons"].append(lesson)
-        tab = lesson["codeTabs"][0]
-        runtime["lessons"].append({"id": lesson["lessonId"], "codeTabs": [
-            {**tab, "displayedCode": (ROOT / tab["sourcePath"]).read_text(), "sourceFragments": None}]})
+        runtime["lessons"].append(next(row for row in current_runtime["lessons"]
+                                      if row["id"] == "gemm-tiling"))
         inventory = document["kernelInventory"]
         inventory["kernels"].append(copy.deepcopy(next(row for row in original["kernelInventory"]["kernels"]
             if row["kernelId"] == "fixture:gfx942-tiled-gemm:tiled_gemm_general_v1")))
-        inventory["displayItems"].extend(copy.deepcopy([row for row in original["kernelInventory"]["displayItems"]
+        inventory["displayItems"].extend(copy.deepcopy([row for row in current_document["kernelInventory"]["displayItems"]
             if row["lessonId"] == "gemm-tiling" and row["tabOrdinal"] == 0]))
         with tempfile.TemporaryDirectory(prefix="fe2o3-census-cli-join-") as directory:
             directory = Path(directory)

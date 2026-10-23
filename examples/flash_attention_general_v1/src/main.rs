@@ -2,16 +2,27 @@ use std::io;
 
 use fe2o3_core::{DeviceBuffer, GpuContext, KernelParams, LaunchConfig, launch_kernel_on_stream};
 use fe2o3_device::Bf16;
-use fe2o3_flash_attention_general_v1::reference::{ReferenceLayoutV1, evaluate_reference_v1};
+use fe2o3_flash_attention_general_v1::reference::{
+    ReferenceLayoutV1, evaluate_reference_v1, validate_output_v1,
+};
 
 const HSACO_ENV: &str = "FE2O3_FLASH_ATTENTION_HSACO";
-const KERNEL: &str = "flash_attention_general_v1";
+const KERNEL: &str = fe2o3_flash_attention_general_v1::FLASH_ATTENTION_KERNEL_NAME_V1;
 
 fn invalid_input(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
+fn qualification_target_matches(expected: &str, processor: &str, warp_size: u32) -> bool {
+    matches!(expected, "gfx942" | "gfx950") && processor == expected && warp_size == 64
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let expected_target =
+        std::env::var("FE2O3_FLASH_ATTENTION_TARGET").unwrap_or_else(|_| "gfx942".to_owned());
+    if !matches!(expected_target.as_str(), "gfx942" | "gfx950") {
+        return Err(invalid_input("unsupported Flash qualification target").into());
+    }
     let layout = ReferenceLayoutV1 {
         batch_heads: 2,
         queries: 19,
@@ -72,10 +83,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let context = GpuContext::new(0)?;
     let observed = context.observe_target()?;
-    if observed.target_id().processor() != "gfx942" || observed.hip_default_warp_size() != 64 {
+    if !qualification_target_matches(
+        &expected_target,
+        observed.target_id().processor(),
+        observed.hip_default_warp_size(),
+    ) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "qualification requires a gfx942 wave64 device",
+            "qualification requires the declared gfx942 or gfx950 wave64 device",
         )
         .into());
     }
@@ -89,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         io::Error::new(io::ErrorKind::NotFound, format!("{HSACO_ENV} is not set"))
     })?;
 
-    // SAFETY: the qualification runner compiled this exact symbol for gfx942. The argument
+    // SAFETY: the qualification runner compiled this exact symbol for the declared target. The argument
     // order and widths mirror the compiler-emitted 144-byte explicit kernarg ABI, and every
     // allocation remains live through synchronous stream completion.
     unsafe {
@@ -137,29 +152,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let actual = output_device.to_host_vec(&stream)?;
-    let mut maximum_error = 0.0_f32;
-    for row in 0..output_rows as usize {
-        for column in 0..layout.output_stride as usize {
-            let index = row * layout.output_stride as usize + column;
-            if column < layout.value_dimension as usize {
-                let error = (actual[index] - expected[index]).abs();
-                maximum_error = maximum_error.max(error);
-                let tolerance = 5.0e-3_f32.max(expected[index].abs() * 5.0e-3);
-                if error > tolerance {
-                    return Err(io::Error::other(format!(
-                        "attention mismatch at ({row}, {column}): got {}, expected {}, tolerance {tolerance}",
-                        actual[index], expected[index]
-                    ))
-                    .into());
-                }
-            } else if actual[index].to_bits() != initial_output[index].to_bits() {
-                return Err(io::Error::other(format!(
-                    "attention modified output padding at ({row}, {column})"
-                ))
-                .into());
-            }
-        }
-    }
+    let maximum_error = validate_output_v1(&actual, &expected, &initial_output, layout)
+        .map_err(io::Error::other)?;
     println!(
         "PASS {KERNEL}: {} heads, {}x{} logical attention, depth {}, value dimension {}, {} workgroups, max_abs_error={maximum_error:.6}",
         layout.batch_heads,
@@ -170,4 +164,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         layout.batch_heads * (layout.query_rows_padded / 16),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::qualification_target_matches;
+
+    #[test]
+    fn accepts_exact_supported_wave64_target() {
+        for target in ["gfx942", "gfx950"] {
+            assert!(qualification_target_matches(target, target, 64));
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_processor_wave_or_unsupported_target() {
+        assert!(!qualification_target_matches("gfx942", "gfx950", 64));
+        assert!(!qualification_target_matches("gfx950", "gfx942", 64));
+        assert!(!qualification_target_matches("gfx950", "gfx950", 32));
+        assert!(!qualification_target_matches("gfx1100", "gfx1100", 64));
+    }
 }

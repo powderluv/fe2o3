@@ -214,13 +214,20 @@ def verify_test_list(text):
     require(len(names) == 11 and frozenset(names) == EXPECTED_TESTS, "exact eleven named tests required; no silent fixture omission")
 
 
-def scratch_size(directory):
+def scratch_size(directory, *, live=False):
     entries, size = 0, 0
     for parent, dirs, files in os.walk(directory, followlinks=False):
         for name in dirs + files:
             entries += 1
             require(entries <= 256, "scratch entry cap")
-            info = os.lstat(Path(parent) / name)
+            try:
+                info = os.lstat(Path(parent) / name)
+            except FileNotFoundError:
+                if not live:
+                    raise
+                # Compiler temporaries may disappear during the live census.
+                # The enumerated entry still counts against the entry cap.
+                continue
             require(not stat.S_ISLNK(info.st_mode), "scratch symlink refused")
             require(stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode), "scratch special file refused")
             size += info.st_size if stat.S_ISREG(info.st_mode) else 0
@@ -279,7 +286,7 @@ def run_child(command, label, output, env, timeout):
         while selector.get_map() or exited is None:
             check_cancelled()
             require(time.monotonic() < end, label + " deadline")
-            scratch_size(output)
+            scratch_size(output, live=True)
             for key, _ in selector.select(min(0.05, max(0, end - time.monotonic()))):
                 data = os.read(key.fileobj.fileno(), 65536)
                 if not data:

@@ -51,13 +51,13 @@ const WORKGROUP_SYNC_PROVIDER_SOURCE_IDENTITY_DOMAIN_V1: &[u8] =
 const WORKGROUP_SYNC_PROVIDER_SOURCE_CLOSURE_DOMAIN_V1: &[u8] =
     b"FE2O3/WORKGROUP-SYNC-PROVIDER-SOURCE-CLOSURE/V1\0";
 const REVIEWED_SAFE_EXECUTION_SOURCE_CLOSURE_V1: [u8; 32] = [
-    0xcc, 0x33, 0xbc, 0x48, 0x8a, 0x6f, 0x9d, 0xb3, 0xd0, 0x7e, 0x20, 0x78, 0xd4, 0x02, 0x6e, 0xf5,
-    0x7c, 0x81, 0x90, 0x46, 0x6f, 0x9a, 0x8b, 0xc5, 0x08, 0xba, 0x98, 0x3b, 0xb4, 0x23, 0x83, 0x52,
+    0x0e, 0x43, 0xcb, 0x1e, 0x81, 0x56, 0xa7, 0xec, 0x6b, 0xd9, 0xdf, 0xda, 0x34, 0x4b, 0x18, 0x8b,
+    0x9c, 0x0a, 0x31, 0x55, 0xc7, 0x39, 0x5b, 0x9e, 0x3d, 0x6f, 0x68, 0x55, 0x16, 0xc7, 0x4d, 0x8b,
 ];
 // The pinned Cargo-produced manifest fixture is checked with the complete source tree.
 const REVIEWED_SAFE_EXECUTION_CARGO_VENDOR_SOURCE_CLOSURE_V1: [u8; 32] = [
-    0xab, 0x24, 0x7e, 0x81, 0x42, 0x80, 0x67, 0xd8, 0x56, 0x7b, 0x9f, 0x69, 0xec, 0xa5, 0xec, 0x49,
-    0x67, 0xa4, 0xba, 0xb8, 0xb3, 0x59, 0xa5, 0x41, 0x6a, 0xb0, 0x66, 0x03, 0x44, 0x86, 0xf2, 0x4d,
+    0xa5, 0x1c, 0x98, 0xe5, 0x08, 0x89, 0x6c, 0x3a, 0x95, 0x89, 0xc0, 0x07, 0x47, 0x1f, 0xbb, 0x46,
+    0x51, 0x6c, 0xaa, 0xe2, 0x03, 0x30, 0xb1, 0xe5, 0xb2, 0x42, 0x45, 0xbf, 0x2f, 0x4a, 0xea, 0x5f,
 ];
 const REVIEWED_SAFE_EXECUTION_SOURCE_CLOSURES_V1: [[u8; 32]; 2] = [
     REVIEWED_SAFE_EXECUTION_SOURCE_CLOSURE_V1,
@@ -2579,6 +2579,21 @@ pub(crate) fn authenticate_reviewed_safe_core_f32_is_finite_helper_v1<'tcx>(
     };
     let crate_name = tcx.crate_name(instance.def_id().krate);
     let canonical_path = tcx.def_path_str(instance.def_id());
+    // Other external items, including real closures, reach this recognizer.
+    // Authenticate this exact function definition before asking rustc for fn_sig;
+    // closures carry their signature in their closure args instead of fn_sig.
+    if !matches!(instance.def, InstanceKind::Item(_))
+        || !matches!(
+            tcx.def_kind(instance.def_id()),
+            rustc_hir::def::DefKind::Fn | rustc_hir::def::DefKind::AssocFn
+        )
+        || instance.def_id().krate != core_lang_item.krate
+        || crate_name.as_str() != "core"
+        || !instance.args.is_empty()
+        || canonical_path != "core::f32::<impl f32>::is_finite"
+    {
+        return false;
+    }
     let mir_available = tcx.is_mir_available(instance.def_id());
     let signature = tcx.instantiate_bound_regions_with_erased(
         tcx.fn_sig(instance.def_id())
@@ -3761,7 +3776,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             closure,
-            digest("cc33bc488a6f9db3d07e2078d4026ef57c8190466f9a8bc508ba983bb4238352")
+            digest("0e43cb1e8156a7ec6bd9dfda344b188b9c0a3155c7395b9e3d6f685516c74d8b")
         );
         assert_eq!(closure, super::REVIEWED_SAFE_EXECUTION_SOURCE_CLOSURE_V1);
     }

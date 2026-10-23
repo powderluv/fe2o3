@@ -313,6 +313,7 @@ pub(super) fn append_checked_reference_site_v1(
                 guarded_sites.push(GuardedAccessSiteV1 {
                     insertion_operation: operations.len(),
                     access: GuardedRankedAccessV1 {
+                        failure: guarded.failure,
                         view: guarded.view,
                         indices: Vec::new(),
                         comparisons: Vec::new(),

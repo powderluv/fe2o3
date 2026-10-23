@@ -29,11 +29,22 @@ join an authenticated receipt. It proves no Rust-source, MIR, Kernel-IR,
 LLVM/ISA, logical-address, artifact, machine-memory, generalized race-freedom,
 numerical, or GPU-execution result.
 
-Run it with the pinned release closure:
+This retained model is bound to the original public source at
+`e3c7018f428192c350c9c425df8e4c031c788272`, not the current kernel. From a
+repository-root checkout, create a new detached worktree and use the pinned
+Verus `0.2026.08.02.b677dd5` release closure:
 
 ```sh
-VERUS=/absolute/path/to/pinned/verus examples/moe_expert_v1/run-verus.sh
+git worktree add --detach ../fe2o3-proof-moe-e3c701 e3c7018f428192c350c9c425df8e4c031c788272
+(
+  cd ../fe2o3-proof-moe-e3c701
+  VERUS=/absolute/path/to/pinned/verus examples/moe_expert_v1/run-verus.sh
+)
 ```
+
+The neighboring worktree must not already exist. Expect 15 verified obligations
+and six intended mutation rejections. The current kernel deliberately fails the
+original source hash guard; do not change that guard to claim a new proof.
 
 `src/kernel.rs` contains ordinary attributed Rust `#[kernel]` definitions for
 the expert GEMM and deterministic combine. It contains no `macro_rules!`

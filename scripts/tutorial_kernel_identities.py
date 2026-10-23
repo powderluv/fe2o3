@@ -24,6 +24,14 @@ MAX_RUNTIME_BYTES = 16 * 1024 * 1024
 MAX_IDENTITY_BYTES = 16 * 1024 * 1024
 MAX_CFG_TOKENS = 512
 MAX_INCLUDE_DEPTH = 32
+# A catalog can revisit immutable item coordinates under many distinct features.
+# Bound that work separately from newly materialized records and attributes:
+# the current 68-fixture catalog needs 4,324 visits but only 1,651 records.
+MAX_SOURCE_ITEM_VISITS = 8192
+# Exported report rows reduce record capacity, not physical attribute work.
+# The complete 95-fixture catalog exceeds 4,096 attribute visits. Keep a finite
+# independent work bound without changing record, source-byte or item limits.
+MAX_ATTRIBUTE_VISITS = 8192
 BUILTIN_DERIVES = frozenset({"Clone", "Copy", "Debug", "Default", "Eq", "PartialEq", "Ord", "PartialOrd", "Hash"})
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 KERNEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}")
@@ -89,10 +97,17 @@ def _name_token_matches(encoded: bytes, offset: int, symbol: str) -> bool:
 
 
 class _Budget:
-    def __init__(self, maximum: int):
+    def __init__(self, maximum: int, *, source_item_limit: int | None = None,
+                 attribute_limit: int | None = None):
         if type(maximum) is not int or maximum < 0:
             _fail("record limit must be a nonnegative integer")
+        if source_item_limit is not None and (type(source_item_limit) is not int or source_item_limit < 0):
+            _fail("source item visit limit must be a nonnegative integer")
+        if attribute_limit is not None and (type(attribute_limit) is not int or attribute_limit < 0):
+            _fail("attribute visit limit must be a nonnegative integer")
         self.maximum = maximum
+        self.attribute_limit = attribute_limit
+        self.source_item_limit = source_item_limit
         self.used = 0
         self.attribute_visits = 0
         self.source_item_visits = 0
@@ -114,12 +129,14 @@ class _Budget:
         self.fragment_match_bytes += amount
 
     def visit_attribute(self) -> None:
-        if self.attribute_visits >= self.maximum:
+        limit = self.maximum if self.attribute_limit is None else self.attribute_limit
+        if self.attribute_visits >= limit:
             _fail("fixture selection attributes exceed their aggregate visit bound")
         self.attribute_visits += 1
 
     def visit_source_item(self) -> None:
-        if self.source_item_visits >= self.maximum:
+        limit = self.maximum if self.source_item_limit is None else self.source_item_limit
+        if self.source_item_visits >= limit:
             _fail("fixture source items exceed their aggregate visit bound")
         self.source_item_visits += 1
 
@@ -363,7 +380,8 @@ def _fixture_trivia_end(source: str, start: int, end: int) -> int:
 
 def _fixture_attribute(source: str, code: str, pairs: dict[int, int], start: int, end: int,
                        features: set[str], budget: _Budget, inner: bool,
-                       depth: int = 0, derives: set[str] | None = None) -> tuple[bool, int]:
+                       depth: int = 0, derives: set[str] | None = None,
+                       module_paths: list[str] | None = None) -> tuple[bool, int]:
     """Evaluate a bounded attribute subset, separately from the lexical census."""
     if depth > 32:
         _fail("fixture selection attribute exceeds its nesting bound")
@@ -376,6 +394,21 @@ def _fixture_attribute(source: str, code: str, pairs: dict[int, int], start: int
         _fail("unsupported fixture selection attribute")
     name = match[0]
     cursor = _fixture_trivia_end(source, match.end(), end)
+    if name == "path":
+        # Only a direct outer attribute on a library-root module is supported.
+        # Never resolve cfg_attr paths, escapes, directories or computed strings.
+        if inner or depth or module_paths is None:
+            _fail("unsupported fixture selection attribute")
+        if module_paths:
+            _fail("duplicate fixture module path")
+        if cursor == end or source[cursor] != "=":
+            _fail("unsupported fixture selection attribute")
+        cursor = _fixture_trivia_end(source, cursor + 1, end)
+        literal = re.compile(r'"([A-Za-z0-9_][A-Za-z0-9_-]*\.rs)"').match(source, cursor, end)
+        if literal is None or _fixture_trivia_end(source, literal.end(), end) != end:
+            _fail("unsupported fixture selection attribute: path requires one sibling .rs literal")
+        module_paths.append(literal[1])
+        return True, 0
     arguments = None
     if cursor < end:
         if source[cursor] != "(" or pairs.get(cursor, end + 1) > end:
@@ -570,10 +603,10 @@ def _fixture_declarations(
     source: str, features: set[str], scan_functions: Callable,
     rust_syntax: Callable, budget: _Budget,
     *, include_paths: list[str] | None = None, include_scope: _FixtureIncludeScope | None = None,
-    macros_only: bool = False,
+    macros_only: bool = False, allow_module_path: bool = False,
     function_cache: dict[str, list[dict[str, Any]]] | None = None,
     item_cache: dict[str, tuple[_FixtureItem, ...]] | None = None,
-) -> tuple[list[dict[str, Any]], list[str]]:
+) -> tuple[list[dict[str, Any]], list[tuple[str, str | None]]]:
     """Select physical functions/modules; macro definitions are never expanded."""
     _utf8(source, "fixture source")
     # Coordinates depend only on source bytes, not the selected Cargo features.
@@ -609,13 +642,14 @@ def _fixture_declarations(
             attributes, body = cached_items[item_index]
             item_index += 1
         # Syntax rows bound newly materialized records; a separate cumulative
-        # visit budget bounds every feature/context replay at the same maximum.
+        # visit budget bounds every feature/context replay, including cache hits.
         budget.visit_source_item()
         if cached_items is None:
             budget.rows([None], "fixture source items")
         enabled = True
         kernels = 0
         derives: set[str] = set()
+        module_paths: list[str] = []
         attribute_index = 0
         while True:
             if cached_items is None:
@@ -633,7 +667,8 @@ def _fixture_declarations(
             if macros_only and inner:
                 _fail("included fixture source cannot contain inner attributes")
             attr_enabled, attr_kernels = _fixture_attribute(
-                source, code, pairs, opening + 1, end - 1, features, budget, inner, derives=derives)
+                source, code, pairs, opening + 1, end - 1, features, budget, inner, derives=derives,
+                module_paths=module_paths if allow_module_path else None)
             enabled = enabled and attr_enabled
             kernels += attr_kernels
             if inner and not enabled:
@@ -646,9 +681,15 @@ def _fixture_declarations(
             if item_cache is not None:
                 parsed_items.append((tuple(attributes), body))
         if body is None:
+            if module_paths:
+                _fail("fixture path requires an ordinary root module declaration")
             break
         start, boundary, cursor, first_byte, last_byte, end_byte = body
         head = code[start:boundary]
+        module = re.fullmatch(r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*", head)
+        # Validate the attributed item even when cfg removes it from selection.
+        if module_paths and (module is None or code[boundary] != ";" or kernels or derives):
+            _fail("fixture path requires an ordinary root module declaration")
         data_item = _fixture_data_item(code, start, boundary, cursor)
         if derives:
             if not data_item or include_scope is None:
@@ -691,11 +732,10 @@ def _fixture_declarations(
             continue
         if include_scope is not None and re.match(r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?use\b", head):
             include_scope.imported(code[start:cursor])
-        module = re.fullmatch(r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*", head)
         if module is not None:
             if code[boundary] != ";":
                 _fail("inline fixture modules are unsupported")
-            modules.append(module[1])
+            modules.append((module[1], module_paths[0] if module_paths else None))
             continue
         if (re.search(r"\b(?:macro_rules|include)\b|!", head)
                 or re.match(r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:use|const|static|type|fn)\b", head) is None):
@@ -736,6 +776,7 @@ def _fixture_selection(fixture: dict[str, Any], load_sources: Callable, scan_fun
         functions, modules = _fixture_declarations(
             source, set(enabled), scan_functions, rust_syntax, budget,
             include_paths=includes, include_scope=include_scope, macros_only=included,
+            allow_module_path=path == library and not module_context and not included,
             function_cache=function_cache, item_cache=item_cache)
         for function in functions:
             symbol = function["kernelSymbol"]
@@ -743,14 +784,19 @@ def _fixture_selection(fixture: dict[str, Any], load_sources: Callable, scan_fun
                 _fail("ambiguous feature-selected fixture kernel")
             selected[symbol] = (path, function["functionUtf8Offset"], source)
         # Deliberately bounded to ordinary sibling modules of a library root.
-        # Nested, inline, #[path] and macro-selected modules need a separate
-        # reviewed extension, not a guess about Rust's module resolution.
+        # Explicit sibling filenames change the physical file, not the Rust
+        # module name. Nested, inline and macro-selected modules stay unsupported.
         if modules and (path != library or module_context):
             _fail("nested fixture modules are unsupported")
-        for module in modules:
+        module_names = set()
+        for module, filename in modules:
+            if module in module_names:
+                _fail("ambiguous fixture module name")
+            module_names.add(module)
             parent = path.rsplit("/", 1)[0]
-            candidates = [candidate for candidate in (f"{parent}/{module}.rs", f"{parent}/{module}/mod.rs")
-                          if candidate in sources]
+            possible = ((f"{parent}/{filename}",) if filename is not None else
+                        (f"{parent}/{module}.rs", f"{parent}/{module}/mod.rs"))
+            candidates = [candidate for candidate in possible if candidate in sources]
             if len(candidates) != 1:
                 _fail("ambiguous or missing fixture module selection")
             pending.append((candidates[0], (module,), False, 0))
@@ -777,7 +823,8 @@ def validate_kernel_inventory(
     existing validators. With no runtime, selection coverage is checked but
     occurrence coverage and source/display joins remain explicitly unvalidated.
     """
-    budget = _Budget(max_records)
+    budget = _Budget(max_records, source_item_limit=MAX_SOURCE_ITEM_VISITS,
+                     attribute_limit=MAX_ATTRIBUTE_VISITS)
     if (not isinstance(manifest, dict) or not isinstance(manifest.get("curriculum"), dict)
             or manifest["curriculum"].get("schema") != "fe2o3-tutorial-curriculum-obligations-v2"):
         _fail("the identity extension requires the existing V2 curriculum")

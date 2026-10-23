@@ -206,5 +206,9 @@ pub(crate) fn is_authenticated_gfx942_wave64_shuffle_instance_v1(
     instance: Instance<'_>,
     expected_target: &str,
 ) -> bool {
-    expected_target == "gfx942:xnack-" && scalar_for_instance(tcx, instance).is_some()
+    // Authenticate traversal of the same provider implementation on both Wave64
+    // profiles. This does not materialize participation, lane identity or epochs:
+    // the later raw-source shuffle materializer still refuses that missing join.
+    matches!(expected_target, "gfx942:xnack-" | "gfx950:xnack-")
+        && scalar_for_instance(tcx, instance).is_some()
 }

@@ -319,6 +319,173 @@ fn numerical_work_is_prepaid_before_any_result_completion() {
     assert_eq!(events.writes, 0);
 }
 
+fn finite_options() -> ObservationExecutionOptionsV1 {
+    ObservationExecutionOptionsV1::new(SimulationDebugCaptureLimitsV1::disabled())
+        .with_matrix_bf16_numerics(MatrixBf16NumericsV1::FiniteSequentialFmaV1)
+}
+
+fn finite_simulate(
+    sim: &AdmittedSimulationModuleV1,
+    request: &SimulationRequestV1,
+    limits: SimulationLimitsV1,
+    events: &mut impl SimulationEventSinkV1,
+) -> Result<SimulationExecutionV1, SimulationErrorV1> {
+    let mut observed = request.clone();
+    observed.events = EventPolicyV1::Enabled;
+    sim.simulate_debugged_with_observation_options(
+        &observed,
+        TARGET,
+        limits,
+        finite_options(),
+        events,
+        &mut NoopSimulationDebugSinkV1,
+    )
+}
+
+#[test]
+fn finite_mode_preserves_fractional_product_gradual_underflow_and_canaries() {
+    let sim = admit(module(64));
+    for (a, b, c, result) in [
+        (0x3f81_u16, 0x3f7f_u16, 0, 0x4180_7f00), // 16 exact BF16 products.
+        (1, 0x3f80, 0, 0x0010_0000),              // 16 * least BF16 subnormal, no FTZ.
+        (0x8000, 0, 1, 1),                        // F32 subnormal accumulator survives every FMA.
+        // Each +2^-24 is an exact halfway increment at 1.0; ties go to even.
+        (0x3f80, 0x3380, 0x3f80_0000, 0x3f80_0000),
+        (0x3f80, 0x3380, 0x3f80_0001, 0x3f80_0002),
+        // A negative-zero product plus a negative-zero accumulator stays -0.
+        (0x8000, 0x3f80, 0x8000_0000, 0x8000_0000),
+    ] {
+        let mut request = request(&[0; 256], &[0; 256], &[0; 256], 1, 64);
+        for i in 0..256 {
+            alter(&mut request, 0, i * 2, &a.to_le_bytes(), true);
+            alter(&mut request, 1, i * 2, &b.to_le_bytes(), true);
+            alter(&mut request, 2, i * 4, &u32::to_le_bytes(c), true);
+        }
+        let original = request.arguments.clone();
+        let run =
+            finite_simulate(&sim, &request, limits(), &mut NoopSimulationEventSinkV1).unwrap();
+        assert_eq!(
+            run.matrix_bf16_numerics(),
+            MatrixBf16NumericsV1::FiniteSequentialFmaV1
+        );
+        check_output(&run, &[result; 256], 1);
+        assert_eq!(request.arguments, original);
+    }
+}
+
+#[test]
+fn finite_mode_rejects_last_input_and_late_overflow_before_completions_or_stores() {
+    let graph = module(64);
+    let position = matrix_position(&graph) as u32;
+    let sim = admit(graph);
+    for argument in 0..3 {
+        for bits in [0x7f80_0000_u32, 0xff80_0000, 0x7fc0_0000, 0x7f81_0000] {
+            let mut req = request(&[1; 256], &[1; 256], &[0; 256], 1, 64);
+            if argument < 2 {
+                alter(
+                    &mut req,
+                    argument,
+                    510,
+                    &((bits >> 16) as u16).to_le_bytes(),
+                    true,
+                );
+            } else {
+                alter(&mut req, argument, 1020, &bits.to_le_bytes(), true);
+            }
+            let original = req.arguments.clone();
+            let mut events = MatrixEvents {
+                operation: position,
+                ..Default::default()
+            };
+            assert!(matches!(
+                kind(finite_simulate(&sim, &req, limits(), &mut events).unwrap_err()),
+                SimulationExecutionErrorKindV1::UnsupportedMatrixInputDomain { .. }
+            ));
+            assert_eq!(events.arrived, 64);
+            assert_eq!((events.completed, events.writes), (0, 0));
+            assert_eq!(req.arguments, original);
+        }
+    }
+    // Only the last output component overflows, after 255 scratch results exist.
+    let mut req = request(&[0; 256], &[0; 256], &[0; 256], 1, 64);
+    for depth in 0..16 {
+        let a_slot = (15 + (depth / 4) * 16) * 4 + depth % 4;
+        let b_slot = (15 + (depth / 4) * 16) * 4 + depth % 4;
+        alter(&mut req, 0, a_slot * 2, &0x7f7f_u16.to_le_bytes(), true);
+        alter(&mut req, 1, b_slot * 2, &0x4000_u16.to_le_bytes(), true);
+    }
+    let mut events = MatrixEvents {
+        operation: position,
+        ..Default::default()
+    };
+    let original = req.arguments.clone();
+    assert!(matches!(
+        kind(finite_simulate(&sim, &req, limits(), &mut events).unwrap_err()),
+        SimulationExecutionErrorKindV1::NonFiniteMatrixResult {
+            lane: 63,
+            component: 3,
+            ..
+        }
+    ));
+    assert_eq!(events.arrived, 64);
+    assert_eq!((events.completed, events.writes), (0, 0));
+    assert_eq!(req.arguments, original);
+}
+
+#[test]
+fn finite_precharge_exact_one_short_and_persisted_schedule_refusal() {
+    let graph = module(64);
+    let position = matrix_position(&graph) as u32;
+    let sim = admit(graph);
+    let req = request(&[1; 256], &[1; 256], &[0; 256], 1, 64);
+    let prepaid = 64 * (u64::from(position) + 1 + 24) + 66 * 64 + 21_824 + 4865;
+    let mut events = MatrixEvents {
+        operation: position,
+        ..Default::default()
+    };
+    let denied = SimulationLimitsV1 {
+        max_steps: prepaid - 1,
+        ..limits()
+    };
+    assert!(matches!(
+        kind(finite_simulate(&sim, &req, denied, &mut events).unwrap_err()),
+        SimulationExecutionErrorKindV1::StepLimit { .. }
+    ));
+    assert_eq!(events.arrived, 64);
+    assert_eq!((events.completed, events.writes), (0, 0));
+    let exact = SimulationLimitsV1 {
+        max_steps: prepaid,
+        ..limits()
+    };
+    let mut events = MatrixEvents {
+        operation: position,
+        ..Default::default()
+    };
+    // The collective completes; subsequent source stores then exhaust this exact prepay.
+    assert!(matches!(
+        kind(finite_simulate(&sim, &req, exact, &mut events).unwrap_err()),
+        SimulationExecutionErrorKindV1::StepLimit { .. }
+    ));
+    assert_eq!(events.arrived, 64);
+    assert_eq!(events.completed, 64);
+    assert!(matches!(
+        sim.simulate_debugged_scheduled_with_observation_options(
+            &req,
+            TARGET,
+            limits(),
+            SimulationScheduleRequestV1::RecordCanonical {
+                max_decisions: 1024
+            },
+            finite_options(),
+            &mut NoopSimulationEventSinkV1,
+            &mut NoopSimulationDebugSinkV1,
+        ),
+        Err(SimulationErrorV1::Preflight(
+            SimulationPreflightErrorV1::InvalidLaunch(_)
+        ))
+    ));
+}
+
 fn branched(mismatched: bool) -> Module {
     let mut graph = module(64);
     let position = matrix_position(&graph);

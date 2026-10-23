@@ -418,6 +418,7 @@ impl AdmittedSimulationModuleV1 {
                 schedule: None,
                 resident_offset: 0,
                 allocation_reuse: None,
+                matrix_bf16_numerics: crate::MatrixBf16NumericsV1::ExactV1,
             },
             &mut events,
             &mut debug,

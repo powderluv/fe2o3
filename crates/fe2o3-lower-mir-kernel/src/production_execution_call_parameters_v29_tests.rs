@@ -444,7 +444,8 @@ fn run(
                                 },
                                 Some(cursor),
                                 None,
-                            )?;
+                                None,
+)?;
                             let mut block = BasicBlock::new(BlockId(0));
                             parent.begin_block(SemanticBlockIdV1::from_index(0), &mut block)?;
                             let incoming = instances.incoming(first).unwrap();

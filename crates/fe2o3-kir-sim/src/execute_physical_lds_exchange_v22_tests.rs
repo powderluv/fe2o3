@@ -38,6 +38,7 @@ fn with_engine(test: impl FnOnce(&mut Engine<'_, NoopSimulationEventSinkV1>)) {
         switch_targets: vec![vec![]],
         target: SimulationTargetV1::amdgpu_64(),
         dynamic_workgroup_memory: None,
+        matrix_bf16_numerics: crate::MatrixBf16NumericsV1::ExactV1,
         limits: SimulationLimitsV1::default(),
         policy: EventPolicyV1::Disabled,
         memory: Memory {

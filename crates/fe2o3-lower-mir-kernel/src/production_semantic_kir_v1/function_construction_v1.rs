@@ -26,6 +26,7 @@ impl<'a, 'service> SemanticFunctionLoweringV1<'a, 'service> {
         emission_placement: SemanticEmissionPlacementV1,
         mut execution: Option<ExecutionAvailabilityV29<'a>>,
         lifecycle: Option<&'service mut (dyn ExecutionLifecycleConsumerV29 + 'service)>,
+        wave64_source_owner: Option<&'a ProductionSemanticSsaOwnerV1>,
     ) -> Result<Self, ProductionSemanticKirErrorV1> {
         infallible_asserts.require_parts(
             types,
@@ -60,6 +61,8 @@ impl<'a, 'service> SemanticFunctionLoweringV1<'a, 'service> {
         } else {
             ExecutionCfgRepresentationV29::LegacyAbi
         };
+        if wave64_source_owner.is_some_and(|owner| !std::ptr::eq(owner.source_semantic().types(), types) || !std::ptr::eq(owner.source_semantic().callables(), callables)) { return Err(ProductionSemanticKirErrorV1::CorrespondenceMismatch); }
+        let wave64_references = prepare_checked_wave64_reference_locals_v1(wave64_source_owner, function, semantic_function, emission_work.as_deref_mut())?;
         let mut locals = vec![None; function.locals().len()];
         let option_producers = semantic_option_producers_v1(function, callables)
             .map_err(|error| unsupported(0, None, None, error.detail()))?;
@@ -70,6 +73,13 @@ impl<'a, 'service> SemanticFunctionLoweringV1<'a, 'service> {
         if let Some(parameter_local_bindings) = parameters.local_bindings {
             for binding in parameter_local_bindings {
                 let (local, value) = match binding {
+                    PlannedParameterLocalBindingV1::Wave64Nominal { local, semantic_type, descriptor, values } => {
+                        descriptor.exact_local_v1(semantic_function, *local as u32, *semantic_type)?;
+                        if wave64_references.locals.get(&(*local as u32)) != Some(descriptor) { return Err(ProductionSemanticKirErrorV1::CorrespondenceMismatch); }
+                        let mut reconstructed=None;
+                        wave64_references.with_descriptor_v1(*descriptor,emission_work.as_deref_mut().ok_or(ArgumentResourceV1::Accounting)?,&mut |guard,_|{reconstructed=Some(guard.reconstruct_v1(types,*semantic_type,values)?);Ok(())})?;
+                        (*local,reconstructed.ok_or(ProductionSemanticKirErrorV1::CorrespondenceMismatch)?)
+                    }
                     PlannedParameterLocalBindingV1::Bf16Nominal {
                         local,
                         semantic_type,
@@ -214,7 +224,8 @@ impl<'a, 'service> SemanticFunctionLoweringV1<'a, 'service> {
                     lifecycle.as_deref(),
                     parameters.local_bindings,
                     backing,
-                )
+                    Some(&wave64_references),
+)
             },
         )?;
         let workgroup_pipeline_contracts = workgroup_pipeline_type_contracts_v1(
@@ -370,7 +381,14 @@ impl<'a, 'service> SemanticFunctionLoweringV1<'a, 'service> {
                 private_array_outer = sources.payload(&mut private_array_work)?;
             }
         }
+        let mut emitted_unsigned_exclusive_bounds = BTreeMap::new();
+        for (local,binding) in locals.iter().enumerate() {
+            if let Some(binding) = binding {
+                if wave64_references.rank_locals.contains(&(local as u32)) || wave64_references.locals.contains_key(&(local as u32)) { wave64_references.seed_arithmetic_bound_v1(local as u32,binding,emission_work.as_deref_mut().ok_or(ArgumentResourceV1::Accounting)?,&mut emitted_unsigned_exclusive_bounds)?; }
+            }
+        }
         Ok(Self {
+            wave64_references,
             ordered_composition: false,
             fixed_array_analysis: None,
             private_arrays: PrivateArrayFunctionRecorderV1::new_with_representation_v29(
@@ -437,7 +455,7 @@ impl<'a, 'service> SemanticFunctionLoweringV1<'a, 'service> {
             emitted_u32_constants: BTreeMap::new(),
             emitted_u32_bitand_masks: BTreeMap::new(),
             authenticated_loop_induction_bounds,
-            emitted_unsigned_exclusive_bounds: BTreeMap::new(),
+            emitted_unsigned_exclusive_bounds,
             generated_terminator_values: Vec::new(),
             call_returns,
         })

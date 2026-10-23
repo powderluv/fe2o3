@@ -225,6 +225,8 @@ fn issued_scope_reference_rvalue_preserves_borrow_and_rejects_raw_result() {
             ],
         )
         .unwrap();
+        let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+        let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
         let mut lowering = SemanticFunctionLoweringV1::new(
             &types,
             &[],
@@ -241,6 +243,7 @@ fn issued_scope_reference_rvalue_preserves_borrow_and_rejects_raw_result() {
             1,
             false,
             16,
+            &mut lowering_budget,
         )
         .unwrap();
         lowering

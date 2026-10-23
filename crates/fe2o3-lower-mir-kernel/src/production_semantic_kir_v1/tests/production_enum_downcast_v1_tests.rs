@@ -38,10 +38,11 @@ mod enum_downcast_observation_tests_v1 {
         .unwrap()
     }
 
-    fn lowering<'a>(
+    fn lowering<'a, 'service, 'work>(
         types: &'a [SemanticTypeDeclV1],
         function: &'a SemanticFunctionDeclV1,
-    ) -> SemanticFunctionLoweringV1<'a, 'a> {
+        budget: &'service mut ArgumentBudgetV1<'work>,
+    ) -> SemanticFunctionLoweringV1<'a, 'service> {
         SemanticFunctionLoweringV1::new(
             types,
             &[],
@@ -58,6 +59,7 @@ mod enum_downcast_observation_tests_v1 {
             1,
             false,
             32,
+            budget,
         )
         .unwrap()
     }
@@ -89,7 +91,9 @@ mod enum_downcast_observation_tests_v1 {
         let (types, template, _) = call_produced_enum_source_fixture_v1(false);
         let ty = SemanticTypeIdV1::from_index(2);
         let function = function_for_type(&template, ty);
-        let mut lowering = lowering(&types, &function);
+        let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+        let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
+        let mut lowering = lowering(&types, &function, &mut lowering_budget);
         let mut operations = Vec::new();
         let constructor = SemanticRvalueKindV1::aggregate(
             SemanticAggregateKindV1::EnumVariant(0),
@@ -172,7 +176,9 @@ mod enum_downcast_observation_tests_v1 {
             },
         ));
         let function = function_for_type(&template, outer);
-        let mut lowering = lowering(&types, &function);
+        let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+        let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
+        let mut lowering = lowering(&types, &function, &mut lowering_budget);
         let nested = SemanticValueBindingV1::Enum {
             discriminant: ValueId(40),
             discriminant_ty: Type::Scalar(ScalarType::U32),

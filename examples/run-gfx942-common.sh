@@ -121,7 +121,7 @@ fe2o3_run_gfx942() {
             "FE2O3_CRATE_BINDING_ID_V1=$binding" \
             "CARGO_TARGET_DIR=$root_target" \
             rustup run "$toolchain" cargo run --release --locked \
-                --bin "$FE2O3_EXAMPLE_HOST_BIN"
+                --bin "$FE2O3_EXAMPLE_HOST_BIN" "${example_cargo_args[@]}"
     )
 
     printf 'HSACO: %s\n' "$hsaco"

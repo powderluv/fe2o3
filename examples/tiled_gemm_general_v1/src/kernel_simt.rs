@@ -13,7 +13,7 @@ fn accessed_extent(rows: u32, columns: u32, stride: u32) -> u64 {
     if rows == 0 || columns == 0 {
         return 0;
     }
-    u64::from(rows - 1) * u64::from(stride) + u64::from(columns)
+    ((rows - 1) as u64) * (stride as u64) + (columns as u64)
 }
 
 /// Computes `C = alpha * A * B + beta * C` with one invocation per physical C slot.
@@ -53,6 +53,9 @@ pub fn simt_gemm_general_v1(
     if m == 0 || n == 0 {
         return Ok(());
     }
+    if ldc == 0 {
+        return Err(KernelError::InvalidArgument);
+    }
 
     // Nonempty, validated C has ldc >= n > 0, so division cannot be by zero.
     let thread_index = thread::index_1d();
@@ -63,8 +66,14 @@ pub fn simt_gemm_general_v1(
         return Ok(());
     }
 
-    let lhs = StridedReadView2D::from_shared_slice(a, 0, m as usize, k as usize, lda as usize)?;
-    let rhs = StridedReadView2D::from_shared_slice(b, 0, k as usize, n as usize, ldb as usize)?;
+    let Ok(lhs) = StridedReadView2D::from_shared_slice(a, 0, m as usize, k as usize, lda as usize)
+    else {
+        return Err(KernelError::InvalidArgument);
+    };
+    let Ok(rhs) = StridedReadView2D::from_shared_slice(b, 0, k as usize, n as usize, ldb as usize)
+    else {
+        return Err(KernelError::InvalidArgument);
+    };
     let mut accumulator = 0.0_f32;
     let mut depth = 0_usize;
     while depth < k as usize {

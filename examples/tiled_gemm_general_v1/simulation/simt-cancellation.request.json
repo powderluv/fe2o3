@@ -1,0 +1,77 @@
+{
+  "schema": "fe2o3-simulation-request-v1",
+  "kernel": "simt_gemm_general_v1",
+  "grid": [
+    64,
+    1,
+    1
+  ],
+  "workgroup": [
+    64,
+    1,
+    1
+  ],
+  "arguments": [
+    {
+      "kind": "buffer",
+      "element": "u16",
+      "access": "read_only",
+      "alignment": 2,
+      "bytes": "0x81428042"
+    },
+    {
+      "kind": "buffer",
+      "element": "u16",
+      "access": "read_only",
+      "alignment": 2,
+      "bytes": "0x814282c2"
+    },
+    {
+      "kind": "buffer",
+      "element": "f32",
+      "access": "read_write",
+      "alignment": 4,
+      "bytes": "0x000000000100807f"
+    },
+    {
+      "kind": "scalar",
+      "type": "u32",
+      "bits": "0x00000001"
+    },
+    {
+      "kind": "scalar",
+      "type": "u32",
+      "bits": "0x00000001"
+    },
+    {
+      "kind": "scalar",
+      "type": "u32",
+      "bits": "0x00000002"
+    },
+    {
+      "kind": "scalar",
+      "type": "u32",
+      "bits": "0x00000002"
+    },
+    {
+      "kind": "scalar",
+      "type": "u32",
+      "bits": "0x00000001"
+    },
+    {
+      "kind": "scalar",
+      "type": "u32",
+      "bits": "0x00000001"
+    },
+    {
+      "kind": "scalar",
+      "type": "f32",
+      "bits": "0x3f800000"
+    },
+    {
+      "kind": "scalar",
+      "type": "f32",
+      "bits": "0x00000000"
+    }
+  ]
+}

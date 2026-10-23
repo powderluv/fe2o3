@@ -1,4 +1,5 @@
-//! Actual safe wrapper traversal and inert capture, not collective execution.
+//! Actual safe wrapper source import and checked general verification.
+//! Historical refusals remain explicit; ranked checks grant no artifact or launch authority.
 
 use super::*;
 use crate::rustc_semantic_adapter_v1::canonical_function_identities_v1;
@@ -40,7 +41,8 @@ enum Expectation {
     InertCapture,
     UserUnsafe,
     UserUnsafeScan,
-    WrongTarget,
+    WrongWavefront,
+    XnackPlus,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -61,18 +63,41 @@ impl Operation {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct Case {
+    gfx950: bool,
     scalar: Scalar,
     operation: Operation,
     retained: bool,
     expectation: Expectation,
 }
 impl Case {
-    fn target(self) -> &'static str {
-        if self.expectation == Expectation::WrongTarget {
-            "gfx950"
-        } else {
-            "gfx942"
+    fn permits_ranked_only(self) -> bool {
+        self.expectation == Expectation::InertCapture
+            && self.scalar == Scalar::F32
+            && matches!(
+                self.operation,
+                Operation::Reduce | Operation::Inclusive | Operation::Exclusive
+            )
+    }
+
+    fn requires_ranked_only(self) -> bool {
+        // Only these exact non-retained gfx942 rows have been observed reaching
+        // ranked verification. Every other permitted row remains conditional.
+        self.permits_ranked_only()
+            && !self.gfx950
+            && matches!(self.operation, Operation::Reduce | Operation::Inclusive)
+            && !self.retained
+    }
+
+    fn hostile_features(self) -> Option<&'static str> {
+        match self.expectation {
+            Expectation::WrongWavefront => Some("+wavefrontsize32,-wavefrontsize64,-xnack"),
+            Expectation::XnackPlus => Some("-wavefrontsize32,+wavefrontsize64,+xnack"),
+            _ => None,
         }
+    }
+
+    fn target(self) -> &'static str {
+        if self.gfx950 { "gfx950" } else { "gfx942" }
     }
     fn feature(self) -> &'static str {
         match self.expectation {
@@ -94,6 +119,19 @@ impl Case {
     }
 }
 
+// General ranked checks carry no artifact or launch authority. Keep this
+// outcome separate from the historical materialization/projection refusals.
+#[derive(Debug, Serialize, Deserialize)]
+struct RankedOnlyReport {
+    roots: usize,
+    functions: usize,
+    callables: usize,
+    retained_bindings: usize,
+    bounds_clean: bool,
+    checks_clean: bool,
+    grants_artifact_or_launch_authority: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Report {
     case: Case,
@@ -103,11 +141,32 @@ struct Report {
     actual_can_unwind: Option<bool>,
     semantic_bytes: usize,
     refusal: String,
+    ranked_only: Option<RankedOnlyReport>,
 }
 impl Report {
     fn validate(&self, case: Case) -> Result<(), String> {
-        if self.case != case || self.refusal.is_empty() {
-            return Err("wave capture report lost its exact case or later refusal".into());
+        if self.case != case || self.refusal.is_empty() != self.ranked_only.is_some() {
+            return Err("wave capture report lost its exact case or distinct outcome".into());
+        }
+        if case.requires_ranked_only() && self.ranked_only.is_none() {
+            return Err(
+                "observed gfx942 non-retained f32 ranked witness regressed to refusal".into(),
+            );
+        }
+        if let Some(ranked) = &self.ranked_only {
+            if !case.permits_ranked_only()
+                || ranked.roots != 1
+                || ranked.functions == 0
+                || ranked.callables == 0
+                || ranked.retained_bindings != 6
+                || !ranked.bounds_clean
+                || !ranked.checks_clean
+                || ranked.grants_artifact_or_launch_authority
+            {
+                return Err(
+                    "actual ranked-only outcome changed checks, custody or authority".into(),
+                );
+            }
         }
         if case.expectation == Expectation::InertCapture {
             if self.primitive_calls == 0
@@ -233,6 +292,7 @@ fn observe_imported(
         actual_can_unwind: Some(actual_fn_abi.can_unwind),
         semantic_bytes: semantic.canonical_encoding().len(),
         refusal: String::new(),
+        ranked_only: None,
     })
 }
 
@@ -270,8 +330,25 @@ fn observe_capture(tcx: TyCtxt<'_>, case: Case) -> Result<Report, String> {
             format!("{error:?}")
         }
         Err(error) => return Err(format!("unexpected pre-materialization refusal: {error:?}")),
-        Ok(_) => {
-            return Err("inert primitive capture acquired unchecked collective execution".into());
+        Ok(ranked) => {
+            if !case.permits_ranked_only() {
+                return Err(
+                    "source outside the reviewed f32 collectives reached ranked checks".into(),
+                );
+            }
+            // Read the actual returned stage; no target lowering, artifact
+            // publication or launch is performed by this source-capture test.
+            report.ranked_only = Some(RankedOnlyReport {
+                roots: ranked.ranked_root_count(),
+                functions: ranked.semantic_function_count(),
+                callables: ranked.semantic_callable_count(),
+                retained_bindings: ranked.retained_identity_and_transaction_binding_count(),
+                bounds_clean: ranked.bounds_are_clean(),
+                checks_clean: ranked.all_kernel_checks_are_clean(),
+                grants_artifact_or_launch_authority: ranked.grants_artifact_or_launch_authority(),
+            });
+            report.validate(case)?;
+            return Ok(report);
         }
     };
     report.validate(case)?;
@@ -279,10 +356,22 @@ fn observe_capture(tcx: TyCtxt<'_>, case: Case) -> Result<Report, String> {
 }
 
 fn observe_refusal(tcx: TyCtxt<'_>, case: Case) -> Result<Report, String> {
-    let refusal = match transaction_in_active_session_v1(
-        tcx,
-        crate::rustc_semantic_plan_v1::DebugSourceCaptureRequestV2::Disabled,
-    ) {
+    use crate::collector::semantic_import_observation_v1_tests::with_observer;
+    let observations = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+    let callback_observations = std::rc::Rc::clone(&observations);
+    let result = with_observer(
+        Box::new(move |_, _| callback_observations.set(callback_observations.get() + 1)),
+        || {
+            transaction_in_active_session_v1(
+                tcx,
+                crate::rustc_semantic_plan_v1::DebugSourceCaptureRequestV2::Disabled,
+            )
+        },
+    );
+    if observations.get() != 0 {
+        return Err("rejected source/profile reached the semantic import observer".into());
+    }
+    let refusal = match result {
         Err(error) => error,
         Ok(_) => {
             return Err("ordinary source acquired an unauthorized unsafe/target closure".into());
@@ -293,11 +382,10 @@ fn observe_refusal(tcx: TyCtxt<'_>, case: Case) -> Result<Report, String> {
         Expectation::UserUnsafeScan => {
             refusal.contains("reaches unsafe function instance") && refusal.contains("forged_scan")
         }
-        Expectation::WrongTarget => {
-            refusal.contains("reaches unsafe function instance")
-                && (refusal.contains("__fe2o3_wave64_shuffle_index")
-                    || (case.operation != Operation::Reduce
-                        && refusal.contains("wave64_inclusive_scan")))
+        Expectation::WrongWavefront | Expectation::XnackPlus => {
+            refusal.contains("production extraction target authentication failed before monomorphization: production compilation requires authoritative rustc active target features")
+                && refusal.contains("-wavefrontsize32,+wavefrontsize64,-xnack")
+                && refusal.contains(&format!("found {:?}", case.hostile_features().unwrap()))
         }
         Expectation::InertCapture => false,
     };
@@ -315,6 +403,7 @@ fn observe_refusal(tcx: TyCtxt<'_>, case: Case) -> Result<Report, String> {
         actual_can_unwind: None,
         semantic_bytes: 0,
         refusal,
+        ranked_only: None,
     };
     report.validate(case)?;
     Ok(report)
@@ -373,11 +462,12 @@ fn fixture(workspace: &Path, case: Case) -> corpus::Fixture {
     };
     corpus::Fixture {
         fixture_id: format!(
-            "{}-{}-{}-retained-{}",
+            "{}-{}-{}-retained-{}-{:?}",
             case.target(),
             case.feature(),
             case.scalar.feature(),
-            case.retained
+            case.retained,
+            case.expectation
         ),
         target: case.target().into(),
         compiler_input: corpus::CompilerInput {
@@ -404,81 +494,214 @@ fn fixture(workspace: &Path, case: Case) -> corpus::Fixture {
 
 fn capture_cases() -> Vec<Case> {
     let mut cases = Vec::new();
-    for operation in [
-        Operation::Reduce,
-        Operation::Inclusive,
-        Operation::Exclusive,
-    ] {
-        for scalar in [Scalar::U32, Scalar::I32, Scalar::F32] {
-            for retained in [false, true] {
-                cases.push(Case {
-                    scalar,
-                    operation,
-                    retained,
-                    expectation: Expectation::InertCapture,
-                });
+    for gfx950 in [false, true] {
+        for operation in [
+            Operation::Reduce,
+            Operation::Inclusive,
+            Operation::Exclusive,
+        ] {
+            for scalar in [Scalar::U32, Scalar::I32, Scalar::F32] {
+                for retained in [false, true] {
+                    cases.push(Case {
+                        gfx950,
+                        scalar,
+                        operation,
+                        retained,
+                        expectation: Expectation::InertCapture,
+                    });
+                }
             }
         }
-    }
-    for expectation in [
-        Expectation::UserUnsafe,
-        Expectation::UserUnsafeScan,
-        Expectation::WrongTarget,
-    ] {
-        for retained in [false, true] {
-            cases.push(Case {
-                scalar: Scalar::U32,
-                operation: Operation::Reduce,
-                retained,
-                expectation,
-            });
-        }
-    }
-    for operation in [Operation::Inclusive, Operation::Exclusive] {
-        for retained in [false, true] {
-            cases.push(Case {
-                scalar: Scalar::U32,
-                operation,
-                retained,
-                expectation: Expectation::WrongTarget,
-            });
+        for expectation in [
+            Expectation::UserUnsafe,
+            Expectation::UserUnsafeScan,
+            Expectation::WrongWavefront,
+            Expectation::XnackPlus,
+        ] {
+            for retained in [false, true] {
+                cases.push(Case {
+                    gfx950,
+                    scalar: Scalar::U32,
+                    operation: Operation::Reduce,
+                    retained,
+                    expectation,
+                });
+            }
         }
     }
     cases
 }
 
-#[test]
-fn wave64_capture_cases_keep_scalar_scan_and_hostile_boundaries_distinct() {
-    let cases = capture_cases();
-    assert_eq!(cases.len(), 28);
-    let mut identities = std::collections::BTreeSet::new();
-    for case in cases {
-        assert!(identities.insert(serde_json::to_string(&case).unwrap()));
-        assert!(case.features().contains(&case.scalar.feature().to_owned()));
-        if case.expectation == Expectation::InertCapture {
-            assert_eq!(case.target(), "gfx942");
-        }
-        if case.expectation == Expectation::WrongTarget {
-            assert_eq!(case.target(), "gfx950");
-        }
+// These controls validate only the report contract. Actual source observation
+// and the returned ranked stage are still required by the subprocess campaign.
+fn ranked_report_control() -> Report {
+    Report {
+        case: Case {
+            gfx950: false,
+            scalar: Scalar::F32,
+            operation: Operation::Inclusive,
+            retained: false,
+            expectation: Expectation::InertCapture,
+        },
+        primitive_calls: 1,
+        retained_wrapper_functions: 0,
+        retained_scan_helpers: 1,
+        actual_can_unwind: Some(false),
+        semantic_bytes: 1,
+        refusal: String::new(),
+        ranked_only: Some(RankedOnlyReport {
+            roots: 1,
+            functions: 2,
+            callables: 3,
+            retained_bindings: 6,
+            bounds_clean: true,
+            checks_clean: true,
+            grants_artifact_or_launch_authority: false,
+        }),
     }
 }
 
 #[test]
-#[ignore = "genuine Cargo/AMD rustc source capture; requires pinned nightly toolchain"]
-fn safe_wave64_wrappers_capture_exact_primitives_without_execution_authority() {
+fn ranked_only_report_rejects_authority_dirty_checks_counts_and_mixed_outcomes() {
+    let report = ranked_report_control();
+    report.validate(report.case).unwrap();
+    for fault in 0..10 {
+        let mut report = ranked_report_control();
+        let ranked = report.ranked_only.as_mut().unwrap();
+        match fault {
+            0 => ranked.grants_artifact_or_launch_authority = true,
+            1 => ranked.bounds_clean = false,
+            2 => ranked.checks_clean = false,
+            3 => ranked.roots = 0,
+            4 => ranked.functions = 0,
+            5 => ranked.callables = 0,
+            6 => ranked.retained_bindings = 7,
+            7 => report.refusal = "simultaneous refusal is invalid".into(),
+            8 => report.case.expectation = Expectation::UserUnsafe,
+            9 => report.case.scalar = Scalar::U32,
+            _ => unreachable!(),
+        }
+        assert!(
+            report.validate(report.case).is_err(),
+            "report fault {fault} accepted"
+        );
+    }
+}
+
+#[test]
+fn observed_ranked_witness_cannot_regress_to_refusal_without_requiring_gfx950_success() {
+    let mut report = ranked_report_control();
+    report.ranked_only = None;
+    report.refusal = "historical pre-ranked refusal control".into();
+    assert!(report.validate(report.case).is_err());
+    report.case.gfx950 = true;
+    report.validate(report.case).unwrap();
+    report.case.gfx950 = false;
+    report.case.operation = Operation::Exclusive;
+    report.validate(report.case).unwrap();
+}
+
+#[test]
+fn observed_gfx942_nonretained_f32_reduction_keeps_actual_ranked_stage_requirement() {
+    // Report-contract control only. The actual source subprocess must still
+    // return and validate its real ranked stage; this is no native receipt.
+    let mut report = ranked_report_control();
+    report.case.operation = Operation::Reduce;
+    report.retained_scan_helpers = 0;
+    assert!(report.case.permits_ranked_only());
+    assert!(report.case.requires_ranked_only());
+    report.validate(report.case).unwrap();
+    report
+        .ranked_only
+        .as_mut()
+        .unwrap()
+        .grants_artifact_or_launch_authority = true;
+    assert!(report.validate(report.case).is_err());
+    report
+        .ranked_only
+        .as_mut()
+        .unwrap()
+        .grants_artifact_or_launch_authority = false;
+    for scalar in [Scalar::U32, Scalar::I32] {
+        report.case.scalar = scalar;
+        assert!(!report.case.permits_ranked_only());
+        assert!(report.validate(report.case).is_err());
+    }
+    report.case.scalar = Scalar::F32;
+    report.ranked_only = None;
+    report.refusal = "historical pre-ranked refusal control".into();
+    assert!(report.validate(report.case).is_err());
+    // No unobserved gfx950 or retained reduction is made mandatory.
+    for (gfx950, retained) in [(true, false), (false, true), (true, true)] {
+        report.case.gfx950 = gfx950;
+        report.case.retained = retained;
+        report.retained_wrapper_functions = usize::from(retained);
+        assert!(report.case.permits_ranked_only());
+        assert!(!report.case.requires_ranked_only());
+        report.validate(report.case).unwrap();
+    }
+}
+
+#[test]
+fn wave64_capture_cases_keep_scalar_scan_and_hostile_boundaries_distinct() {
+    let cases = capture_cases();
+    assert_eq!(cases.len(), 52);
+    assert_eq!(
+        cases
+            .iter()
+            .filter(|case| case.permits_ranked_only())
+            .count(),
+        12
+    );
+    assert_eq!(
+        cases
+            .iter()
+            .filter(|case| case.requires_ranked_only())
+            .count(),
+        2
+    );
+    assert_eq!(
+        cases
+            .iter()
+            .filter(|case| case.expectation != Expectation::InertCapture)
+            .count(),
+        16
+    );
+    let mut identities = std::collections::BTreeSet::new();
+    for case in cases {
+        assert!(identities.insert(serde_json::to_string(&case).unwrap()));
+        assert!(case.features().contains(&case.scalar.feature().to_owned()));
+        assert_eq!(case.target(), if case.gfx950 { "gfx950" } else { "gfx942" });
+    }
+}
+
+fn run_capture_cases(cases: impl IntoIterator<Item = Case>) {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
         .unwrap();
     let scratch = crate::test_temp_dir::TestTempDir::create("fe2o3-wave64-capture");
-    for case in capture_cases() {
+    for case in cases {
         let fixture = fixture(&workspace, case);
         let directory = scratch.path().join(&fixture.fixture_id);
         std::fs::create_dir(&directory).unwrap();
         let target_dir = scratch.path().join(case.target());
         let mut captured =
             corpus_cargo::capture(&workspace, &fixture, &directory, &target_dir).unwrap();
+        if let Some(features) = case.hostile_features() {
+            // The validated dependency capture remains normal. Replace the one
+            // actual root flag so the live rustc owner presents a hostile profile.
+            let mut flags = captured
+                .args
+                .iter_mut()
+                .filter(|arg| arg.starts_with("-Ctarget-feature="));
+            *flags.next().expect("one captured target-feature argument") =
+                format!("-Ctarget-feature={features}");
+            assert!(
+                flags.next().is_none(),
+                "duplicate captured feature argument"
+            );
+        }
         if case.retained {
             captured.args.push("-Zinline-mir=no".into());
             captured.args.push("-Zmir-opt-level=0".into());
@@ -511,12 +734,29 @@ fn safe_wave64_wrappers_capture_exact_primitives_without_execution_authority() {
         let report = report.unwrap();
         report.validate(case).unwrap();
         eprintln!(
-            "WAVE64 SOURCE {}: {} primitive calls, {} retained wrappers, {} scan helpers; {}",
+            "WAVE64 SOURCE {}: {} primitive calls, {} retained wrappers, {} scan helpers; refusal={:?}; ranked_only={:?}",
             fixture.fixture_id,
             report.primitive_calls,
             report.retained_wrapper_functions,
             report.retained_scan_helpers,
-            report.refusal
+            report.refusal,
+            report.ranked_only
         );
     }
+}
+
+#[test]
+#[ignore = "genuine Cargo/AMD rustc source capture; requires pinned nightly toolchain"]
+fn safe_wave64_wrappers_capture_exact_primitives_without_execution_authority() {
+    run_capture_cases(capture_cases());
+}
+#[test]
+#[ignore = "genuine live AMD rustc target profiles; requires pinned nightly toolchain"]
+fn live_invalid_wave64_profiles_refused_before_collection() {
+    let cases: Vec<_> = capture_cases()
+        .into_iter()
+        .filter(|case| case.hostile_features().is_some())
+        .collect();
+    assert_eq!(cases.len(), 8);
+    run_capture_cases(cases);
 }

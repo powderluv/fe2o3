@@ -26,6 +26,7 @@ fn tables(ssa: &ProductionSemanticSsaOwnerV1) -> (Ids, Signatures) {
             id,
             LoweredFunctionSignatureV1 {
                 bf16_nominal: false,
+                wave64_nominal: false,
                 parameter_semantic_types: vec![],
                 call_arguments: vec![],
                 parameter_types: vec![],
@@ -68,6 +69,7 @@ fn plumbing_tables(count: usize) -> (Ids, Signatures, Vec<Type>) {
             id,
             LoweredFunctionSignatureV1 {
                 bf16_nominal: false,
+                wave64_nominal: false,
                 parameter_semantic_types: vec![SemanticTypeIdV1::from_index(0)],
                 call_arguments: vec![HelperCallArgumentV1 {
                     source_argument: index as u32,
@@ -136,7 +138,8 @@ fn construct<'a>(
         SemanticEmissionPlacementV1::default(),
         None,
         None,
-    )
+        None,
+)
 }
 
 #[test]

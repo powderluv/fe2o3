@@ -189,25 +189,19 @@ impl WorkerV3VerificationClientV2 {
     }
 
     pub(crate) fn require_readiness_quiet(&self) -> Result<(), WorkerV3VerificationClientErrorV2> {
-        loop {
-            require_deadline(self.deadline)?;
+        readiness_quiet_with(self.deadline, Instant::now, || {
             let mut fds = [PollFd::new(
                 &self.peer,
                 PollFlags::IN | PollFlags::RDHUP | PollFlags::ERR | PollFlags::HUP,
             )];
-            match poll(
+            poll(
                 &mut fds,
                 Some(&Timespec {
                     tv_sec: 0,
                     tv_nsec: 0,
                 }),
-            ) {
-                Ok(0) => return Ok(()),
-                Ok(_) => return Err(WorkerV3VerificationClientErrorV2::TrailingTransfer),
-                Err(rustix::io::Errno::INTR) => {}
-                Err(e) => return Err(WorkerV3VerificationClientErrorV2::Poll(e.into())),
-            }
-        }
+            )
+        })
     }
 
     pub(crate) fn begin_with_readiness(
@@ -1001,6 +995,32 @@ fn wait_for_peer(
     }
 }
 
+// Only the opt-in V3 readiness states use this probe policy, not legacy V2.
+fn readiness_quiet_with(
+    deadline: Instant,
+    mut now: impl FnMut() -> Instant,
+    mut poll_once: impl FnMut() -> Result<usize, rustix::io::Errno>,
+) -> Result<(), WorkerV3VerificationClientErrorV2> {
+    loop {
+        let remaining = deadline.saturating_duration_since(now());
+        if remaining.is_zero() {
+            return Err(WorkerV3VerificationClientErrorV2::Timeout);
+        }
+        Timespec::try_from(remaining)
+            .map_err(|_| WorkerV3VerificationClientErrorV2::DeadlineOverflow)?;
+        let result = poll_once();
+        if now() >= deadline {
+            return Err(WorkerV3VerificationClientErrorV2::Timeout);
+        }
+        match result {
+            Ok(0) => return Ok(()),
+            Ok(_) => return Err(WorkerV3VerificationClientErrorV2::TrailingTransfer),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(source) => return Err(WorkerV3VerificationClientErrorV2::Poll(source.into())),
+        }
+    }
+}
+
 fn require_deadline(deadline: Instant) -> Result<(), WorkerV3VerificationClientErrorV2> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
@@ -1028,6 +1048,96 @@ mod tests {
     use rustix::net::{
         SocketFlags, accept_with, bind, connect, listen, send, socket_with, socketpair,
     };
+
+    #[test]
+    fn readiness_quiet_refuses_expiry_after_every_poll_outcome() {
+        for result in [
+            Ok(0_usize),
+            Ok(1),
+            Err(rustix::io::Errno::INTR),
+            Err(rustix::io::Errno::BADF),
+        ] {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            let polled = std::cell::Cell::new(false);
+            let outcome = readiness_quiet_with(
+                deadline,
+                || {
+                    if polled.get() {
+                        deadline
+                    } else {
+                        deadline - Duration::from_secs(1)
+                    }
+                },
+                || {
+                    assert!(!polled.replace(true), "expired probe was retried");
+                    result
+                },
+            );
+            assert!(matches!(
+                outcome,
+                Err(WorkerV3VerificationClientErrorV2::Timeout)
+            ));
+            assert!(polled.get());
+        }
+    }
+
+    #[test]
+    fn readiness_quiet_repeated_interruptions_keep_the_original_deadline() {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let interrupts = std::cell::Cell::new(0);
+        let outcome = readiness_quiet_with(
+            deadline,
+            || {
+                if interrupts.get() < 4096 {
+                    deadline - Duration::from_secs(1)
+                } else {
+                    deadline
+                }
+            },
+            || {
+                interrupts.set(interrupts.get() + 1);
+                Err(rustix::io::Errno::INTR)
+            },
+        );
+        assert!(matches!(
+            outcome,
+            Err(WorkerV3VerificationClientErrorV2::Timeout)
+        ));
+        assert_eq!(interrupts.get(), 4096);
+    }
+
+    #[test]
+    fn readiness_quiet_finite_interruptions_preserve_live_poll_outcomes() {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let before_deadline = deadline - Duration::from_secs(1);
+        let interrupts = std::cell::Cell::new(0);
+        readiness_quiet_with(
+            deadline,
+            || before_deadline,
+            || {
+                interrupts.set(interrupts.get() + 1);
+                if interrupts.get() < 1024 {
+                    Err(rustix::io::Errno::INTR)
+                } else {
+                    Ok(0)
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(interrupts.get(), 1024);
+        assert!(matches!(
+            readiness_quiet_with(deadline, || before_deadline, || Ok(1)),
+            Err(WorkerV3VerificationClientErrorV2::TrailingTransfer)
+        ));
+        assert!(matches!(
+            readiness_quiet_with(
+                deadline,
+                || before_deadline,
+                || Err(rustix::io::Errno::BADF)
+            ),
+            Err(WorkerV3VerificationClientErrorV2::Poll(_))
+        ));
+    }
 
     fn pair() -> (OwnedFd, OwnedFd) {
         socketpair(

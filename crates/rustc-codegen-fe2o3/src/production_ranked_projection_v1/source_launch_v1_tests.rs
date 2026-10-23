@@ -664,3 +664,59 @@ fn source_launch_materialized_entry_rejects_changed_geometry_binding_and_roster(
         );
     }
 }
+
+// The geometry consumed by the pipeline domain proof comes through this same
+// source-owned materialization boundary, rather than a launch_extent hint.
+#[test]
+fn full_writer_geometry_256_is_source_owned_before_ranked_consumption() {
+    for changed in [false, true] {
+        let mut inputs = vec![ranked_root_input_1d("neutral_generated_hostile", 247, 256)];
+        inputs[0].source_launch = LaunchContract::new(
+            1,
+            BlockSize::Exact(fe2o3_artifacts::Dimensions::new(256, 1, 1).unwrap()),
+            fe2o3_artifacts::Dimensions::new(4, 1, 1).unwrap(),
+            0,
+            0,
+        )
+        .unwrap();
+        let source = neutral_ranked_source_for_operation_v1(
+            SemanticCompilerIntrinsicOperationV1::NeutralWorkgroupReduceSum {
+                context: NEUTRAL_CONTEXT_TYPE,
+                dynamic_lds: NEUTRAL_DYNAMIC_LDS_TYPE,
+                element_storage: NEUTRAL_ELEMENT_TYPE,
+                element: NEUTRAL_ELEMENT_TYPE,
+            },
+            256,
+        );
+        let materialized = materialize_ranked_fixture_v1(source, &inputs).unwrap();
+        let original = materialized.source_launch().roots().to_vec();
+        if changed {
+            inputs[0].source_launch = LaunchContract::new(
+                1,
+                BlockSize::Exact(fe2o3_artifacts::Dimensions::new(128, 1, 1).unwrap()),
+                fe2o3_artifacts::Dimensions::new(4, 1, 1).unwrap(),
+                0,
+                0,
+            )
+            .unwrap();
+        }
+        let result = project_and_verify_ranked_materialized_semantic_mir_v1(
+            materialized,
+            &inputs,
+            &crate::reference_effect_v1::AuthenticatedReferenceEffectBindingsV1::default(),
+        );
+        if changed {
+            assert!(matches!(
+                result,
+                Err(ProductionRankedProjectionErrorV1::Unsupported(
+                    "source launch roster root changed before ranked projection"
+                ))
+            ));
+        } else {
+            let program = result.unwrap();
+            assert!(program.all_kernel_checks_are_clean());
+            assert_eq!(program.materialized.source_launch().roots(), original);
+            assert!(!program.grants_artifact_or_launch_authority());
+        }
+    }
+}

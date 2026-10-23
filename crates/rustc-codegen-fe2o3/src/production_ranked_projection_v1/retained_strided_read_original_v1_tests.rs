@@ -239,6 +239,7 @@ impl RetainedOriginalReadsV1 {
             resources.work(1)?;
             let index = self.projected.len();
             self.projected.push(Some(GuardedRankedAccessV1 {
+                failure: GuardedAccessFailureV1::ReturnFallback,
                 view,
                 indices: Vec::new(),
                 checked_success: None,

@@ -1927,7 +1927,37 @@ impl TranslationSourceRelationV18 for LegacyTranslationSourceV18<'_> {
         locations: &[TranslationEffectLocationV18],
         budget: &mut dyn CorrelationChargeV18,
     ) -> Result<(), ProductionMirPlironTranslationErrorV1> {
-        validate_effect_control_flow_v1(body, recipe, locations, budget)
+        let mut total_fallback_reads = BTreeSet::new();
+        if let Some(semantic) = self.semantic {
+            let function = semantic
+                .functions()
+                .get(self.function.index() as usize)
+                .ok_or(ProductionMirPlironTranslationErrorV1::KernelShape)?;
+            for (site, _, _, _) in locations {
+                budget
+                    .charge()
+                    .ok_or(ProductionMirPlironTranslationErrorV1::ResourceLimit)?;
+                if site.statement.is_some() || site.ordinal != 0 {
+                    continue;
+                }
+                let Some(block) = function.blocks().get(site.block as usize) else {
+                    return Err(ProductionMirPlironTranslationErrorV1::KernelShape);
+                };
+                let SemanticTerminatorKindV1::Call(call) = block.terminator().kind() else {
+                    continue;
+                };
+                if matches!(
+                    semantic.callables().get(call.callee().index() as usize),
+                    Some(SemanticCallableDeclV1::CompilerIntrinsic {
+                        operation: SemanticCompilerIntrinsicOperationV1::StridedReadView2DLoadOr { .. },
+                        ..
+                    })
+                ) {
+                    total_fallback_reads.insert(*site);
+                }
+            }
+        }
+        validate_effect_control_flow_v1(body, recipe, locations, &total_fallback_reads, budget)
     }
     fn semantic_sha256(&self) -> &[u8; 32] {
         self.correspondence.semantic_sha256()

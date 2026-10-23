@@ -460,6 +460,7 @@ fn actual_empty_payload_scan_uses_complete_original_initial_pass_and_keeps_legac
     let before_payload = old_work;
     let expected = collect_workgroup_pipeline_payloads_v1(
         &callables,
+        &types,
         &function,
         &dominance,
         &owners,

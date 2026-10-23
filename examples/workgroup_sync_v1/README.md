@@ -103,6 +103,54 @@ cargo fe2o3 test --locked --manifest-path examples/workgroup_sync_v1/Cargo.toml 
   --no-default-features --features row-affine-u32-kernel --test row_affine
 ```
 
+## Checked output-tile row variant
+
+The opt-in `row-affine-u32-tile-kernel` selects
+[`kernel_row_affine_u32_tile.rs`](src/kernel_row_affine_u32_tile.rs), using
+`DisjointSlice<u32, Tiled2D<Index1D, 64, 1, 64, 1>>` and the matching safe
+`checked_tiled_2d` / `get_tiled_2d_mut` accessors. Each 1x64 output tile has
+logical width one: only lane zero owns an active output column, and its tile
+row is the workgroup row. This keeps compact output storage and unchanged tails.
+
+This is a structured **output** tile with explicit SIMT arithmetic and the
+same uniform LDS collective. It does not implement the staged `MaskedTile1D`
+load/transform/reduce API. All admission checks, strided input reads, wrapping
+operations, empty-view behavior and collective participation match the original
+source; `row_affine_source` checks their parsed AST correspondence. The variants
+are feature-isolated and cannot be selected together.
+
+The production driver exports this actual source, checks its source-map member,
+and runs the same independent 86-case oracle, initialization/canary checks,
+canonical/seeded schedules, persisted replay, stale bindings and invalid requests:
+
+```sh
+cargo test --locked -p rustc-codegen-fe2o3 \
+  --test production_neutral_workgroup_reduce_driver_v1 \
+  ordinary_row_affine_tile_source_matches_oracle_and_replay -- --ignored --exact
+cargo fe2o3 test --locked --manifest-path examples/workgroup_sync_v1/Cargo.toml \
+  --no-default-features --features row-affine-u32-tile-kernel --all-targets
+```
+
+This added output-ownership source does not close the full tile/mixed tutorial
+obligations under #275, establish native compilation, or qualify GPU execution.
+The pending qualification and historical negative roles described above remain.
+
+The existing scalar and scan selections remain in `Cargo.toml`. For each feature
+below, the feature-isolated host command is
+`cargo fe2o3 test --locked --manifest-path examples/workgroup_sync_v1/Cargo.toml --no-default-features --features FEATURE --all-targets`.
+
+| Scalar | Inclusive scan features for 3 / 65 / 255 lanes | Exclusive scan features for 3 / 65 / 255 lanes |
+| --- | --- | --- |
+| u32 | `lds-scan-u32-kernel` / `lds-scan-u32-65-kernel` / `lds-scan-u32-255-kernel` | `lds-scan-u32-exclusive-3-kernel` / `lds-scan-u32-exclusive-65-kernel` / `lds-scan-u32-exclusive-kernel` |
+| i32 | `lds-scan-i32-inclusive-kernel` / `lds-scan-i32-inclusive-65-kernel` / `lds-scan-i32-inclusive-255-kernel` | `lds-scan-i32-3-kernel` / `lds-scan-i32-kernel` / `lds-scan-i32-255-kernel` |
+| f32 | `lds-scan-f32-3-kernel` / `lds-scan-f32-65-kernel` / `lds-scan-f32-kernel` | `lds-scan-f32-exclusive-3-kernel` / `lds-scan-f32-exclusive-kernel` / `lds-scan-f32-exclusive-255-kernel` |
+
+The original reduction features are `lds-kernel`, `lds-u32-kernel` and
+`lds-f32-kernel`. The existing ignored driver tests
+`ordinary_scan_sources_export_v5_and_execute_every_cpu_observation_path` and
+`ordinary_integer_scan_sources_wrap_on_overflow` cover real scan export/execution
+and overflow respectively. Their existing target and evidence boundaries apply.
+
 ## Scoped atomic add
 
 The second profile admits one coherent global `u32` atomic object, relaxed

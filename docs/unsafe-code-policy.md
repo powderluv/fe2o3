@@ -41,6 +41,76 @@ source inventory and remain part of the system's trust boundary.
 
 ## Implementation Rules
 
+### Softmax and Scalar GEMM Qualification Inventory Review (2026-10-23)
+
+Reviewed the unchanged qualification sources at public commit
+`2739349298149fbaa13409da24d7a494043fdb49`:
+
+- `examples/row_softmax_general_v1/src/qualification.rs`, blob
+  `982f298ec20f3a047a9a37c12147cb21513a68ed`: two unsafe blocks.
+  The raw launch uses two disjoint guarded F32 allocations, eight owned
+  pointer/length/dimension/stride parameters and the 48-byte explicit ABI.
+  Its mode-specific rounded grid and 64-thread block are checked against
+  the observed device limits before enqueue.
+- `examples/scalar_gemm_v1/src/qualification.rs`, blob
+  `e7caabe906e0b90971342f495c42b08ee59060c9`: two unsafe blocks.
+  The raw launch uses three disjoint guarded F32 allocations, nine owned
+  pointer/length/dimension parameters and the 60-byte explicit ABI. Checked
+  shapes and the rounded 256-thread grid precede enqueue and device-limit
+  checks; input views are shared and the output view is exclusive.
+
+Each file's other block loads an external HSACO through the explicitly
+opted-in `qualification-legacy-hip` escape hatch. The runner checks the
+artifact's symbol, target, Wave64, kernarg ABI, workgroup metadata and hashes;
+this path still trusts the external object's behavior, including load/unload
+code. It does not provide authenticated production loading. The existing
+safe launch API cannot express this external-object qualification contract.
+
+Both adapters retain module, argument, allocation and stream owners through
+unconditional stream synchronization, including enqueue errors. Ambiguous
+completion aborts before those owners can drop. Full input readback and output
+oracle/canary checks remain unchanged. Only these two inventory entries are
+added; all existing allowances and the tokenizer's negative controls remain.
+This review grants no protected execution, proof or GPU qualification authority
+and does not modify the adapters, kernels, or runtime.
+
+### Vecadd Qualification Inventory Review (2026-10-23)
+
+Reviewed the following unchanged sources at public commit
+`5a03850ab2e10db0250412de03e0c269cce4c09b`:
+
+- `crates/fe2o3-hsa-runtime/tests/gfx950_advanced_hardware.rs`, blob
+  `91cb62414eb976d70214de9aea489bcb50d492aa`: 18 blocks and two functions.
+  The added unsafe forwarding block and private `dispatch_with_grid` preserve
+  the original dispatch boundary; existing callers still use `case.grid_x()`.
+  Vecadd supplies a nonzero, checked rounded grid. Exact symbol/ABI/alignment
+  checks, owned aligned kernarg storage, unchanged explicit bytes, queue binding
+  and the synchronous completion check remain before storage is released.
+- `crates/fe2o3-hsa-runtime/tests/gfx950_advanced_hardware/vecadd.rs`, blob
+  `ac8d1060d092486b0d1da117c15a50623c2c42ab`: four blocks for load, resolve,
+  dispatch and unload. Input extents and rounded grid are checked before GPU
+  initialization. Digest-pinned, inspected bytes and three distinct guarded
+  allocations remain live through dispatch. The kernel set borrows its
+  executable inside the closure and drops before the sole consuming unload,
+  including ordinary error returns. Readback follows synchronous quiescence;
+  the existing adapter aborts without unwinding if publication cannot quiesce.
+- `examples/vecadd/src/qualification.rs`, blob
+  `e0a18a5bc83b987dfbab251101bd8c5f18d26485`: two blocks for the explicitly
+  opted-in legacy HIP external-module load and raw launch. This escape hatch
+  trusts the self-contained object's behavior, including load/unload code;
+  it is not authenticated production loading. Observed target/launch limits,
+  the 48-byte ABI, six owned pointer/length fields and disjoint checked views
+  precede enqueue. Module, argument and allocation owners survive unconditional
+  stream synchronization even when enqueue fails; ambiguous completion aborts
+  before those owners can drop.
+
+These native ABI/lifecycle operations are not expressible by the existing safe
+launch APIs; the review preserves their explicit qualification trust boundary.
+Only these three inventory entries change. The source counter, its negative
+controls, runtime/source/proof gates, kernels and oracles are unchanged. This
+inventory enrollment is not a memory-safety proof, protected admission or a new
+GPU execution claim; no historical inventory allowance is refreshed.
+
 ### Owned-Input Descriptor Probe Review (2026-10-19)
 
 The compiler owner and integrating reviewer examined

@@ -3984,3 +3984,211 @@ fn declarations_are_explicitly_unsupported() {
         }]
     );
 }
+// Module-aware helper analysis supplies facts, never a helper-admission receipt.
+fn module_helper_identity_v1() -> Function {
+    let mut block = returning(0);
+    block.terminator = Some(Terminator::Return {
+        values: vec![ValueId(0)],
+    });
+    Function::internal_helper(
+        "module_identity",
+        Signature::new(vec![Type::INDEX], vec![Type::INDEX]),
+        vec![ValueId(0)],
+        vec![block],
+    )
+}
+
+#[test]
+fn module_helper_query_keeps_all_parameters_and_parameter_control_varying() {
+    let mut entry = returning(0);
+    entry.operations = vec![constant(10, Constant::Index(0)), compare(11, 0, 10)];
+    entry.terminator = Some(Terminator::ConditionalBranch {
+        condition: ValueId(11),
+        then_target: BlockId(1),
+        then_arguments: vec![],
+        else_target: BlockId(2),
+        else_arguments: vec![],
+    });
+    let mut varying = returning(1);
+    varying.operations.push(Operation::effect_free(
+        ValueDef::new(ValueId(12), Type::INDEX),
+        OperationKind::Call {
+            callee: FunctionId::new("module_identity"),
+            arguments: vec![ValueId(1)],
+        },
+    ));
+    varying.operations.push(workgroup_barrier());
+    varying.terminator = Some(Terminator::Branch {
+        target: BlockId(3),
+        arguments: vec![],
+    });
+    let mut other = returning(2);
+    other.terminator = Some(Terminator::Branch {
+        target: BlockId(3),
+        arguments: vec![],
+    });
+    let mut helper = function(
+        vec![ValueId(0), ValueId(1)],
+        vec![entry, varying, other, returning(3)],
+    );
+    helper.required_capabilities = helper.derived_capabilities();
+    let mut module = Module::new("module_helper_varying_parameters");
+    module.functions = vec![helper, module_helper_identity_v1()];
+    fe2o3_kernel_ir::verify_module(&module).unwrap();
+    let report =
+        fe2o3_kernel_analysis::analyze_module_helper_v1(&module, &module.functions[0]).unwrap();
+    assert_eq!(report.function(), &module.functions[0].id);
+    for value in [0, 1, 11, 12] {
+        assert_eq!(report.value(ValueId(value)), Variation::Varying);
+    }
+    assert_eq!(report.block_control(BlockId(0)), Variation::GridUniform);
+    assert_eq!(report.block_control(BlockId(1)), Variation::Varying);
+    assert_eq!(report.block_control(BlockId(2)), Variation::Varying);
+    assert!(report.diagnostics().iter().any(|diagnostic| matches!(
+        diagnostic,
+        Diagnostic::DivergentBarrier {
+            block: BlockId(1),
+            control: Variation::Varying,
+            ..
+        }
+    )));
+    assert!(!report.diagnostics().iter().any(|diagnostic| matches!(
+        diagnostic,
+        Diagnostic::Unsupported {
+            reason: UnsupportedReason::CallWithoutSummary { .. },
+            ..
+        }
+    )));
+}
+
+#[test]
+fn module_helper_query_summarizes_pure_calls_without_promoting_formal_parameters() {
+    let mut entry = returning(0);
+    entry.operations.push(constant(10, Constant::Index(7)));
+    for (result, argument) in [(11, 10), (12, 0)] {
+        entry.operations.push(Operation::effect_free(
+            ValueDef::new(ValueId(result), Type::INDEX),
+            OperationKind::Call {
+                callee: FunctionId::new("module_identity"),
+                arguments: vec![ValueId(argument)],
+            },
+        ));
+    }
+    let mut module = Module::new("module_helper_pure_calls");
+    module.functions = vec![
+        function(vec![ValueId(0)], vec![entry]),
+        module_helper_identity_v1(),
+    ];
+    assert!(module.kernels.is_empty());
+    fe2o3_kernel_ir::verify_module(&module).unwrap();
+    let report =
+        fe2o3_kernel_analysis::analyze_module_helper_v1(&module, &module.functions[0]).unwrap();
+    assert_eq!(report.value(ValueId(0)), Variation::Varying);
+    assert_eq!(report.value(ValueId(11)), Variation::GridUniform);
+    assert_eq!(report.value(ValueId(12)), Variation::Varying);
+    assert_eq!(report.block_control(BlockId(0)), Variation::GridUniform);
+    assert!(report.diagnostics().is_empty());
+    assert!(
+        !analyze_function(&module.functions[0])
+            .diagnostics()
+            .is_empty()
+    );
+}
+
+#[test]
+fn module_helper_query_keeps_recursive_and_unavailable_calls_unsupported() {
+    for recursive in [false, true] {
+        let callee = if recursive {
+            "test"
+        } else {
+            "unavailable_helper"
+        };
+        let mut entry = returning(0);
+        entry.operations.push(Operation::effect_free(
+            ValueDef::new(ValueId(1), Type::INDEX),
+            OperationKind::Call {
+                callee: FunctionId::new(callee),
+                arguments: vec![],
+            },
+        ));
+        entry.terminator = Some(Terminator::Return {
+            values: vec![ValueId(1)],
+        });
+        let helper = Function::internal_helper(
+            "test",
+            Signature::new(vec![], vec![Type::INDEX]),
+            vec![],
+            vec![entry],
+        );
+        let mut module = Module::new("module_helper_unsupported_calls");
+        module.functions.push(helper);
+        if !recursive {
+            module.functions.push(Function::declaration(
+                callee,
+                Signature::new(vec![], vec![Type::INDEX]),
+            ));
+        }
+        fe2o3_kernel_ir::verify_module(&module).unwrap();
+        let report =
+            fe2o3_kernel_analysis::analyze_module_helper_v1(&module, &module.functions[0]).unwrap();
+        assert_eq!(report.value(ValueId(1)), Variation::Varying);
+        assert!(report.diagnostics().contains(&Diagnostic::Unsupported {
+            block: Some(BlockId(0)),
+            operation_index: Some(0),
+            reason: UnsupportedReason::CallWithoutSummary {
+                callee: FunctionId::new(callee)
+            },
+        }));
+    }
+}
+
+#[test]
+fn module_helper_query_refuses_foreign_duplicate_and_kernel_owners() {
+    let mut module = Module::new("module_helper_owner");
+    module.functions.push(module_helper_identity_v1());
+    let clone = module.functions[0].clone();
+    assert!(fe2o3_kernel_analysis::analyze_module_helper_v1(&module, &clone).is_none());
+    module.functions.push(clone);
+    assert!(
+        fe2o3_kernel_analysis::analyze_module_helper_v1(&module, &module.functions[0]).is_none()
+    );
+    module.functions.pop();
+    module.functions[0].role = fe2o3_kernel_ir::FunctionRole::KernelEntry;
+    assert!(
+        fe2o3_kernel_analysis::analyze_module_helper_v1(&module, &module.functions[0]).is_none()
+    );
+    module.functions[0].role = fe2o3_kernel_ir::FunctionRole::InternalHelper;
+    module.kernels.push(Kernel::new(
+        "aliased_kernel",
+        "module_identity",
+        LaunchDomain::D1 {
+            x: LaunchExtent::Static(1),
+        },
+    ));
+    assert!(
+        fe2o3_kernel_analysis::analyze_module_helper_v1(&module, &module.functions[0]).is_none()
+    );
+}
+
+#[test]
+fn module_helper_query_exact_and_one_over_function_envelope() {
+    let limit = fe2o3_kernel_ir::MAX_INTERPROCEDURAL_EFFECT_FUNCTIONS_V1;
+    let mut module = Module::new("module_helper_function_envelope");
+    module.functions = (0..limit)
+        .map(|index| {
+            let mut helper = module_helper_identity_v1();
+            helper.id = FunctionId::new(format!("bounded_helper_{index}"));
+            helper
+        })
+        .collect();
+    fe2o3_kernel_ir::verify_module(&module).unwrap();
+    let report =
+        fe2o3_kernel_analysis::analyze_module_helper_v1(&module, &module.functions[0]).unwrap();
+    assert_eq!(report.value(ValueId(0)), Variation::Varying);
+    let mut extra = module_helper_identity_v1();
+    extra.id = FunctionId::new(format!("bounded_helper_{limit}"));
+    module.functions.push(extra);
+    assert!(
+        fe2o3_kernel_analysis::analyze_module_helper_v1(&module, &module.functions[0]).is_none()
+    );
+}

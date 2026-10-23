@@ -9,12 +9,19 @@ publish = false
 
 [features]
 kernel-moe-route = []
+kernel-moe-route-tile = ["kernel-moe-route"]
 kernel-moe-expert-rank = []
+kernel-moe-expert-rank-simt = ["kernel-moe-expert-rank"]
 kernel-combine-expert-ranks = []
+kernel-combine-expert-ranks-tile = ["kernel-combine-expert-ranks"]
 kernel-speculative-transaction = []
+kernel-speculative-transaction-tile = ["kernel-speculative-transaction"]
 kernel-qwen-ngram-gather = []
+kernel-qwen-ngram-gather-tile = ["kernel-qwen-ngram-gather"]
 kernel-stage-gradient-shard = []
+kernel-stage-gradient-shard-tile = ["kernel-stage-gradient-shard"]
 kernel-muon-update = []
+kernel-muon-update-tile = ["kernel-muon-update"]
 ablation-route-owner-only = []
 ablation-route-unpacked = []
 ablation-route-redundant-lanes = []
@@ -26,6 +33,9 @@ ablation-stage-tile4 = []
 ablation-muon-broadcast16 = []
 
 [workspace]
+
+[profile.test]
+debug = 0
 
 [dependencies]
 fe2o3-device = { path = "../../crates/fe2o3-device" }

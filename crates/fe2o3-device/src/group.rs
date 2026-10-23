@@ -345,11 +345,11 @@ where
     const SCOPE: GroupScope = GroupScope::Subgroup;
 
     fn size(&self) -> u64 {
-        u64::from(N)
+        N as u64
     }
 
     fn thread_rank(&self) -> u64 {
-        u64::from(self.lane % N)
+        (self.lane % N) as u64
     }
 }
 

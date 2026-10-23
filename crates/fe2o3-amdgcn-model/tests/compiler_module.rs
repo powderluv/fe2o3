@@ -643,6 +643,44 @@ fn unsupported_helper_abis_and_context_dependent_bodies_are_atomic_errors() {
 }
 
 #[test]
+fn ordinary_helpers_reject_even_valid_full_wave_lane_operations() {
+    let mut module = compiler_module();
+    lower_compiler_module_to_llvm_ir(&module).expect("original helper fixture lowers");
+    let helper = module
+        .functions
+        .iter_mut()
+        .find(|function| function.id.as_str() == "scale")
+        .unwrap();
+    let wave = fe2o3_kernel_ir::WaveOperation::full(
+        fe2o3_kernel_ir::WaveOperationKind::LaneId,
+        WaveWidth::Wave64,
+    );
+    helper
+        .required_capabilities
+        .extend(wave.required_capabilities());
+    helper.body.as_mut().unwrap().blocks[0].operations.insert(
+        0,
+        Operation::effect_free(
+            ValueDef::new(ValueId(3), Type::Scalar(fe2o3_kernel_ir::ScalarType::U32)),
+            OperationKind::Wave(wave),
+        ),
+    );
+    // The unused U32 result preserves the helper ABI and original I32 return.
+    // A valid full-wave label cannot supply a helper with kernel context.
+    fe2o3_kernel_ir::verify_module(&module).expect("full-wave helper operation is valid KIR");
+    let error = lower_compiler_module_to_llvm_ir(&module).unwrap_err();
+    assert!(
+        error.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == LoweringDiagnosticCode::UnsupportedWaveOperation
+                && diagnostic.message
+                    == "compiler-module helpers cannot contain kernel-context wave operations"
+        }),
+        "{error}"
+    );
+    assert!(error.to_string().contains("function scale"));
+}
+
+#[test]
 fn unsafe_import_names_and_multi_value_results_are_rejected() {
     let mut unsafe_name = compiler_module();
     unsafe_name.functions.push(Function::declaration(

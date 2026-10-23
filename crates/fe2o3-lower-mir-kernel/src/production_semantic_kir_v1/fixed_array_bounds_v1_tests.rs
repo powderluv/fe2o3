@@ -121,7 +121,10 @@ impl Fixture {
         }
     }
 
-    fn lowering(&self) -> SemanticFunctionLoweringV1<'_, '_> {
+    fn lowering<'a, 'service, 'work>(
+        &'a self,
+        budget: &'service mut ArgumentBudgetV1<'work>,
+    ) -> SemanticFunctionLoweringV1<'a, 'service> {
         let plan = plan_semantic_function_ssa_with_module_v1(
             FUNCTION,
             &self.function,
@@ -130,8 +133,6 @@ impl Fixture {
             ProductionSemanticSsaLimitsV1::default(),
         )
         .unwrap();
-        let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(usize::MAX);
-        let mut budget = ArgumentBudgetV1::new(&mut work, usize::MAX);
         SemanticFunctionLoweringV1::new_interprocedural(
             &self.types,
             &[],
@@ -156,13 +157,14 @@ impl Fixture {
             64,
             PrivateArrayRecorderWorkV1::Owned(PrivateArrayLazyBudgetV1::new(1, 64)),
             None,
-            CallReturnBufferV1::for_function(&self.function, &[], &BTreeMap::new(), 0, &mut budget)
+            CallReturnBufferV1::for_function(&self.function, &[], &BTreeMap::new(), 0, &mut *budget)
                 .unwrap(),
-            None,
+            Some(budget),
             SemanticEmissionPlacementV1::default(),
             None,
             None,
-        )
+            None,
+)
         .unwrap()
     }
 }
@@ -243,7 +245,9 @@ fn assert_oob(
 #[test]
 fn exact_bounds_helper_preserves_wide_indices_and_from_end_offsets() {
     let fixture = Fixture::new();
-    let lowering = fixture.lowering();
+    let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+    let mut budget = ArgumentBudgetV1::new(&mut work, 16 * 1024 * 1024);
+    let lowering = fixture.lowering(&mut budget);
     let place = place(SemanticProjectionKindV1::Index(
         SemanticLocalIdV1::from_index(2),
     ));
@@ -301,7 +305,9 @@ fn exact_bounds_helper_preserves_wide_indices_and_from_end_offsets() {
 #[test]
 fn bounds_error_uses_terminator_or_explicitly_unavailable_provenance() {
     let fixture = Fixture::new();
-    let lowering = fixture.lowering();
+    let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+    let mut budget = ArgumentBudgetV1::new(&mut work, 16 * 1024 * 1024);
+    let lowering = fixture.lowering(&mut budget);
     let place = place(SemanticProjectionKindV1::Index(
         SemanticLocalIdV1::from_index(2),
     ));
@@ -361,7 +367,9 @@ fn indexed_place_uses_actual_emitted_constants_without_host_truncation() {
         SemanticLocalIdV1::from_index(2),
     ));
     for index in [0, 3, 4, u64::MAX] {
-        let mut lowering = fixture.lowering();
+        let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+        let mut budget = ArgumentBudgetV1::new(&mut work, 16 * 1024 * 1024);
+        let mut lowering = fixture.lowering(&mut budget);
         let mut operations = vec![];
         let values = fill_array(&mut lowering, &mut operations);
         let binding = lowering
@@ -425,7 +433,9 @@ fn constant_index_place_resolves_forward_and_from_end_boundaries() {
         (3, 4, true, Some(1)),
         (5, 5, true, None),
     ] {
-        let mut lowering = fixture.lowering();
+        let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+        let mut budget = ArgumentBudgetV1::new(&mut work, 16 * 1024 * 1024);
+        let mut lowering = fixture.lowering(&mut budget);
         let mut operations = vec![];
         let values = fill_array(&mut lowering, &mut operations);
         let place = place(SemanticProjectionKindV1::ConstantIndex {
@@ -477,7 +487,9 @@ fn malformed_array_binding_remains_a_structural_rejection() {
             from_end: false,
         },
     ] {
-        let mut lowering = fixture.lowering();
+        let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+        let mut budget = ArgumentBudgetV1::new(&mut work, 16 * 1024 * 1024);
+        let mut lowering = fixture.lowering(&mut budget);
         let mut operations = vec![];
         fill_array(&mut lowering, &mut operations);
         let Some(SemanticValueBindingV1::Aggregate(fields)) = &mut lowering.locals[1] else {

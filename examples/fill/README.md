@@ -2,7 +2,42 @@
 
 `fill` writes `42.5_f32` to each in-bounds output element reached by a launched
 invocation. Its existing kernel body, `DisjointSlice<f32>` ABI and 64-thread
-workgroup requirement are unchanged.
+workgroup requirement are unchanged for the default SIMT selection.
+
+## Structured Output Tile
+
+The nondefault `structured-tile` feature selects a distinct 64x1 output tile:
+`Tiled2D<Index1D, 64, 64, 1, 1>`. Each lane obtains its checked
+`checked_tiled_2d` witness and writes one checked `get_tiled_2d_mut`
+component. One column with unit stride maps each invocation to its original
+vector element. It preserves exact `0x422a0000` result bits and the 64-thread
+workgroup. Partial final tiles are clipped by logical and physical bounds.
+
+From the repository root, use the existing source exporter and CPU simulator:
+
+```sh
+bash scripts/quickstart.sh simulate-source \
+  --crate fe2o3_fill --target gfx942 \
+  --request scripts/quickstart/fill-canary-request.json \
+  --expectation scripts/quickstart/fill-canary-expectation.json \
+  -- --package fe2o3-fill --lib --features structured-tile
+```
+
+The opt-in real-source regression exports both selections and compares every
+output byte, initialization bit and both surrounding canaries for lengths
+0, 1, 7, 8, 9, 63, 64, 65, 127, 128 and 129. It uses bounded buffer views
+and complete workgroups, including inactive tail lanes:
+
+```sh
+cargo run --locked -p cargo-fe2o3 --bin cargo-fe2o3 -- \
+  test --locked -p fe2o3-fill --test simulation -- \
+  --ignored --exact source_simulation_covers_empty_tails_and_canaries --nocapture
+```
+
+These are observation-only CPU executions, not GPU qualification or functional
+refinement proofs. `structured-tile` and `reference-proof` cannot be
+combined: the latter remains the separate signed/refinement selection of the
+original SIMT body. The unsupported GPU host executable remains unchanged.
 
 ## Default Learning Workflow
 
@@ -68,3 +103,18 @@ selection, not the default `gfx942-fill-simulation` row (whose features remain
 execution in the coordinated protected environment.
 Evidence for the previous unannotated source does not qualify this revision.
 The compile runner and unsupported host executable are unchanged.
+
+## Compile-only package selections
+
+With the pinned toolchain, ROCm compiler tools and the matching production
+extractor available as described by the repository requirements, the existing
+gfx942 entry point selects the same library source:
+
+```sh
+FE2O3_EXAMPLE_COMPILE_ONLY=1 bash examples/fill/run-gfx942.sh
+FE2O3_EXAMPLE_COMPILE_ONLY=1 bash examples/fill/run-gfx942.sh structured-tile
+```
+
+The default selection remains SIMT. There is no Fill `run-gfx950.sh` in this
+package. Neither command dispatches a GPU, establishes a functional proof or
+qualifies either target. Current gfx942 hardware qualification remains pending.

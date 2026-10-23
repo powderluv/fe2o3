@@ -57,7 +57,7 @@ pub(super) mod physical_entry_debug_v20;
 pub(super) mod physical_global_copy_debug_v21;
 pub(super) mod physical_lds_exchange_debug_v22;
 
-const USAGE: &str = "usage: fe2o3-kir-sim (--kir-v7 PATH | --kir-v12 PATH | --diagnostic-kir-v16 PATH | --diagnostic-kir-v17 PATH | --diagnostic-kir-v18 PATH | --diagnostic-kir-v19 PATH | --bundle PATH | --bundle-v5 PATH | --bundle-v6 PATH) --request PATH [--output PATH] [--race-evidence] [--record-canonical-schedule PATH [--schedule-max-decisions COUNT] | --record-seeded-schedule PATH --schedule-seed U64 [--schedule-max-decisions COUNT] | --replay-schedule PATH | --explore-seeded-schedules COUNT --schedule-seed FIRST_U64 [--schedule-max-decisions COUNT] [--exploration-max-retained-decisions COUNT] | --reduce-failure [--schedule-seed U64] [--schedule-max-decisions COUNT] | --replay-failure-reduction PATH] (diagnostic V16/V17/V18/V19 do not support schedule options)";
+const USAGE: &str = "usage: fe2o3-kir-sim (--kir-v7 PATH | --kir-v12 PATH | --diagnostic-kir-v16 PATH | --diagnostic-kir-v17 PATH | --diagnostic-kir-v18 PATH | --diagnostic-kir-v19 PATH | --bundle PATH | --bundle-v5 PATH | --bundle-v6 PATH) --request PATH [--output PATH] [--race-evidence] [--matrix-bf16-numerics exact-v1|finite-sequential-fma-v1] [--record-canonical-schedule PATH [--schedule-max-decisions COUNT] | --record-seeded-schedule PATH --schedule-seed U64 [--schedule-max-decisions COUNT] | --replay-schedule PATH | --explore-seeded-schedules COUNT --schedule-seed FIRST_U64 [--schedule-max-decisions COUNT] [--exploration-max-retained-decisions COUNT] | --reduce-failure [--schedule-seed U64] [--schedule-max-decisions COUNT] | --replay-failure-reduction PATH] (diagnostic V16/V17/V18/V19 do not support schedule options)";
 const REQUEST_SCHEMA: &str = "fe2o3-simulation-request-v1";
 const RESULT_SCHEMA: &str = "fe2o3-simulation-result-v1";
 const EXPLORATION_SCHEMA: &str = "fe2o3-simulation-exploration-v1";
@@ -220,6 +220,11 @@ enum ExecutionDetailDocument {
         role: &'static str,
         lane: u8,
         component: u8,
+    },
+    NonFiniteMatrixResult {
+        lane: u8,
+        component: u8,
+        reduction: u8,
     },
     IncompleteWave {
         width: &'static str,
@@ -501,6 +506,7 @@ struct Options {
     output: Option<OsString>,
     schedule: ScheduleOption,
     race_evidence: bool,
+    matrix_bf16_numerics: fe2o3_kir_sim::MatrixBf16NumericsV1,
 }
 
 struct RunPolicy {
@@ -1236,6 +1242,7 @@ fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), Failure> {
         output,
         schedule,
         race_evidence,
+        matrix_bf16_numerics,
     } = parse_options(arguments)?;
     let policy = RunPolicy {
         output,
@@ -1297,7 +1304,7 @@ fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), Failure> {
         }
         ProgramInput::BundleV6(path) => {
             let admitted = load_admitted_bundle_v6(Path::new(&path), Path::new(&request))?;
-            run_with_admitted_input(admitted.input, policy)
+            run_with_admitted_input_numerics(admitted.input, policy, matrix_bf16_numerics)
         }
     }
 }
@@ -1325,6 +1332,23 @@ fn run_with_admitted_input(
     input: crate::AdmittedSimulationInputV1,
     policy: RunPolicy,
 ) -> Result<(), Failure> {
+    run_with_admitted_input_numerics(input, policy, fe2o3_kir_sim::MatrixBf16NumericsV1::ExactV1)
+}
+
+fn run_with_admitted_input_numerics(
+    input: crate::AdmittedSimulationInputV1,
+    policy: RunPolicy,
+    matrix_bf16_numerics: fe2o3_kir_sim::MatrixBf16NumericsV1,
+) -> Result<(), Failure> {
+    if matrix_bf16_numerics != fe2o3_kir_sim::MatrixBf16NumericsV1::ExactV1
+        && !matches!(policy.schedule, ScheduleOption::None)
+    {
+        return Err(Failure::new(
+            Stage::Arguments,
+            ErrorKind::InvalidCommandLine,
+            "observational BF16 numerics do not support persisted schedules",
+        ));
+    }
     let RunPolicy {
         output,
         schedule,
@@ -1368,6 +1392,21 @@ fn run_with_admitted_input(
         _ => None,
     };
     let execution = match (&schedule, replay.as_ref()) {
+        (ScheduleOption::None, None)
+            if matrix_bf16_numerics != fe2o3_kir_sim::MatrixBf16NumericsV1::ExactV1 =>
+        {
+            input.module.simulate_debugged_with_observation_options(
+                &input.request,
+                input.simulation_target,
+                input.simulation_limits,
+                fe2o3_kir_sim::ObservationExecutionOptionsV1::new(
+                    fe2o3_kir_sim::SimulationDebugCaptureLimitsV1::disabled(),
+                )
+                .with_matrix_bf16_numerics(matrix_bf16_numerics),
+                &mut fe2o3_kir_sim::NoopSimulationEventSinkV1,
+                &mut fe2o3_kir_sim::NoopSimulationDebugSinkV1,
+            )
+        }
         (ScheduleOption::None, None) => input.module.simulate(
             &input.request,
             input.simulation_target,
@@ -2456,8 +2495,34 @@ fn parse_options(arguments: impl Iterator<Item = OsString>) -> Result<Options, F
     let mut exploration_max_retained_decisions = None;
     let mut race_evidence = false;
     let mut reduce_failure = false;
+    let mut matrix_bf16_numerics = None;
     let mut arguments = arguments.peekable();
     while let Some(argument) = arguments.next() {
+        if argument == OsStr::new("--matrix-bf16-numerics") {
+            if matrix_bf16_numerics.is_some() {
+                return Err(Failure::new(
+                    Stage::Arguments,
+                    ErrorKind::InvalidCommandLine,
+                    "--matrix-bf16-numerics may be supplied once",
+                ));
+            }
+            matrix_bf16_numerics = Some(match arguments.next().as_deref() {
+                Some(value) if value == OsStr::new("exact-v1") => {
+                    fe2o3_kir_sim::MatrixBf16NumericsV1::ExactV1
+                }
+                Some(value) if value == OsStr::new("finite-sequential-fma-v1") => {
+                    fe2o3_kir_sim::MatrixBf16NumericsV1::FiniteSequentialFmaV1
+                }
+                _ => {
+                    return Err(Failure::new(
+                        Stage::Arguments,
+                        ErrorKind::InvalidCommandLine,
+                        "--matrix-bf16-numerics requires exact-v1 or finite-sequential-fma-v1",
+                    ));
+                }
+            });
+            continue;
+        }
         if argument == OsStr::new("--race-evidence") {
             if race_evidence {
                 return Err(Failure::new(
@@ -2824,7 +2889,19 @@ fn parse_options(arguments: impl Iterator<Item = OsString>) -> Result<Options, F
             }
         }
     };
+    let matrix_bf16_numerics = matrix_bf16_numerics.unwrap_or_default();
+    if matrix_bf16_numerics != fe2o3_kir_sim::MatrixBf16NumericsV1::ExactV1
+        && (!matches!(&program, ProgramInput::BundleV6(_))
+            || !matches!(&schedule, ScheduleOption::None))
+    {
+        return Err(Failure::new(
+            Stage::Arguments,
+            ErrorKind::InvalidCommandLine,
+            "finite sequential BF16 observation requires --bundle-v6 without schedule controls",
+        ));
+    }
     Ok(Options {
+        matrix_bf16_numerics,
         program,
         request: request.ok_or_else(|| {
             Failure::new(
@@ -3590,6 +3667,9 @@ fn execution_kind(error: &SimulationExecutionErrorKindV1) -> ErrorKind {
         SimulationExecutionErrorKindV1::UnsupportedMatrixInputDomain { .. } => {
             ErrorKind::ExecutionUnsupportedMatrixInputDomain
         }
+        SimulationExecutionErrorKindV1::NonFiniteMatrixResult { .. } => {
+            ErrorKind::ExecutionNonFiniteMatrixResult
+        }
         SimulationExecutionErrorKindV1::WaveShuffleSourceOutOfRange { .. } => {
             ErrorKind::ExecutionWaveShuffleSourceOutOfRange
         }
@@ -3612,6 +3692,15 @@ fn execution_kind(error: &SimulationExecutionErrorKindV1) -> ErrorKind {
 
 fn execution_detail(error: &SimulationExecutionErrorKindV1) -> Option<ExecutionDetailDocument> {
     match error {
+        SimulationExecutionErrorKindV1::NonFiniteMatrixResult {
+            lane,
+            component,
+            reduction,
+        } => Some(ExecutionDetailDocument::NonFiniteMatrixResult {
+            lane: *lane,
+            component: *component,
+            reduction: *reduction,
+        }),
         SimulationExecutionErrorKindV1::UnsupportedMatrixInputDomain {
             role,
             lane,
@@ -4120,6 +4209,9 @@ fn write_success<W: Write + ?Sized>(
     writer.write_all(RESULT_SCHEMA.as_bytes())?;
     writer.write_all(b"\",\"status\":\"ok\",\"authority\":\"observation_only\",\"simulated\":true,\"hardware_observed\":false,\"hardware_validation\":false,\"performance_prediction\":false,\"target_profile\":")?;
     write_target_profile(writer, target)?;
+    if execution.matrix_bf16_numerics() != fe2o3_kir_sim::MatrixBf16NumericsV1::ExactV1 {
+        writer.write_all(b",\"matrix_bf16_numerics\":\"finite-sequential-fma-v1\"")?;
+    }
     writer.write_all(b",\"kir\":{\"sha256\":\"")?;
     write_lower_hex(writer, execution.identity().digest(), false)?;
     write!(

@@ -305,10 +305,11 @@ fn private_array_multiroot_root_storage_preserves_axes_and_pure_helper_dedup() {
     owner.semantic_ssa().verify_replay().unwrap();
 }
 
-fn actual_lowering<'a>(
-    owner: &'a ProductionPreRankedKirOwnerV1,
+fn actual_lowering<'source, 'service, 'work>(
+    owner: &'source ProductionPreRankedKirOwnerV1,
     limit: usize,
-) -> SemanticFunctionLoweringV1<'a, 'a> {
+    budget: &'service mut ArgumentBudgetV1<'work>,
+) -> SemanticFunctionLoweringV1<'source, 'service> {
     let source = owner.semantic_ssa().source_semantic();
     SemanticFunctionLoweringV1::new(
         source.types(),
@@ -326,6 +327,7 @@ fn actual_lowering<'a>(
         1,
         false,
         limit,
+        budget,
     )
     .unwrap()
 }
@@ -343,7 +345,9 @@ fn private_array_actual_prologue_reserves_slot_before_count_and_alloca() {
     // This four-local/two-assignment source needs only13 inherited retained-
     // initialization work units. Both old constructor gates remain active.
     for (limit, succeeds, accepted) in [(87, false, 86), (155, true, 155)] {
-        let mut lowering = actual_lowering(&owner, limit);
+        let mut emission_work = CanonicalKernelIrWorkBudgetV1::new(WORK);
+        let mut emission_budget = ArgumentBudgetV1::new(&mut emission_work, STORAGE);
+        let mut lowering = actual_lowering(&owner, limit, &mut emission_budget);
         assert_eq!(recorder_work(&lowering), 0);
         let original_value = lowering.next_value;
         let mut target = BasicBlock::new(BlockId(0));
@@ -484,8 +488,7 @@ fn private_array_actual_checked_failure_rolls_back_rows_and_reused_value_ids_not
     let source = &owner.semantic_ssa().source_semantic().functions()[0];
     let mut work = CanonicalKernelIrWorkBudgetV1::new(WORK);
     let mut budget = ArgumentBudgetV1::new(&mut work, STORAGE);
-    let mut lowering = actual_lowering(&owner, 10_000);
-    lowering.emission_work = Some(&mut budget);
+    let mut lowering = actual_lowering(&owner, 10_000, &mut budget);
     let mut block = BasicBlock::new(BlockId(0));
     lowering
         .begin_block(SemanticBlockIdV1::from_index(0), &mut block)

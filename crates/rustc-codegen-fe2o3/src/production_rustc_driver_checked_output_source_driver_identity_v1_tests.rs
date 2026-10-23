@@ -191,6 +191,77 @@ fn source_driver_census_rejects_missing_extra_and_swapped_contract_cases() {
 }
 
 #[test]
+fn source_driver_census_accepts_exact_fixture_aliases_but_refuses_changed_inputs() {
+    let document = original();
+    let aliases: Vec<_> = document["kernelInventory"]["kernels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|kernel| kernel["selections"].as_array().unwrap().len() > 1)
+        .collect();
+    assert_eq!(aliases.len(), 5);
+    assert_eq!(selected(&document).unwrap().len(), POSITIVES);
+    for kernel in aliases {
+        assert_eq!(kernel["selections"].as_array().unwrap().len(), 2);
+        let id = kernel["selections"][1]["fixtureId"].as_str().unwrap();
+        // Keep the global 11/84 profile totals unchanged so this exercises
+        // alias target identity, not the earlier roster-count refusal.
+        let mut modified = document.clone();
+        let fixtures = modified["compilerFixtures"].as_array_mut().unwrap();
+        fixtures
+            .iter_mut()
+            .find(|row| row["fixtureId"] == id)
+            .unwrap()["target"] = "gfx942".into();
+        fixtures[0]["target"] = "gfx950".into();
+        assert_eq!(
+            selected(&modified).unwrap_err().detail,
+            "duplicate or ambiguous inventory kernel identity"
+        );
+        // Every source-bearing field remains significant even for a real
+        // canonical alias. Preserve roster, counts and valid field syntax.
+        for field in [
+            "packageManifest",
+            "packageManifestSha256",
+            "cargoLockPath",
+            "cargoLockSha256",
+            "sourcePaths",
+            "sourceClosureSha256",
+            "cargoTarget",
+            "defaultFeatures",
+            "features",
+        ] {
+            let mut modified = document.clone();
+            let fixture = modified["compilerFixtures"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|row| row["fixtureId"] == id)
+                .unwrap();
+            let input = &mut fixture["compilerInput"];
+            match field {
+                "defaultFeatures" => input[field] = (!input[field].as_bool().unwrap()).into(),
+                "features" => input[field]
+                    .as_array_mut()
+                    .unwrap()
+                    .push("different-feature".into()),
+                "sourcePaths" => input[field]
+                    .as_array_mut()
+                    .unwrap()
+                    .push("different.rs".into()),
+                "cargoTarget" => input[field]["name"] = "different_target".into(),
+                field if field.ends_with("Sha256") => input[field] = "0".repeat(64).into(),
+                _ => input[field] = "different/path".into(),
+            }
+            let error = selected(&modified).unwrap_err();
+            assert_eq!(
+                error.detail, "duplicate or ambiguous inventory kernel identity",
+                "{id} {field}"
+            );
+        }
+    }
+}
+
+#[test]
 fn source_driver_census_rejects_inventory_aliases_and_incomplete_identity_joins() {
     for change in 0..8 {
         let mut document = original();

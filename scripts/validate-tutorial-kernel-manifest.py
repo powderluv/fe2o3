@@ -206,7 +206,8 @@ def validate_kernel_inventory(
         if (cargo["package"].get("build") not in (None, False)
                 or (cargo["package"].get("build") is not False and (package["packageRoot"] / "build.rs").exists())
                 or any(member not in cargo.get("features", {})
-                       for members in cargo.get("features", {}).values() for member in members)):
+                       for feature in checked["enabledFeatures"]
+                       for member in cargo.get("features", {})[feature])):
             fail("direct fixture binding requires local features without build-script cfg")
         sources = {}
         for path, source in package["packageSources"]:
@@ -2149,6 +2150,8 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path)
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--emit-matrix", choices=sorted(ALLOWED_TARGETS))
+    output.add_argument("--emit-reproduction-plan", choices=sorted(ALLOWED_TARGETS),
+                        help="emit a static target-specific view of existing fixture and suite contracts; never execute")
     output.add_argument("--emit-kernel-pairs", action="store_true")
     output.add_argument("--emit-source-input-snapshot", type=Path,
                         help="snapshot one exact registered invocation for the ordinary-source corpus runner")
@@ -2218,6 +2221,17 @@ def main() -> None:
             except census_module.CensusError as error:
                 fail(str(error))
         print(_encode_kernel_pair_report(report))
+    elif arguments.emit_reproduction_plan:
+        specification = importlib.util.spec_from_file_location(
+            "tutorial_reproduction_plan", Path(__file__).with_name("tutorial_reproduction_plan.py"))
+        assert specification is not None and specification.loader is not None
+        module = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(module)
+        try:
+            plan = module.build_plan(manifest, fixtures, arguments.emit_reproduction_plan, manifest_sha256)
+        except ValueError as error:
+            fail(str(error))
+        print(_encode_kernel_pair_report(plan))
     elif arguments.emit_matrix:
         records = [fixture for fixture in fixtures.values() if fixture["target"] == arguments.emit_matrix]
         if not records:
