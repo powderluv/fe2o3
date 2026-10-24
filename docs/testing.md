@@ -320,7 +320,11 @@ scripts/run-tutorial-cpu-reference.sh examples/gfx950_advanced_attention/Cargo.t
 ```
 
 Use `scripts/run-tutorial-cpu-reference.sh --batch` to observe all declared CPU
-suites, up to twelve. The batch builds one private driver and gives each suite
+suites, up to the finite limit of 36. This covers the current 14 original suites
+and 22 mode-specific additions. The total scheduler allowance is the sum of
+suite deadlines: 43,200 seconds for 36 suites at 1,200 seconds each, compared
+with 16,800 seconds for the previous 14-suite limit. The per-suite deadline
+remains 1,200 seconds. The batch builds one private driver and gives each suite
 an independent private target directory and its declared deadline. The entire
 common setup cost counts against every suite's budget; earlier suite execution
 does not count against later suites. Shared source, configuration and tool
@@ -344,6 +348,14 @@ input drift cannot count as a complete successful suite. Named integration
 targets may build metadata-bound companion binaries; those are not counted as
 executed tests. Executable hashes are post-execution on-disk observations,
 not attestations of the driver's executed image.
+
+The ordinary binding-only host-test runner and this observer allow test images
+up to 1 GiB, hashing in bounded chunks with the existing descriptor and file
+identity checks. The default MoE oracle with debug information measured
+909,946,760 bytes, above the separate 512 MiB tool/authority pin limit. That
+shared default and transferred-descriptor limit remain unchanged. The host-test
+allowance is fixed in source, grants no authority, and does not change build
+profiles, assertions, overflow checks, per-suite deadlines or native limits.
 
 Each run uses private scratch outside the checkout and removes its driver/build
 artifacts. Bounded logs and `observation.json` remain in the reported evidence
@@ -616,6 +628,16 @@ HSACO, HIP, or GPU execution refines that model.
 
 ## ROCm compile coverage
 
+Install the [root requirements](../README.md#requirements) first. Before either
+matrix, complete the selected examples' network-enabled locked dependency setup
+in the same effective `CARGO_HOME` for the root workspace, each selected example
+manifest, and the pinned nightly `rust-src` workspace. Some selected adapters
+unconditionally invoke Cargo with `--locked --offline`, even when the matrix
+host has network access. Root workspace fetching alone does not guarantee that
+the independent example and `rust-src` locked closures are cached. Follow the
+existing per-example setup, such as the
+[row-softmax instructions](../examples/row_softmax_general_v1/README.md#build-and-numerical-qualification).
+
 Set the admitted LLVM target and run the bounded production compiler gates:
 
 ```text
@@ -643,9 +665,9 @@ and code-object tests. The generic lane runs the matrix's hermetic shell test,
 which substitutes fixture tools and verifies orchestration without requiring
 ROCm or a GPU.
 
-The separate gfx950 matrix covers 37 production Rust kernel entries represented
-by the kernels site. Together with the five gfx942 entries, the compile-only
-matrices cover 42 entries:
+The separate gfx950 matrix covers 84 compile-only fixture selections represented
+by the kernels site. Together with the 11 gfx942 selections, the compile-only
+matrices cover 95 manifest-enumerated fixtures:
 
 ```text
 scripts/kernel-compile-matrix.sh gfx950

@@ -825,7 +825,7 @@ fn binding_host_test_runner_result(args: &[OsString]) -> Result<std::process::Ex
     if executable.is_empty() {
         return Err("Cargo supplied an empty host-test executable".to_owned());
     }
-    let source = pinned_executable::PinnedExecutable::open(Path::new(executable))
+    let source = pinned_executable::PinnedExecutable::open_binding_host_test(Path::new(executable))
         .map_err(|error| format!("failed to pin the Cargo host-test executable: {error}"))?;
     // The retained, hashed original preserves Cargo's current_exe/$ORIGIN behavior. This trusted,
     // non-authoritative test path makes no immutable-publication claim against a same-inode writer.

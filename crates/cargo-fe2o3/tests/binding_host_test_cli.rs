@@ -341,6 +341,18 @@ pub fn clippy_probe(value: usize) -> usize {
     );
 }
 
+fn close_binding_toolchain_descriptors(command: &mut Command) {
+    // SAFETY: the child callback closes only the two fixed descriptors whose absence this
+    // subprocess regression validates.
+    unsafe {
+        command.pre_exec(|| {
+            libc::close(193);
+            libc::close(194);
+            Ok(())
+        });
+    }
+}
+
 #[test]
 fn internal_binding_host_runner_rejects_missing_pinned_toolchain_descriptors() {
     let workspace = TestWorkspace::new();
@@ -356,15 +368,7 @@ fn internal_binding_host_runner_rejects_missing_pinned_toolchain_descriptors() {
         .arg(test)
         .env("FE2O3_BINDING_CHECK_WRAPPER_MODE_V1", "1")
         .env("LD_LIBRARY_PATH", "/proc/self/fd/193");
-    // SAFETY: the child callback closes only the two fixed descriptors whose absence this
-    // subprocess regression validates.
-    unsafe {
-        command.pre_exec(|| {
-            libc::close(193);
-            libc::close(194);
-            Ok(())
-        });
-    }
+    close_binding_toolchain_descriptors(&mut command);
     let output = command
         .output()
         .expect("run internal binding-only host-test runner");
@@ -382,6 +386,54 @@ fn internal_binding_host_runner_rejects_missing_pinned_toolchain_descriptors() {
         !marker.exists(),
         "test executable ran before descriptor validation"
     );
+}
+
+#[test]
+fn large_host_test_still_requires_custody_and_obeys_its_finite_bound() {
+    let workspace = TestWorkspace::new();
+    let image = workspace.0.join("large-host-test");
+    std::fs::copy("/bin/true", &image).unwrap();
+    std::fs::set_permissions(&image, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for (size, marker, error) in [
+        (
+            512 * 1024 * 1024 + 1,
+            false,
+            "missing exact binding-only wrapper custody marker",
+        ),
+        (
+            512 * 1024 * 1024 + 1,
+            true,
+            "cannot inspect pinned rustc library descriptor 193",
+        ),
+        (
+            1024 * 1024 * 1024 + 1,
+            true,
+            "exceeding the 1073741824-byte hashing limit",
+        ),
+    ] {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&image)
+            .unwrap()
+            .set_len(size)
+            .unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_cargo-fe2o3"));
+        command
+            .arg("__fe2o3-binding-host-test-runner-v1")
+            .arg(&image)
+            .env_remove("FE2O3_BINDING_CHECK_WRAPPER_MODE_V1");
+        if marker {
+            command.env("FE2O3_BINDING_CHECK_WRAPPER_MODE_V1", "1");
+        }
+        close_binding_toolchain_descriptors(&mut command);
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(error),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
