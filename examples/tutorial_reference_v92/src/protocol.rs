@@ -155,6 +155,15 @@ impl Request {
         Ok(())
     }
     pub fn corpus_shape(&self, expected: &Request) -> Result<(), String> {
+        if self.kernel != expected.kernel {
+            return Err("reference kernel identity differs".to_owned());
+        }
+        if matches!(
+            self.kernel.as_str(),
+            "tiled_gemm_general_v1" | "simt_gemm_general_v1"
+        ) {
+            return self.bf16_gemm_shape();
+        }
         self.launch(
             expected.workgroup[0],
             expected.grid[0] / u64::from(expected.workgroup[0]),
@@ -186,6 +195,89 @@ impl Request {
             }
         }
         Ok(())
+    }
+    // Closed ordinary BF16 oracle cases, not an arbitrary shape/stride adapter.
+    fn bf16_gemm_shape(&self) -> Result<(), String> {
+        self.validate()?;
+        if !matches!(
+            self.kernel.as_str(),
+            "tiled_gemm_general_v1" | "simt_gemm_general_v1"
+        ) {
+            return Err("unknown BF16 reference kernel".to_owned());
+        }
+        let shape = [
+            self.scalar(3, "u32")?,
+            self.scalar(4, "u32")?,
+            self.scalar(5, "u32")?,
+            self.scalar(6, "u32")?,
+            self.scalar(7, "u32")?,
+            self.scalar(8, "u32")?,
+        ];
+        let (a, b, logical, guards) = match shape {
+            [1, 1, 1, 1, 1, 1] => (1, 1, 1, 1),
+            [1, 1, 2, 2, 1, 1] => (2, 2, 1, 1),
+            [16, 16, 16, 16, 16, 16] => {
+                let count = self.data(2, "f32")?.len() / 4;
+                match count {
+                    256 => (256, 256, 256, 0), // Existing baseline retained.
+                    264 => (256, 256, 256, 8),
+                    _ => return Err("unreviewed BF16 output extent".to_owned()),
+                }
+            }
+            _ => return Err("unreviewed BF16 shape or stride".to_owned()),
+        };
+        let groups = if self.kernel == "simt_gemm_general_v1" {
+            (logical + 63) / 64
+        } else {
+            1
+        };
+        self.launch(64, groups, 11)?;
+        for (index, element, access, alignment, length) in [
+            (0, "u16", "read_only", 2, a * 2),
+            (1, "u16", "read_only", 2, b * 2),
+            (2, "f32", "read_write", 4, (logical + guards) * 4),
+        ] {
+            match &self.arguments[index] {
+                Argument::Buffer {
+                    element: e,
+                    access: m,
+                    alignment: l,
+                    bytes,
+                } if e == element
+                    && m == access
+                    && *l == alignment
+                    && decode(bytes)?.len() == length as usize => {}
+                _ => return Err("BF16 reference buffer ABI or extent".to_owned()),
+            }
+        }
+        for index in [9, 10] {
+            if !f32::from_bits(self.scalar(index, "f32")?).is_finite() {
+                return Err("nonfinite BF16 reference scale".to_owned());
+            }
+        }
+        for index in [0, 1] {
+            if self.u16s(index)?.iter().any(|bits| bits & 0x7f80 == 0x7f80) {
+                return Err("nonfinite BF16 operand".to_owned());
+            }
+        }
+        let output = self.data(2, "f32")?;
+        for (index, bytes) in output.chunks_exact(4).enumerate() {
+            let bits = u32::from_le_bytes(bytes.try_into().unwrap());
+            if (index < logical as usize && !f32::from_bits(bits).is_finite())
+                || (index >= logical as usize && bits != 0x7f80_0001)
+            {
+                return Err("BF16 reference logical value or canary".to_owned());
+            }
+        }
+        Ok(())
+    }
+    pub fn bf16_gemm_initial(&self) -> Result<Vec<f32>, String> {
+        self.bf16_gemm_shape()?;
+        Ok(self
+            .data(2, "f32")?
+            .chunks_exact(4)
+            .map(|b| f32::from_bits(u32::from_le_bytes(b.try_into().unwrap())))
+            .collect())
     }
     pub fn f32s(&self, index: usize) -> Result<Vec<f32>, String> {
         self.data(index, "f32")?

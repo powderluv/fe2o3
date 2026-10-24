@@ -1151,3 +1151,6 @@
             fe2o3_kernel_ir::TensorElementPackingV1::Fp4EightInI32,
         );
     }
+
+    #[path = "authenticated_load_or_v1_tests.rs"]
+    mod authenticated_load_or_v1_tests;

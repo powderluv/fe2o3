@@ -6,11 +6,34 @@ macro_rules! production_f32_add {
     ($lhs:expr, $rhs:expr) => {{ $lhs + $rhs }};
 }
 
+#[cfg(not(feature = "structured-tile"))]
 #[kernel(typed)]
 pub fn vecadd(a: &[f32], b: &[f32], mut c: DisjointSlice<f32>) {
     vecadd_kernel_body!(thread, (), production_f32_add, a, b, c);
 }
 
+#[cfg(feature = "structured-tile")]
+include!("vecadd_tile_body.rs");
+
+#[cfg(feature = "structured-tile")]
+#[kernel(typed)]
+pub fn vecadd(
+    a: &[f32],
+    b: &[f32],
+    mut c: DisjointSlice<f32, fe2o3_device::Tiled2D<fe2o3_device::Index1D, 64, 1, 64, 1>>,
+) {
+    vecadd_tile_body!(thread, (), production_f32_add, a, b, c);
+}
+
+#[cfg(feature = "qualification-legacy-hip")]
+mod qualification;
+
+#[cfg(feature = "qualification-legacy-hip")]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    qualification::run()
+}
+
+#[cfg(not(feature = "qualification-legacy-hip"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,

@@ -96,6 +96,7 @@ fn guarded(memory_space: MemorySpaceAttr) -> GuardedAccessSiteV1 {
     GuardedAccessSiteV1 {
         insertion_operation: 0,
         access: GuardedRankedAccessV1 {
+            failure: GuardedAccessFailureV1::Trap,
             view: ProductionRankedValueIdV1::new(10),
             indices: vec![],
             checked_success: None,

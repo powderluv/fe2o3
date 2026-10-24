@@ -116,10 +116,10 @@ fn forwarded_identity_uses_only_phi_rows_and_exact_typed_inputs() {
         result.representative(fixture.values[1], &mut 0).unwrap(),
         fixture.zero
     );
-    // A nontrivial phi is not itself made a forwarding edge by this limited census.
+    // Transitive equal incoming values retain their exact typed identity.
     assert_eq!(
         result.representative(fixture.values[2], &mut 0).unwrap(),
-        fixture.values[2]
+        fixture.zero
     );
 }
 
@@ -441,4 +441,95 @@ fn forwarded_hash_and_bucket_publication_pay_before_observation_or_mutation() {
     assert_eq!(work, MAX_PLIRON_TENSOR_UNIFORMITY_WORK_UNITS_V1 + 1);
     assert!(denied.rows.is_empty());
     assert!(denied.buckets.is_empty());
+}
+
+#[test]
+fn anchored_self_phi_and_transitive_joins_preserve_the_original_value() {
+    let fixture = fixture(6);
+    let v = &fixture.values;
+    let inputs = vec![
+        vec![fixture.zero, v[0]],
+        vec![v[0], v[0]],
+        vec![v[1], v[0]],
+        vec![v[2], v[3]],
+        vec![v[3], v[0]],
+        vec![fixture.zero, fixture.one],
+    ];
+    let result = index(&fixture, &inputs)
+        .finish(&fixture.context, &mut 0)
+        .unwrap();
+    for ordinal in 0..5 {
+        assert_eq!(
+            result.representative(v[ordinal], &mut 0).unwrap(),
+            fixture.zero
+        );
+        assert!(result.inputs_equal(ordinal, &mut 0).unwrap());
+    }
+    assert_eq!(result.representative(v[5], &mut 0).unwrap(), v[5]);
+    assert!(!result.inputs_equal(5, &mut 0).unwrap());
+}
+
+#[test]
+fn unanchored_cycles_and_distinct_external_values_are_not_collapsed() {
+    let fixture = fixture(4);
+    let v = &fixture.values;
+    let inputs = vec![
+        vec![v[0], v[0]],
+        vec![fixture.zero, fixture.one, v[1]],
+        vec![v[1], v[2]],
+        vec![v[0], v[3]],
+    ];
+    let result = index(&fixture, &inputs)
+        .finish(&fixture.context, &mut 0)
+        .unwrap();
+    assert_eq!(result.representative(v[0], &mut 0).unwrap(), v[0]);
+    assert_eq!(result.representative(v[1], &mut 0).unwrap(), v[1]);
+    assert_ne!(result.representative(v[2], &mut 0).unwrap(), fixture.zero);
+    assert_ne!(result.representative(v[3], &mut 0).unwrap(), fixture.zero);
+    assert!(!result.inputs_equal(1, &mut 0).unwrap());
+}
+
+#[test]
+fn unknown_anchor_is_preserved_as_an_unknown_value_not_a_constant() {
+    let mut fixture = fixture(2);
+    let unknown =
+        dialect_kernel::IndexUnknownOp::new(&mut fixture.context).result(&fixture.context);
+    let inputs = vec![
+        vec![unknown, fixture.values[0]],
+        vec![fixture.values[0], unknown],
+    ];
+    let result = index(&fixture, &inputs)
+        .finish(&fixture.context, &mut 0)
+        .unwrap();
+    for value in &fixture.values {
+        assert_eq!(result.representative(*value, &mut 0).unwrap(), unknown);
+        assert_ne!(result.representative(*value, &mut 0).unwrap(), fixture.zero);
+    }
+}
+
+#[test]
+fn refined_forwarding_pays_before_each_visit_and_rejects_one_unit_short() {
+    let fixture = fixture(3);
+    let inputs = vec![
+        vec![fixture.zero, fixture.values[0]],
+        vec![fixture.values[0], fixture.values[1]],
+        vec![fixture.values[1], fixture.zero],
+    ];
+    let mut used = 0;
+    index(&fixture, &inputs)
+        .finish(&fixture.context, &mut used)
+        .unwrap();
+    assert!(used > 0 && used < MAX_PLIRON_TENSOR_UNIFORMITY_WORK_UNITS_V1);
+    let mut exact = MAX_PLIRON_TENSOR_UNIFORMITY_WORK_UNITS_V1 - used;
+    assert!(
+        index(&fixture, &inputs)
+            .finish(&fixture.context, &mut exact)
+            .is_ok()
+    );
+    assert_eq!(exact, MAX_PLIRON_TENSOR_UNIFORMITY_WORK_UNITS_V1);
+    let mut short = MAX_PLIRON_TENSOR_UNIFORMITY_WORK_UNITS_V1 - used + 1;
+    assert!(matches!(
+        index(&fixture, &inputs).finish(&fixture.context, &mut short),
+        Err(PlironTensorLayoutFindingV1::ResourceLimitExceeded)
+    ));
 }

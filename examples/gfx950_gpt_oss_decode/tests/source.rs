@@ -3,6 +3,10 @@ use fe2o3_gfx950_gpt_oss_decode::{
     PROFILE_BOUNDARY, PROFILE_ITEMS, WAVE_SIZE, WAVES_PER_WORKGROUP, WORKGROUP_SIZE,
 };
 
+#[cfg(not(any(
+    feature = "kernel-gpt-oss-mode-simt",
+    feature = "kernel-gpt-oss-mode-tile"
+)))]
 #[test]
 fn selected_host_features_expose_the_generated_kernel_markers() {
     use fe2o3_gfx950_gpt_oss_decode as kernels;
@@ -213,4 +217,28 @@ fn router_selector_uses_the_exact_boolean_xor_complement() {
         assert!(take <= 1);
         assert_eq!(take ^ 1, 1 - take);
     }
+}
+
+#[cfg(any(
+    feature = "kernel-gpt-oss-mode-simt",
+    feature = "kernel-gpt-oss-mode-tile"
+))]
+#[test]
+fn explicit_mode_markers_keep_the_four_existing_exports() {
+    #[cfg(feature = "kernel-gpt-oss-mode-simt")]
+    use fe2o3_gfx950_gpt_oss_decode::{kernel_simt as fused, kernel_simt_components as components};
+    #[cfg(feature = "kernel-gpt-oss-mode-tile")]
+    use fe2o3_gfx950_gpt_oss_decode::{kernel_tile as fused, kernel_tile_components as components};
+    fn check<M: fe2o3_device::KernelMarkerV1>(name: &str) {
+        assert_eq!(M::LOGICAL_NAME, name);
+        assert_eq!(M::EXPORT_NAME, name);
+    }
+    check::<fused::gfx950_gpt_oss_120b_decode_megakernel_v1_gpu::Marker>(
+        "gfx950_gpt_oss_120b_decode_megakernel_v1",
+    );
+    check::<components::gfx950_gpt_oss_120b_router_v1_gpu::Marker>("gfx950_gpt_oss_120b_router_v1");
+    check::<components::gfx950_gpt_oss_120b_attention_v1_gpu::Marker>(
+        "gfx950_gpt_oss_120b_attention_v1",
+    );
+    check::<components::gfx950_gpt_oss_120b_expert_v1_gpu::Marker>("gfx950_gpt_oss_120b_expert_v1");
 }

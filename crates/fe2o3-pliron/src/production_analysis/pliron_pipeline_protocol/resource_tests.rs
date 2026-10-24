@@ -57,14 +57,15 @@ mod resource_upper_bound_tests {
             ProductionAnalysisResourceLimitsV1::new(usize::MAX, usize::MAX),
         )
         .unwrap();
-        // Q = 2*3*7^2*6 + 2*7*174 + 3*2 + 4*11 + 7*3*7 = 4,397.
+        // Q=5975 includes 2436 propagation, 696 all-edge invariant and
+        // 882 optional membership queries; U=(40+13)^2=2809.
         // U = (40+13)^2 = 2,809; equivalence work is 2Q+8U+1.
         // Concrete CFG reserve: 32*(7+9+1) + 3*32*(7+9+29+19+1) = 6,784.
         // Concrete fact queries: 3*(1+(2*11+7)*(8+4))=1047.
-        assert_eq!(exact.work_upper_bound(), 44_658);
-        assert_eq!(exact.retained_storage_upper_bound(), 33_513);
+        assert_eq!(exact.work_upper_bound(), 55_302);
+        assert_eq!(exact.retained_storage_upper_bound(), 33_611);
         // One-live-creation scratch delta: 17*7+9+29+2*19+48 = 243.
-        assert_eq!(exact.peak_storage_upper_bound(), 48_434);
+        assert_eq!(exact.peak_storage_upper_bound(), 48_662);
         assert_eq!(
             preflight_pipeline_protocol_resource_upper_bound_v1(
                 census,
@@ -245,7 +246,13 @@ mod resource_upper_bound_tests {
         let expected_loop_edges = 2 * 11 * 143;
         assert_eq!(
             pipeline_equivalence_query_upper_bound_v1(census).unwrap(),
-            expected_coordinates + expected_loop_edges + 3 * 2 + 4 * 4 + 7 * 3 * 5,
+            expected_coordinates
+                + expected_coordinates / 2
+                + expected_loop_edges
+                + 2 * 2 * 143
+                + 3 * 2
+                + 4 * 4
+                + 7 * 3 * 5,
         );
         let overflowed_value_space = ProductionAnalysisInputCensusV1 {
             operations: 2,
@@ -634,10 +641,8 @@ mod resource_upper_bound_tests {
             EquivalenceResourceMeterV1::new(query_limit, unique_pair_limit).unwrap();
         let discovery = discover_epoch_loops(&context, &inventory, &mut resources);
         assert!(!resources.exhausted());
-        // The inner loop is retained. The outer natural loop deliberately has
-        // a cyclic nested body and is conservatively not summarized as one
-        // acyclic pipeline loop, while its discovery construction is covered.
-        assert_eq!(discovery.loops.len(), 1);
+        // Both canonical loops are retained; the child is finite and read/index-only.
+        assert_eq!(discovery.loops.len(), 2);
         let observed_items = discovery.dominators.iter().map(HashSet::len).sum::<usize>()
             + discovery
                 .loops
@@ -648,9 +653,11 @@ mod resource_upper_bound_tests {
                         + summary.body_members.len()
                         + summary.drain.len()
                         + summary.inductions.len() * 2
+                        + summary.repeated_blocks.len()
+                        + summary.optional_blocks.len()
                 })
                 .sum::<usize>();
-        let authenticated_loop_storage = census.blocks.pow(2) * 8;
+        let authenticated_loop_storage = census.blocks.pow(2) * 10;
         assert!(observed_items <= authenticated_loop_storage);
 
         let exact = preflight_pipeline_protocol_resource_upper_bound_v1(

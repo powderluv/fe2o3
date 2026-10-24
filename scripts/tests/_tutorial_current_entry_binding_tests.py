@@ -8,8 +8,8 @@ import json
 class CurrentEntryBindingTests(FixtureBindingTests):
     cases = (
         ("typed-vecadd", "gfx942-typed-vecadd-source", "vecadd",
-         "examples/vecadd/src/lib.rs", 369, 203,
-         "60ea857d0aaba57e05fc30691b15908c188e449c789c39abd27abf4c35b017e2"),
+         "examples/vecadd/src/lib.rs", 859, 299,
+         "96a6d5774c0d36661540829025194c918100abcce53fed91cae3c909aea67345"),
         ("lds-barriers-atomics", "gfx942-workgroup-collectives",
          "lds_publish_read_reduce_i32_v1", "examples/workgroup_sync_v1/src/kernel.rs",
          2626, 1194, "b0074b426ef8ad0b9eea91e933e76dd03240852ce4ce976ccc89c1f2c7f1b515"),
@@ -29,16 +29,18 @@ class CurrentEntryBindingTests(FixtureBindingTests):
                                      if row["fixtureId"] == fixture_id))
         kernel = copy.deepcopy(next(row for row in self.original["kernelInventory"]["kernels"]
                                     if row["kernelId"] == kernel_id))
-        display = copy.deepcopy(next(row for row in self.original["kernelInventory"]["displayItems"]
-                                     if row["lessonId"] == lesson_id and row["tabOrdinal"] == ordinal))
-        display["tabOrdinal"] = 0
+        displays = copy.deepcopy([row for row in self.original["kernelInventory"]["displayItems"]
+                                   if row["lessonId"] == lesson_id and row["tabOrdinal"] == ordinal])
+        for row in displays:
+            row["tabOrdinal"] = 0
+        display = next(row for row in displays if row["bindingStatus"] == "fixture-source-contract")
         document = {
             **self.original,
             "compilerFixtures": [fixture],
             "curriculum": {**self.original["curriculum"], "lessons": [lesson]},
             "kernelInventory": {
                 **self.original["kernelInventory"], "kernels": [kernel],
-                "negativeCases": [], "displayItems": [display],
+                "negativeCases": [], "displayItems": displays,
             },
         }
         physical = (ROOT / path).read_bytes()
@@ -64,9 +66,19 @@ class CurrentEntryBindingTests(FixtureBindingTests):
                 before = copy.deepcopy((document, runtime))
                 result = self.check(document, runtime)
                 self.assertTrue(result["runtimeCensusValidated"])
-                self.assertEqual(result["unresolvedBindings"], [])
+                if case[0] == "typed-vecadd":
+                    self.assertEqual(
+                        [{key: row[key] for key in
+                          ("lessonId", "tabOrdinal", "functionUtf8Offset", "kernelSymbol")}
+                         for row in result["unresolvedBindings"]],
+                        [{"lessonId": "typed-vecadd", "tabOrdinal": 0,
+                          "functionUtf8Offset": 567, "kernelSymbol": "vecadd"}],
+                    )
+                    self.assertTrue(result["unresolvedBindings"][0]["reason"])
+                else:
+                    self.assertEqual(result["unresolvedBindings"], [])
                 self.assertEqual(result["knownKernelIdentityCount"], 1)
-                self.assertEqual(result["displayItemCount"], 1)
+                self.assertEqual(result["displayItemCount"], 2 if case[0] == "typed-vecadd" else 1)
                 self.assertEqual(result["sourceBoundVariantCount"], 1)
                 self.assertEqual(result["sourceBoundPairCount"], 0)
                 self.assertEqual([(row["kind"], row["status"]) for row in kernel["variants"]],

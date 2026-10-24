@@ -60,7 +60,41 @@ Together with the five earlier approvals, the registry contains 22 exceptions.
 `scripts/check-dco-range.py` recognizes only these full commit identities in
 the two named repositories and reports exceptions separately from signoffs.
 There is no command-line, environment, prefix, author-wide or ancestry-based
-waiver. Every other commit, including merges and future KFD work, still needs
+waiver. Every contributed source commit, including future KFD work, still needs
 its exact author signoff or the existing independently verified Dependabot rule.
+Unsigned integration merges have only the separate provenance rule below.
 The exceptions do not waive tests, artifact checks or any publication requirement
 other than these 22 missing DCO trailers.
+
+## Canonical GitHub integration provenance (new policy)
+
+The full PR commit range is unchanged. A separately reported integration record
+may be accepted only in `harsh-nod/fe2o3` or `powderluv/fe2o3` when it is an exact,
+GitHub-signed, two-parent merge of an actually merged PR into canonical
+`harsh-nod/fe2o3` main. This is not an author signoff or an addition to the 22
+historical exceptions, and no caller-supplied repository/ref/waiver selects it.
+
+The checker recomputes the local Git object identity and requires GitHub's valid
+signature verification payload and signature to match those exact local bytes.
+Canonical REST requests explicitly pin `2022-11-28`, which supplies the recorded
+`merge_commit_sha`; a missing field or retired API version fails closed without
+inference or a version fallback.
+The API and signed committer must identify GitHub/web-flow. One unambiguous
+canonical merged PR must name this exact merge SHA and its second-parent head.
+The PR's recorded base must be an ancestor of the signed first parent: GitHub
+can retain the earlier PR base after canonical main advances. Neither commit API
+visibility nor canonical ancestry alone is sufficient.
+
+A clean temporary bare Git repository, without inherited Git configuration or
+custom merge drivers, must reproduce the exact merge tree from its ordered
+parents without conflicts. Extra merge content, ambiguous metadata, unsupported
+object headers, missing local objects, failed API calls and mismatched verified
+payloads fail closed. Git-version differences that change merge output also
+fail closed; they do not justify a fallback or waiver.
+
+Every authored source contribution in the original range is still checked.
+Ordinary unsigned/manual merges, unsigned mirror-only contributions, and
+noncanonical/unmerged PRs remain rejected. Canonical integration records are
+counted separately from signoffs. Normal source/review/CI, mirror ancestry,
+release and Pages gates remain unchanged. This rule applies to future canonical
+merges satisfying all these conditions; it does not enumerate today's four SHAs.

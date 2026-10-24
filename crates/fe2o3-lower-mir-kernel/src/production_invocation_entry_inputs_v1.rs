@@ -138,7 +138,8 @@ fn invocation_root_inputs_v1(
         let first = next;
         if let Some(bindings) = parameters.local_bindings {
             match &bindings[ordinal] {
-                PlannedParameterLocalBindingV1::Bf16Nominal { .. } => {
+                PlannedParameterLocalBindingV1::Bf16Nominal { .. }
+                | PlannedParameterLocalBindingV1::Wave64Nominal { .. } => {
                     return Err(invocation_entry_error_v1());
                 }
                 PlannedParameterLocalBindingV1::Direct {

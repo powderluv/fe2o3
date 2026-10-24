@@ -169,7 +169,8 @@ fn actual_detached_source_owner_keeps_growth_separate_and_denies_restored_lost_c
                                 None, Some([64, 1, 1]), BTreeSet::new().into(), 1, false, 256,
                                 PrivateArrayRecorderWorkV1::Shared(&mut private), None, returns,
                                 Some(budget), SemanticEmissionPlacementV1::default(), Some(cursor), None,
-                            )?;
+                                None,
+)?;
                             let mut target = BasicBlock::new(BlockId(0));
                             lowering.begin_block(function.entry(), &mut target)?;
                             target.terminator = Some(lowering.lower_terminator(
@@ -354,7 +355,8 @@ fn with_helper_boundary(
                 SemanticEmissionPlacementV1::default(),
                 Some(cursor),
                 None,
-            )?;
+                None,
+)?;
             let mut target = BasicBlock::new(BlockId(0));
             lowering.begin_block(function.entry(), &mut target)?;
             target.terminator = Some(lowering.lower_terminator(

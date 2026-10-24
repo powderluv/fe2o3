@@ -2941,6 +2941,20 @@ fn rejects_missing_mismatched_and_partial_wave_execution() {
         error.diagnostics()[0].message,
         "full-wave execution requires flat workgroup size 96 to be a multiple of 64"
     );
+
+    let mut subwave = wave_module(WaveWidth::Wave64);
+    subwave.kernels[0].workgroup_size = Some(WorkgroupSize::new(32, 1, 1));
+    // Every operation still claims a full Wave64; actual launch geometry wins.
+    verify_module(&subwave).expect("full-wave operations remain valid KIR");
+    let error = lower_kernel_to_llvm_ir(&subwave, &KernelId::new("wave_kernel")).unwrap_err();
+    assert_eq!(
+        error.diagnostics()[0].code,
+        LoweringDiagnosticCode::UnsupportedWaveOperation
+    );
+    assert_eq!(
+        error.diagnostics()[0].message,
+        "full-wave execution requires flat workgroup size 32 to be a multiple of 64"
+    );
 }
 
 #[test]
@@ -2999,6 +3013,48 @@ fn rocm_test_targets_are_exact_canonical_amd_target_ids() {
 }
 
 #[test]
+fn literal_nan_stores_preserve_payload_in_all_f32_profiles() {
+    for bits in [
+        0x7f80_0001,
+        0x7fc0_0042,
+        0x7fff_ffff,
+        0xff80_0001,
+        0xffc0_0042,
+        0xffff_ffff,
+    ] {
+        let mut module = fill_module();
+        let body = module.functions[0].body.as_mut().unwrap();
+        body.blocks[0].operations.insert(
+            0,
+            op(
+                20,
+                Type::F32,
+                OperationKind::Constant(Constant::F32Bits(bits)),
+            ),
+        );
+        match &mut body.blocks[1].operations[2].kind {
+            OperationKind::Store { value, .. } => *value = ValueId(20),
+            _ => panic!("fill fixture must store the tested literal"),
+        }
+        let expected = format!("store float bitcast (i32 {bits} to float),");
+        let baseline = lower_kernel_to_llvm_ir(&module, &KernelId::new("fill")).unwrap();
+        let gfx942 = lower_kernel_to_gfx942_xnack_minus_llvm_ir(
+            &exact_gfx942_xnack_minus(module.clone()),
+            &KernelId::new("fill"),
+        )
+        .unwrap();
+        let gfx950 = lower_kernel_to_gfx950_xnack_minus_llvm_ir(
+            &exact_gfx950_xnack_minus(module),
+            &KernelId::new("fill"),
+        )
+        .unwrap();
+        for llvm in [baseline, gfx942, gfx950] {
+            assert!(llvm.contains(&expected), "{llvm}");
+        }
+    }
+}
+
+#[test]
 fn excluded_operations_constants_casts_and_comparisons_have_located_errors() {
     let mut divide = fill_module();
     divide.functions[0].body.as_mut().unwrap().blocks[0]
@@ -3026,22 +3082,6 @@ fn excluded_operations_constants_casts_and_comparisons_have_located_errors() {
     let exact_divide =
         lower_kernel_to_gfx942_xnack_minus_llvm_ir(&exact_divide, &KernelId::new("fill")).unwrap();
     assert!(exact_divide.contains("%v20 = fdiv float %arg1, %arg1"));
-
-    let mut nan = fill_module();
-    nan.functions[0].body.as_mut().unwrap().blocks[0]
-        .operations
-        .insert(
-            0,
-            op(
-                20,
-                Type::F32,
-                OperationKind::Constant(Constant::F32Bits(f32::NAN.to_bits())),
-            ),
-        );
-    assert_eq!(
-        first_code(&nan, "fill"),
-        LoweringDiagnosticCode::UnsupportedConstant
-    );
 
     let mut bad_cast = fill_module();
     let operations = &mut bad_cast.functions[0].body.as_mut().unwrap().blocks[0].operations;

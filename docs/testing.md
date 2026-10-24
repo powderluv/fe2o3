@@ -30,6 +30,60 @@ wrapper-managed package.
 
 ## Generic validation
 
+The current tutorial compiler checks use the package that owns production
+PLIRON analysis. Each command must execute a nonempty test selection:
+
+```sh
+cargo test --locked -p fe2o3-pliron --test production_ranked_constant_fold
+cargo test --locked -p fe2o3-pliron --lib pliron_analysis_witness
+cargo test --locked -p fe2o3-pliron --lib textual_pliron_lit_suite
+```
+
+The former `fe2o3-kernel-analysis --lib pliron_analysis_witness` command selects
+zero tests after the analysis move; its former `--test pliron_lit` target no
+longer exists. Those spellings remain meaningful only at their explicitly
+pinned historical source. The current witness tests retain positive replay,
+incomplete cases, mutation refusals, and resource-bound controls; the textual
+suite checks the existing sorted positive and diagnostic-refusal fixtures.
+None of these commands executes a GPU artifact.
+
+### Retained source-model proof replays
+
+Historical model commands require their stated public source, not just the
+current checkout and a pinned prover. Start each block at the repository root
+and use a new, absent neighboring worktree. Existing source/model guards must
+remain unchanged. Keep rustup's normal environment active (`. "$HOME/.cargo/env"`).
+
+For the bounded MoE expert model, follow
+[`examples/moe_expert_v1/README.md`](../examples/moe_expert_v1/README.md): source
+`e3c7018f428192c350c9c425df8e4c031c788272`, Verus
+`0.2026.08.02.b677dd5`, 15 verified obligations and six intended rejections.
+For causal Flash attention, follow
+[`examples/flash_attention_v1/README.md`](../examples/flash_attention_v1/README.md):
+source `af0fd523e3b774377a9c5192cf0511e34fa19735`, the same Verus release,
+25 verified obligations and ten intended rejections. Its retained companion
+`examples/flash_attention_v1/run-memory-verus.sh` must also run from that
+detached source; it uses Verus `0.2026.08.09.92f466f` and checks 13 obligations
+plus eight intended rejections.
+
+The removed LDS GEMM example remains replayable at its public historical pin:
+
+```sh
+git worktree add --detach ../fe2o3-proof-gemm-5a452 5a45239aeeda3ca64cf16beb7fb1d3589e649bfe
+(
+  cd ../fe2o3-proof-gemm-5a452
+  cargo test --locked --manifest-path examples/tiled_gemm_v1/Cargo.toml --test lds_source_refinement
+  VERUS=/absolute/path/to/pinned/verus examples/tiled_gemm_v1/run-verus.sh
+)
+```
+
+Use Verus `0.2026.08.02.b677dd5` for this replay. The wrapper checks all six
+retained proof groups (including the 96-obligation source/model group) and all
+21 intended rejections. This is bounded source/model evidence only, not proof
+of current Rust kernels, numerical SIMT/tile lowering, ISA, or GPU execution.
+Current workgroup, row-softmax, and Wave64 model commands remain current; they
+do not need these historical worktrees and retain their own explicit scopes.
+
 The standalone numerical reference models have a focused CPU-only lane:
 
 ```text
@@ -266,7 +320,11 @@ scripts/run-tutorial-cpu-reference.sh examples/gfx950_advanced_attention/Cargo.t
 ```
 
 Use `scripts/run-tutorial-cpu-reference.sh --batch` to observe all declared CPU
-suites, up to twelve. The batch builds one private driver and gives each suite
+suites, up to the finite limit of 36. This covers the current 14 original suites
+and 22 mode-specific additions. The total scheduler allowance is the sum of
+suite deadlines: 43,200 seconds for 36 suites at 1,200 seconds each, compared
+with 16,800 seconds for the previous 14-suite limit. The per-suite deadline
+remains 1,200 seconds. The batch builds one private driver and gives each suite
 an independent private target directory and its declared deadline. The entire
 common setup cost counts against every suite's budget; earlier suite execution
 does not count against later suites. Shared source, configuration and tool
@@ -290,6 +348,14 @@ input drift cannot count as a complete successful suite. Named integration
 targets may build metadata-bound companion binaries; those are not counted as
 executed tests. Executable hashes are post-execution on-disk observations,
 not attestations of the driver's executed image.
+
+The ordinary binding-only host-test runner and this observer allow test images
+up to 1 GiB, hashing in bounded chunks with the existing descriptor and file
+identity checks. The default MoE oracle with debug information measured
+909,946,760 bytes, above the separate 512 MiB tool/authority pin limit. That
+shared default and transferred-descriptor limit remain unchanged. The host-test
+allowance is fixed in source, grants no authority, and does not change build
+profiles, assertions, overflow checks, per-suite deadlines or native limits.
 
 Each run uses private scratch outside the checkout and removes its driver/build
 artifacts. Bounded logs and `observation.json` remain in the reported evidence
@@ -562,6 +628,16 @@ HSACO, HIP, or GPU execution refines that model.
 
 ## ROCm compile coverage
 
+Install the [root requirements](../README.md#requirements) first. Before either
+matrix, complete the selected examples' network-enabled locked dependency setup
+in the same effective `CARGO_HOME` for the root workspace, each selected example
+manifest, and the pinned nightly `rust-src` workspace. Some selected adapters
+unconditionally invoke Cargo with `--locked --offline`, even when the matrix
+host has network access. Root workspace fetching alone does not guarantee that
+the independent example and `rust-src` locked closures are cached. Follow the
+existing per-example setup, such as the
+[row-softmax instructions](../examples/row_softmax_general_v1/README.md#build-and-numerical-qualification).
+
 Set the admitted LLVM target and run the bounded production compiler gates:
 
 ```text
@@ -589,9 +665,9 @@ and code-object tests. The generic lane runs the matrix's hermetic shell test,
 which substitutes fixture tools and verifies orchestration without requiring
 ROCm or a GPU.
 
-The separate gfx950 matrix covers 37 production Rust kernel entries represented
-by the kernels site. Together with the five gfx942 entries, the compile-only
-matrices cover 42 entries:
+The separate gfx950 matrix covers 84 compile-only fixture selections represented
+by the kernels site. Together with the 11 gfx942 selections, the compile-only
+matrices cover 95 manifest-enumerated fixtures:
 
 ```text
 scripts/kernel-compile-matrix.sh gfx950
@@ -679,8 +755,11 @@ FE2O3_TEST_SOURCE_AUTH_LDS_GFX942_HSACO=/absolute/path/to/lds.hsaco \
   scripts/ci-local.sh hardware-smoke
 ```
 
-The smoke suite builds and runs all supported examples. Each example copies its
-result back to the host and checks it against a CPU-computed expected value.
+This lane does not build or run every registered tutorial kernel or SIMT/tile
+variant. Its individual fixture checks retain their own output comparisons;
+device/queue checks are not numerical kernel results. Use the
+[tutorial reproduction plans](tutorial-reproduction.md) to inspect the separate
+manifest-declared inputs and correctness obligations without executing them.
 
 The scalar-GEMM compiler lane extracts the real single-source
 `#[kernel(typed)]` example through semantic MIR, ranked PLIRON, Kernel IR, and

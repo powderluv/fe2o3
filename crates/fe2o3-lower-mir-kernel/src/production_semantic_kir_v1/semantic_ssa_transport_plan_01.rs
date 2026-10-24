@@ -219,7 +219,8 @@ impl SemanticControlFlowSsaPlanV1 {
             None,
             None,
             None,
-        )
+            None,
+)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -236,6 +237,7 @@ impl SemanticControlFlowSsaPlanV1 {
         lifecycle: Option<&dyn ExecutionLifecycleConsumerV29>,
         nominal_parameters: Option<&[PlannedParameterLocalBindingV1]>,
         backing: Option<SourceFunctionBackingViewV29<'_>>,
+        wave64_references: Option<&CheckedWave64ReferenceLocalsV1<'_>>,
     ) -> Result<Self, ProductionSemanticKirErrorV1> {
         let SemanticSsaTransportInputV1 {
             types,
@@ -308,12 +310,16 @@ impl SemanticControlFlowSsaPlanV1 {
             .iter()
             .map(|variable| variable.get())
             .collect::<BTreeSet<_>>();
-        let private_slot_candidates = private_slot_candidate_locals_v1(
+        let mut private_slot_candidates = private_slot_candidate_locals_v1(
             function,
             &shared_promoted,
             &retained_cross_edge,
             representation,
         );
+        if let Some(references) = wave64_references {
+            references.require_source_v1(function, semantic_function)?;
+            references.remove_checked_retained_snapshots_v1(&mut private_slot_candidates,emission_work.as_deref_mut().ok_or(ArgumentResourceV1::Accounting)?)?;
+        }
         let mut retained_local_slots = BTreeMap::new();
         if let Some(backing) = backing {
             let budget = emission_work
@@ -635,7 +641,11 @@ impl SemanticControlFlowSsaPlanV1 {
                 execution.is_some_and(|cursor| cursor.cfg.source_enum_locals[local as usize]);
             let nominal = reference
                 || execution.is_some_and(|cursor| cursor.cfg.nominal_locals[local as usize] != 0);
-            let (transport_semantic_type, binding) = if source_enum {
+            let checked_reference = wave64_references.and_then(|references| references.locals.get(&local)).copied();
+            let (transport_semantic_type, binding) = if let Some(descriptor) = checked_reference {
+                descriptor.exact_local_v1(semantic_function, local, declaration.ty())?;
+                (declaration.ty(), SemanticPromotedTransportV1::CheckedWave64Reference(descriptor))
+            } else if source_enum {
                 (declaration.ty(), SemanticPromotedTransportV1::SourceEnumTag)
             } else if nominal {
                 (declaration.ty(), SemanticPromotedTransportV1::Execution)
@@ -682,6 +692,11 @@ impl SemanticControlFlowSsaPlanV1 {
                         budget,
                     )?
                 }
+            } else if let Some(descriptor)=checked_reference {
+                let references=wave64_references.ok_or(ProductionSemanticKirErrorV1::CorrespondenceMismatch)?;
+                let mut selected=None;
+                references.with_descriptor_v1(descriptor,emission_work.as_deref_mut().ok_or(ArgumentResourceV1::Accounting)?,&mut |guard,_|{selected=Some(guard.transport_types_v1());Ok(())})?;
+                selected.ok_or(ProductionSemanticKirErrorV1::CorrespondenceMismatch)?
             } else {
                 binding.transport_types_with_representation_v29(
                     types,

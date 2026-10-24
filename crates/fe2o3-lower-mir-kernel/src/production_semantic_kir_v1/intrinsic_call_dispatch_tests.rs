@@ -16,6 +16,8 @@ fn with_dispatch_callable<R>(
 ) -> Result<R, ProductionSemanticKirErrorV1> {
     with_guarded_result_context(false, |original, call| {
         let callables = [replace(original.callables[0].clone())];
+        let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+        let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
         let mut lowering = SemanticFunctionLoweringV1::new(
             original.types,
             &callables,
@@ -32,6 +34,7 @@ fn with_dispatch_callable<R>(
             1,
             false,
             32,
+            &mut lowering_budget,
         )?;
         lowering.locals = original.locals.clone();
         lowering.next_value = original.next_value;

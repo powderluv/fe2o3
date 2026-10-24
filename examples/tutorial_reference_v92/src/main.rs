@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn every_current_corpus_request_executes_independent_reference_and_covers_all_outputs() {
         let names = references::kernels();
-        assert_eq!(names.len(), 45);
+        assert_eq!(names.len(), 46);
         assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
         for name in names {
             let request = references::generate(name).unwrap();
@@ -135,6 +135,160 @@ mod tests {
         ] {
             assert!(references::generate(name).is_err());
         }
+    }
+
+    fn bf16_case(kernel: &str, reduction: usize, full: bool) -> (Request, Vec<u32>) {
+        let dimension = if full { 16 } else { 1 };
+        let mut a = vec![0_u16; dimension * reduction];
+        let mut b = vec![0_u16; reduction * dimension];
+        let values = if full {
+            for row in 0..16 {
+                for depth in 0..16 {
+                    a[row * 16 + depth] = 0x3f80 + (row + depth) as u16;
+                }
+            }
+            for depth in 0..16 {
+                for col in 0..16 {
+                    let num = 128 + 2 * col - depth;
+                    b[depth * 16 + col] = if num >= 128 {
+                        0x3f80 + (num - 128) as u16
+                    } else {
+                        0x3f00 + 2 * (num - 64) as u16
+                    };
+                }
+            }
+            (0..16)
+                .flat_map(|r| {
+                    (0..16).map(move |c| {
+                        ((16 * (128 + r) * (128 + 2 * c) + 120 * (2 * c - r) - 1240) as f32
+                            / 16384.0)
+                            .to_bits()
+                    })
+                })
+                .collect::<Vec<_>>()
+        } else if reduction == 1 {
+            a[0] = 0x3f81;
+            b[0] = 0x3f7f;
+            vec![0x3f80_7f00]
+        } else {
+            a.copy_from_slice(&[0x4281, 0x4280]);
+            b.copy_from_slice(&[0x4281, 0xc282]);
+            vec![0x3e80_0000]
+        };
+        let guards = if full { 8 } else { 1 };
+        let mut initial = vec![0_u32; dimension * dimension];
+        initial.extend(vec![0x7f80_0001; guards]);
+        let mut expected = values;
+        expected.extend(vec![0x7f80_0001; guards]);
+        let mut args = vec![
+            protocol::buffer(
+                "u16",
+                "read_only",
+                &a.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
+            ),
+            protocol::buffer(
+                "u16",
+                "read_only",
+                &b.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
+            ),
+            protocol::buffer(
+                "f32",
+                "read_write",
+                &initial
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            ),
+        ];
+        args.extend(
+            [
+                dimension, dimension, reduction, reduction, dimension, dimension,
+            ]
+            .map(|v| protocol::scalar(v as u32)),
+        );
+        args.extend([protocol::float_scalar(1.0), protocol::float_scalar(0.0)]);
+        let groups = if kernel == "simt_gemm_general_v1" && full {
+            4
+        } else {
+            1
+        };
+        (Request::new(kernel, 64, groups, args), expected)
+    }
+
+    #[test]
+    fn closed_bf16_cases_consume_exact_operands_outputs_and_canaries() {
+        for kernel in ["tiled_gemm_general_v1", "simt_gemm_general_v1"] {
+            for (k, full) in [(1, false), (2, false), (16, true)] {
+                let (request, expected) = bf16_case(kernel, k, full);
+                let bytes = serde_json::to_vec(&request).unwrap();
+                let result: serde_json::Value =
+                    serde_json::from_slice(&execute(bytes.clone()).unwrap()).unwrap();
+                assert_eq!(result["kernel"], kernel);
+                assert_eq!(
+                    result["request_sha256"],
+                    serde_json::json!(<[u8; 32]>::from(Sha256::digest(&bytes)))
+                );
+                assert_eq!(
+                    result["outputs"][0]["bytes"],
+                    protocol::encode(
+                        &expected
+                            .iter()
+                            .flat_map(|v| v.to_le_bytes())
+                            .collect::<Vec<_>>()
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn closed_bf16_enrollment_refuses_name_shape_stride_abi_and_canary_mutations() {
+        let (request, _) = bf16_case("simt_gemm_general_v1", 16, true);
+        let original = serde_json::to_value(&request).unwrap();
+        for (index, value) in [
+            (
+                0,
+                serde_json::json!({"kind":"scalar","type":"u16","bits":"0x0000"}),
+            ),
+            (
+                3,
+                serde_json::json!({"kind":"scalar","type":"u32","bits":"0x00000011"}),
+            ),
+            (
+                6,
+                serde_json::json!({"kind":"scalar","type":"u32","bits":"0x0000000f"}),
+            ),
+        ] {
+            let mut changed = original.clone();
+            changed["arguments"][index] = value;
+            assert!(execute(serde_json::to_vec(&changed).unwrap()).is_err());
+        }
+        for (key, value) in [
+            ("alignment", serde_json::json!(2)),
+            ("access", serde_json::json!("read_only")),
+            ("element", serde_json::json!("u32")),
+            ("bytes", serde_json::json!("0x00000000")),
+        ] {
+            let mut changed = original.clone();
+            changed["arguments"][2][key] = value;
+            assert!(execute(serde_json::to_vec(&changed).unwrap()).is_err());
+        }
+        for (key, value) in [
+            ("kernel", serde_json::json!("simt_gemm_general_unknown")),
+            ("grid", serde_json::json!([64, 1, 1])),
+            ("workgroup", serde_json::json!([32, 1, 1])),
+        ] {
+            let mut changed = original.clone();
+            changed[key] = value;
+            assert!(execute(serde_json::to_vec(&changed).unwrap()).is_err());
+        }
+        let mut changed = original;
+        let bytes = changed["arguments"][2]["bytes"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        changed["arguments"][2]["bytes"] = format!("{}00000000", &bytes[..bytes.len() - 8]).into();
+        assert!(execute(serde_json::to_vec(&changed).unwrap()).is_err());
     }
 
     #[test]

@@ -18,6 +18,9 @@ kernel-gpt-oss-router-component = []
 kernel-gpt-oss-attention-component = []
 kernel-gpt-oss-expert-component = []
 
+kernel-gpt-oss-mode-simt = []
+kernel-gpt-oss-mode-tile = []
+
 [workspace]
 
 [dependencies]
@@ -29,3 +32,7 @@ fe2o3-host = { path = "../../crates/fe2o3-host" }
 [lib]
 name = "fe2o3_gfx950_gpt_oss_decode"
 path = "src/lib.rs"
+
+# Keep test dependency archives and binding-aware executables within the host file cap.
+[profile.test]
+debug = 0

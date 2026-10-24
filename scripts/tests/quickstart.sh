@@ -141,6 +141,7 @@ grep -F -- '00002a4200002a4200002a4200002a42a5a5a5a5deadbeef' \
   "${FIXTURE}/no-gpu.stdout" >/dev/null
 [[ "$(wc -l <"${LOG}")" -eq 3 ]]
 assert_no_temporary_files
+! grep -F -- '--matrix-bf16-numerics' "${LOG}" >/dev/null
 
 : >"${LOG}"
 checked_fill --output "${FIXTURE}/retained.fe2sim" \
@@ -279,7 +280,68 @@ run_quickstart simulate-source --crate fe2o3_fill \
 status=$?
 set -e
 [[ "${status}" -eq 2 ]]
-grep -F -- '--bundle-version must be exactly 1 or 5' \
+grep -F -- '--bundle-version must be exactly 1, 5, or 6' \
   "${FIXTURE}/invalid-version.stderr" >/dev/null
+
+
+# V6 dispatch: explicit modes and omission, checked and unchecked output paths.
+for numerics in default exact-v1 finite-sequential-fma-v1; do
+  : >"${LOG}"
+  options=(--bundle-version 6)
+  if [[ "${numerics}" != default ]]; then
+    options+=(--matrix-bf16-numerics "${numerics}")
+  fi
+  checked_fill "${options[@]}" >"${FIXTURE}/v6-${numerics}.stdout" 2>"${FIXTURE}/v6-${numerics}.stderr"
+  grep -F -- '--bundle-version 6' "${LOG}" >/dev/null
+  grep -F -- '--bundle-v6' "${LOG}" >/dev/null
+  if [[ "${numerics}" == default ]]; then
+    ! grep -F -- '--matrix-bf16-numerics' "${LOG}" >/dev/null
+  else
+    grep -F -- "--matrix-bf16-numerics ${numerics}" "${LOG}" >/dev/null
+  fi
+  [[ "$(wc -l <"${LOG}")" -eq 3 ]]
+  assert_no_temporary_files
+done
+
+: >"${LOG}"
+run_quickstart simulate-source --crate fe2o3_fill \
+  --request "${REPO_ROOT}/scripts/quickstart/fill-request.json" \
+  --bundle-version 6 --matrix-bf16-numerics finite-sequential-fma-v1 \
+  -- --package fe2o3-fill --lib >"${FIXTURE}/v6-unchecked.stdout"
+grep -F -- '--bundle-v6' "${LOG}" >/dev/null
+grep -F -- '--matrix-bf16-numerics finite-sequential-fma-v1' "${LOG}" >/dev/null
+assert_no_temporary_files
+
+for version in 1 5; do
+  : >"${LOG}"
+  checked_fill --bundle-version "${version}" --matrix-bf16-numerics exact-v1 \
+    >"${FIXTURE}/legacy-exact.stdout" 2>"${FIXTURE}/legacy-exact.stderr"
+  grep -F -- '--matrix-bf16-numerics exact-v1' "${LOG}" >/dev/null
+  : >"${LOG}"
+  set +e
+  checked_fill --bundle-version "${version}" --matrix-bf16-numerics finite-sequential-fma-v1 \
+    >"${FIXTURE}/legacy-finite.stdout" 2>"${FIXTURE}/legacy-finite.stderr"
+  status=$?
+  set -e
+  [[ "${status}" -eq 2 && ! -s "${LOG}" && ! -s "${FIXTURE}/legacy-finite.stdout" ]]
+  grep -F -- 'requires --bundle-version 6' "${FIXTURE}/legacy-finite.stderr" >/dev/null
+  assert_no_temporary_files
+done
+
+for invalid in unknown missing duplicate; do
+  : >"${LOG}"
+  options=(--bundle-version 6 --matrix-bf16-numerics)
+  case "${invalid}" in
+    unknown) options+=(unknown-mode) ;;
+    missing) ;;
+    duplicate) options+=(exact-v1 --matrix-bf16-numerics finite-sequential-fma-v1) ;;
+  esac
+  set +e
+  checked_fill "${options[@]}" >"${FIXTURE}/bad-numerics.stdout" 2>"${FIXTURE}/bad-numerics.stderr"
+  status=$?
+  set -e
+  [[ "${status}" -eq 2 && ! -s "${LOG}" && ! -s "${FIXTURE}/bad-numerics.stdout" ]]
+  assert_no_temporary_files
+done
 
 printf '%s\n' 'quickstart shell tests passed'

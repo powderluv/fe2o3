@@ -15,6 +15,7 @@ resolver = "3"
 fe2o3-device = { path = "../../crates/fe2o3-device" }
 
 [target.'cfg(not(target_arch = "amdgpu"))'.dependencies]
+fe2o3-core = { path = "../../crates/fe2o3-core", optional = true }
 fe2o3-host = { path = "../../crates/fe2o3-host" }
 
 [[bin]]
@@ -24,3 +25,14 @@ path = "src/main.rs"
 [lib]
 name = "fe2o3_row_softmax_general_v1"
 path = "src/lib.rs"
+
+[features]
+default = []
+structured-tile = []
+gfx950-target = []
+qualification-legacy-hip = ["dep:fe2o3-core", "fe2o3-core/qualification-unsafe-launch"]
+
+[profile.test]
+debug = 0
+debug-assertions = true
+overflow-checks = true

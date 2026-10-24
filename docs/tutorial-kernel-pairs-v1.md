@@ -4,6 +4,9 @@ Every intended-runnable tutorial kernel needs an explicit SIMT source and a
 structured tile source, with independent per-variant/per-target qualification.
 A mixed example is additional. See [issue 275](https://github.com/harsh-nod/fe2o3/issues/275).
 
+Start with [target-specific reproduction plans](tutorial-reproduction.md) for
+the existing fixture commands, exact inputs and still-UNRUN correctness stages.
+
 Inspect the current source contracts using the existing production validator:
 
 ```sh
@@ -195,9 +198,11 @@ identities outside the active instructional tabs. The six removed display
 declarations were two unbound historical entries and four ordinary helpers;
 no kernel record, source binding, variant obligation or negative case is removed.
 
-The first-fill kernel display now binds the 680-byte library file at
-`f84c2a59ba34c3e4c12e316cc9b30f14342e36cf`, including its independent CPU
-point reference and exact whole-file digest. Recorded no-GPU execution of the
+The first-fill kernel display binds the 552-byte library file at
+`b9378bdbee0dd1e284a1c31b25c3614c5c2039fe`, byte-identical at reviewed
+compiler `188f388b`. The unchanged CPU point reference is in the same-module
+`reference.rs` companion; the whole-file source digest covers the library, not
+a proof or execution result. Recorded no-GPU execution of the
 historical 308-byte library at `7a536e0a001202ac0bb9d8647c5395661f8fa1ec`
 keeps that historical identity; the current source association supplies no new
 execution or tile-pair qualification.
@@ -222,6 +227,10 @@ CPU test results as per-variant target qualification receipts.
 The report is bounded to 4096 charged projection/inventory records, including
 input tabs, references and scanned items, and 16 MiB of encoded JSON. Each Rust
 scan is limited to 4 MiB and 4096 declarations. Exhaustion rejects without partial JSON.
+Physical selection work has separate aggregate caps of 8192 source-item visits
+and 8192 attribute visits. The complete 95-fixture catalog exceeds the former
+4096 attribute-work capacity; the record, byte, depth and source-item bounds are
+unchanged. These are traversal limits, not qualification or native-memory limits.
 The tests run in the existing `scripts/tests/kernel-compile-matrix.sh` CI gate.
 
 ## Kernel Identity Extension

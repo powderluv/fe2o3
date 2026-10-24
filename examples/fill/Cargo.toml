@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [features]
 reference-proof = []
+structured-tile = []
 
 [dependencies]
 fe2o3-device.workspace = true

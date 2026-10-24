@@ -126,8 +126,8 @@ fn source_forbids_unsafe_and_contains_matrix_tiling_and_epilogue() {
     assert_eq!(facts.unsafe_blocks, 0);
     assert_eq!(facts.unsafe_functions, 0);
     assert_eq!(
-        facts.try_expressions, 2,
-        "only the two grid-uniform matrix-view constructors may return early"
+        facts.try_expressions, 0,
+        "checked view errors use let-else; paired_contract verifies both exact failure branches"
     );
     assert_eq!(
         facts.loop_try_expressions, 0,

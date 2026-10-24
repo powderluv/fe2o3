@@ -3,7 +3,26 @@
 
 //! Dynamic fused attention through the workload-neutral production pipeline.
 
+#[cfg(not(any(
+    feature = "kernel-tile-flash-attention",
+    feature = "kernel-simt-flash-attention"
+)))]
+compile_error!("select exactly one flash attention kernel feature");
+#[cfg(all(
+    feature = "kernel-tile-flash-attention",
+    feature = "kernel-simt-flash-attention"
+))]
+compile_error!("tile and SIMT flash attention features are mutually exclusive");
+
+#[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-tile-flash-attention"))]
 pub mod kernel;
+#[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-simt-flash-attention"))]
+pub mod kernel_simt;
+
+#[cfg(not(feature = "kernel-simt-flash-attention"))]
+pub const FLASH_ATTENTION_KERNEL_NAME_V1: &str = "flash_attention_general_v1";
+#[cfg(feature = "kernel-simt-flash-attention")]
+pub const FLASH_ATTENTION_KERNEL_NAME_V1: &str = "flash_attention_general_simt_v1";
 #[cfg(not(target_arch = "amdgpu"))]
 pub mod reference;
 

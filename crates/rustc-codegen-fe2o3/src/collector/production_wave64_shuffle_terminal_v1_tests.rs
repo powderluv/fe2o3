@@ -28,7 +28,12 @@ pub(crate) fn check_wave64_descriptor_mutations_v1<'tcx>(
     for target in [
         "gfx942",
         "gfx942:xnack+",
-        "gfx950:xnack-",
+        "gfx950",
+        "gfx950:xnack+",
+        "gfx950:xnack- ",
+        "gfx950:xnack-:wave32",
+        "gfx950:wave32:xnack-",
+        "gfx90a:xnack-",
         "",
         "gfx942:xnack- ",
     ] {
@@ -38,13 +43,14 @@ pub(crate) fn check_wave64_descriptor_mutations_v1<'tcx>(
             )
         );
     }
-    assert!(
-        trusted_device_items::is_authenticated_gfx942_wave64_shuffle_instance_v1(
-            tcx,
-            instance,
-            "gfx942:xnack-",
-        )
-    );
+    for target in ["gfx942:xnack-", "gfx950:xnack-"] {
+        assert!(
+            trusted_device_items::is_authenticated_gfx942_wave64_shuffle_instance_v1(
+                tcx, instance, target
+            )
+        );
+    }
+
     assert_eq!(
         definition(tcx, TrustedDeviceItem::Gfx942Wave64Shuffle(scalar)),
         Some(instance.def_id())
@@ -72,13 +78,13 @@ pub(crate) fn check_wave64_descriptor_mutations_v1<'tcx>(
         "the local negative really has the provider's source signature"
     );
     assert!(construct(tcx, forged, scalar, abi, types).is_none());
-    assert!(
-        !trusted_device_items::is_authenticated_gfx942_wave64_shuffle_instance_v1(
-            tcx,
-            forged,
-            "gfx942:xnack-",
-        )
-    );
+    for target in ["gfx942:xnack-", "gfx950:xnack-"] {
+        assert!(
+            !trusted_device_items::is_authenticated_gfx942_wave64_shuffle_instance_v1(
+                tcx, forged, target
+            )
+        );
+    }
 
     let with_unwind = |can_unwind| {
         SemanticFunctionAbiV1::from_rustc_with_source_signature(

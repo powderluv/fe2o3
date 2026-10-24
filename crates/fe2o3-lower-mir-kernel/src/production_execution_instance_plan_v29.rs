@@ -379,6 +379,7 @@ fn execution_function_signature_with_references_v29(
         budget.release_storage(declaration_bytes)?;
         Ok(LoweredFunctionSignatureV1 {
             bf16_nominal: false,
+                wave64_nominal: false,
             parameter_semantic_types,
             call_arguments: layout.call_arguments,
             parameter_types: layout.parameter_types,

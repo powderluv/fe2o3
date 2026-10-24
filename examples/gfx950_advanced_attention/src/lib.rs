@@ -143,7 +143,72 @@ mod ablation;
 ))]
 mod kda_baseline;
 
+#[cfg(all(
+    target_arch = "amdgpu",
+    any(
+        all(feature = "kernel-attnres-aggregate-simt", feature = "kernel-attnres-aggregate-tile"),
+        all(feature = "kernel-attnres-aggregate-simt", feature = "kernel-attnres-aggregate-explicit-reuse-v1"),
+        all(feature = "kernel-attnres-aggregate-tile", feature = "kernel-attnres-aggregate-explicit-reuse-v1"),
+        all(feature = "kernel-four-branch-residual-simt", feature = "kernel-four-branch-residual-tile"),
+        all(feature = "kernel-four-branch-residual-simt", feature = "kernel-four-branch-residual-explicit-v1"),
+        all(feature = "kernel-four-branch-residual-tile", feature = "kernel-four-branch-residual-explicit-v1"),
+        all(feature = "kernel-mhc-sinkhorn-mix-simt", feature = "kernel-mhc-sinkhorn-mix-tile"),
+        all(feature = "kernel-mhc-sinkhorn-mix-simt", feature = "kernel-mhc-sinkhorn-mix-scalar-v1"),
+        all(feature = "kernel-mhc-sinkhorn-mix-tile", feature = "kernel-mhc-sinkhorn-mix-scalar-v1")
+    )
+))]
+compile_error!("select one SIMT, tile, or legacy ablation mode for an advanced mixing kernel");
+
+#[cfg(all(
+    target_arch = "amdgpu",
+    any(
+        feature = "kernel-attnres-aggregate-tile",
+        feature = "kernel-four-branch-residual-tile",
+        feature = "kernel-mhc-sinkhorn-mix-tile"
+    )
+))]
+mod kernel_tile_mixing;
+
+#[cfg(all(
+    target_arch = "amdgpu",
+    any(
+        all(
+            feature = "kernel-kda-decode-tile",
+            feature = "kernel-kda-decode-baseline-v1"
+        ),
+        all(
+            feature = "kernel-kda-prefill-tile",
+            feature = "kernel-kda-prefill-baseline-v1"
+        )
+    )
+))]
+compile_error!("a KDA tile feature must not be combined with its canonical ablation");
+
 pub mod kernel;
+#[cfg(all(
+    target_arch = "amdgpu",
+    any(
+        all(
+            feature = "kernel-content-sparse-attention-simt",
+            feature = "kernel-content-sparse-attention-reciprocal-reuse-v1"
+        ),
+        all(
+            feature = "kernel-compressed-hybrid-attention-simt",
+            feature = "kernel-compressed-hybrid-attention-division-baseline-v1"
+        )
+    )
+))]
+compile_error!("an attention SIMT feature must not be combined with its tile ablation feature");
+#[cfg(all(
+    target_arch = "amdgpu",
+    feature = "kernel-compressed-hybrid-attention-simt"
+))]
+mod kernel_simt_compressed_hybrid;
+#[cfg(all(
+    target_arch = "amdgpu",
+    feature = "kernel-content-sparse-attention-simt"
+))]
+mod kernel_simt_content_sparse;
 #[cfg(not(target_arch = "amdgpu"))]
 pub mod reference;
 

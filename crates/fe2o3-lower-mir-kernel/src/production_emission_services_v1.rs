@@ -305,6 +305,7 @@ impl<'source, 'service> SemanticFunctionLoweringV1<'source, 'service> {
         EmissionServicesV1<'service>,
     ) {
         let Self {
+            wave64_references,
             ordered_composition,
             emission_work,
             scoped_memory,
@@ -361,6 +362,7 @@ impl<'source, 'service> SemanticFunctionLoweringV1<'source, 'service> {
         let (private_arrays, private) = private_arrays.replace_work(services.private);
         (
             SemanticFunctionLoweringV1 {
+                wave64_references,
                 ordered_composition,
                 emission_work: services.budget,
                 execution_calls: services.calls,

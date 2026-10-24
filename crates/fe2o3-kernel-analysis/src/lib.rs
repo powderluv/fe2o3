@@ -122,7 +122,7 @@ pub use ssa::{
 };
 pub use uniformity::{
     UniformityPhysicalLaunchErrorV2, UniformityPhysicalLaunchV2, analyze_function,
-    analyze_kernel_entry,
+    analyze_kernel_entry, analyze_module_helper_v1,
 };
 
 use fe2o3_kernel_ir::{BlockId, FunctionId, SynchronizationScope, ValueId};

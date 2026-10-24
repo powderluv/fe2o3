@@ -435,7 +435,7 @@ class FixtureDisplayTests(unittest.TestCase):
         cases = [
             ('#[cfg(feature = "right")] mod left;', "roster differs"),
             ('mod left; mod left;', "ambiguous"),
-            ('#[path = "left.rs"] mod renamed;', "selection attribute"),
+            ('#[path = "../left.rs"] mod renamed;', "selection attribute"),
             ('mod left { #[kernel] fn same() {} }', "nested fixture kernel"),
             ('mod r#left;', "unsupported fixture item"),
             ('include!("left.rs");', "included fixture source must contain only inert macro definitions"),
@@ -1192,6 +1192,125 @@ class FixtureDisplayTests(unittest.TestCase):
         with mock.patch.object(IDENTITIES, "MAX_RUNTIME_BYTES", byte_count - 1):
             with self.assertRaisesRegex(IDENTITIES.KernelInventoryError, "aggregate byte bound"):
                 self.validate(False)
+
+
+class SiblingModulePathTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            "path_fixture_scanner", PATH.with_name("validate-tutorial-kernel-manifest.py"))
+        cls.scanner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.scanner)
+
+    def select(self, sources, features=(), *, library="example/src/lib.rs", symbols=("same",),
+               budget=None, caches=None):
+        def syntax(source):
+            code = self.scanner._rust_code_without_comments_and_literals(source)
+            return code, self.scanner._rust_delimiters(code)
+
+        return IDENTITIES._fixture_selection(
+            {"compilerInput": {"kernelSymbols": list(symbols)}},
+            lambda _: (library, sources, features), self.scanner.ordinary_rust_function_items,
+            syntax, budget if budget is not None else IDENTITIES._Budget(4096),
+            **(caches or {}))
+
+    def sources(self, declaration):
+        return {"example/src/lib.rs": declaration,
+                "example/src/selected.rs": "// UTF-8: λ\n#[kernel] pub fn same() {}\n"}
+
+    def test_real_wave_features_select_exact_physical_function_with_warm_caches(self):
+        root = PATH.parents[1]
+        directory = root / "examples/wave64_collectives_v1/src"
+        sources = {p.relative_to(root).as_posix(): p.read_text() for p in directory.glob("*.rs")}
+        library = "examples/wave64_collectives_v1/src/lib.rs"
+        caches = {"function_cache": {}, "item_cache": {}}
+        for features, filename in (((), "kernel.rs"), (("tile-kernel",), "tiled_kernel.rs"),
+                                   ((), "kernel.rs"), (("tile-kernel",), "tiled_kernel.rs")):
+            with self.subTest(features=features):
+                result = self.select(sources, features, library=library,
+                                     symbols=("wave64_collectives_v1",), caches=caches)
+                path = f"examples/wave64_collectives_v1/src/{filename}"
+                source = sources[path]
+                offset = source.encode().index(b"wave64_collectives_v1(")
+                self.assertEqual(result, {"wave64_collectives_v1": (path, offset, source)})
+
+    def test_literal_path_overrides_default_filename_without_renaming_module(self):
+        sources = self.sources('#[path /* selected */ = "selected.rs"] pub mod kernel;')
+        sources["example/src/kernel.rs"] = "#[kernel] fn wrong_default() {}"
+        sources["example/src/kernel/mod.rs"] = "#[kernel] fn wrong_directory() {}"
+        result = self.select(sources)
+        source = sources["example/src/selected.rs"]
+        self.assertEqual(result["same"], ("example/src/selected.rs",
+                                        source.encode().index(b"same"), source))
+        # Two physical files cannot declare the same active Rust module name.
+        sources["example/src/lib.rs"] += '\n#[path = "other.rs"] mod kernel;'
+        sources["example/src/other.rs"] = "#[kernel] fn other() {}"
+        with self.assertRaisesRegex(IDENTITIES.KernelInventoryError, "ambiguous"):
+            self.select(sources, symbols=("same", "other"))
+
+    def test_inactive_literal_is_validated_but_not_resolved(self):
+        sources = self.sources('#[cfg(test)] #[path = "absent.rs"] mod unused;\n'
+                               '#[path = "selected.rs"] mod kernel;')
+        self.assertEqual(self.select(sources)["same"][0], "example/src/selected.rs")
+        sources["example/src/lib.rs"] = sources["example/src/lib.rs"].replace("cfg(test)", "cfg(not(test))")
+        with self.assertRaisesRegex(IDENTITIES.KernelInventoryError, "missing"):
+            self.select(sources)
+
+    def test_unsafe_or_nonliteral_paths_fail_even_when_inactive(self):
+        for literal in ('"../selected.rs"', '"/selected.rs"', '"dir/selected.rs"',
+                        '"./selected.rs"', '"selected/../selected.rs"', '"selected.rs/"',
+                        '"selected.txt"', '""', 'r"selected.rs"', 'concat!("selected", ".rs")',
+                        r'"selected\x2ers"', r'"dir\selected.rs"', '"selected.rs" "extra"'):
+            for cfg in ("test", "not(test)"):
+                with self.subTest(literal=literal, cfg=cfg), self.assertRaises(IDENTITIES.KernelInventoryError):
+                    self.select(self.sources(f'#[cfg({cfg})] #[path = {literal}] mod kernel;'))
+
+    def test_path_attributes_require_one_direct_outer_module_item(self):
+        for item in ('fn helper() {}', 'struct Data;', 'const VALUE: u32 = 1;',
+                     'use crate::selected;', 'mod kernel {}', 'include!("selected.rs");', ''):
+            for cfg in ("test", "not(test)"):
+                with self.subTest(item=item, cfg=cfg), self.assertRaises(IDENTITIES.KernelInventoryError):
+                    self.select(self.sources(f'#[cfg({cfg})] #[path = "selected.rs"] {item}'))
+        for attributes in ('#![path = "selected.rs"]',
+                           '#[path = "selected.rs"] #[path = "selected.rs"]',
+                           '#[path = "selected.rs"] #[kernel]',
+                           '#[cfg_attr(test, path = "selected.rs")]',
+                           '#[cfg_attr(not(test), path = "selected.rs")]',
+                           '#[cfg_attr(test, cfg_attr(test, path = "selected.rs"))]'):
+            for cfg in ("test", "not(test)"):
+                with self.subTest(attributes=attributes, cfg=cfg), self.assertRaises(IDENTITIES.KernelInventoryError):
+                    self.select(self.sources(f'#[cfg({cfg})] {attributes} mod kernel;'))
+
+    def test_missing_repeated_and_nested_physical_paths_fail(self):
+        for declaration in ('#[path = "absent.rs"] mod kernel;',
+                            '#[path = "lib.rs"] mod kernel;',
+                            '#[path = "selected.rs"] mod first; #[path = "selected.rs"] mod second;'):
+            with self.subTest(declaration=declaration), self.assertRaisesRegex(
+                    IDENTITIES.KernelInventoryError, "ambiguous|missing"):
+                self.select(self.sources(declaration))
+        for cfg in ("test", "not(test)"):
+            sources = self.sources('mod selected;')
+            sources["example/src/selected.rs"] = f'#[cfg({cfg})] #[path = "nested.rs"] mod child;'
+            sources["example/src/nested.rs"] = "#[kernel] fn same() {}"
+            with self.subTest(cfg=cfg), self.assertRaises(IDENTITIES.KernelInventoryError):
+                self.select(sources)
+
+    def test_literal_selection_preserves_byte_record_and_attribute_budgets(self):
+        sources = self.sources('#[path = "selected.rs"] mod kernel;')
+        total = sum(len(source.encode()) for source in sources.values())
+        with mock.patch.object(IDENTITIES, "MAX_RUNTIME_BYTES", total):
+            self.assertEqual(set(self.select(sources)), {"same"})
+        with mock.patch.object(IDENTITIES, "MAX_RUNTIME_BYTES", total - 1), self.assertRaisesRegex(
+                IDENTITIES.KernelInventoryError, "aggregate byte bound"):
+            self.select(sources)
+        with self.assertRaisesRegex(IDENTITIES.KernelInventoryError, "record bound|visit bound"):
+            self.select(sources, budget=IDENTITIES._Budget(1))
+        for cfg in ("test", "not(test)"):
+            attributes = '#[cfg(' + cfg + ')]' + '#[path = "selected.rs"]'
+            with self.subTest(cfg=cfg), self.assertRaisesRegex(IDENTITIES.KernelInventoryError, "visit bound"):
+                self.select(self.sources(attributes + ' mod kernel;'), budget=IDENTITIES._Budget(1))
+            with self.assertRaisesRegex(IDENTITIES.KernelInventoryError, "byte bound"):
+                self.select(self.sources('#[cfg(' + cfg + ')] #[path' + ' ' * 8192 + '= "selected.rs"] mod kernel;'))
 
 
 load_tests = runpy.run_path(str(Path(__file__).with_name("_tutorial_kernel_function_cache_tests.py")))["make_loader"](FixtureDisplayTests, IDENTITIES)

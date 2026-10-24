@@ -339,6 +339,7 @@ pub(super) fn append_mutable_access_v1(
     let comparisons = std::mem::take(&mut scratch.comparisons);
     if resources.is_metered() {
         scratch.access = Some(GuardedRankedAccessV1 {
+            failure: GuardedAccessFailureV1::Trap,
             view,
             indices: Vec::new(),
             checked_success,
@@ -355,6 +356,7 @@ pub(super) fn append_mutable_access_v1(
         )?;
     } else {
         scratch.access = Some(GuardedRankedAccessV1 {
+            failure: GuardedAccessFailureV1::Trap,
             view,
             indices: vec![index],
             checked_success,

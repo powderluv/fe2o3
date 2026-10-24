@@ -244,7 +244,7 @@ impl<'a> SubgroupForwardingIndexV1<'a> {
             charge_uniformity_collection(work, 1)?;
             self.rows[index].target = target;
         }
-        self.resolve(work)
+        self.resolve(work)?.refine(context, work)
     }
 
     fn resolve(
@@ -297,21 +297,95 @@ impl<'a> SubgroupForwardingIndexV1<'a> {
 }
 
 impl ResolvedSubgroupForwardingV1<'_> {
+    fn refine(
+        mut self,
+        context: &Context,
+        work: &mut usize,
+    ) -> Result<Self, PlironTensorLayoutFindingV1> {
+        if self.0.rows.is_empty() {
+            return Ok(self);
+        }
+        loop {
+            let mut changed = false;
+            for index in 0..self.0.rows.len() {
+                charge_uniformity_collection(work, std::mem::size_of::<Value>() + 2)?;
+                let value = self.0.rows[index].value;
+                if !matches!(self.0.rows[index].state, SubgroupForwardingStateV1::Resolved(root) if root == value)
+                {
+                    continue;
+                }
+                let mut common = None;
+                let mut different = false;
+                for input in self.0.rows[index].inputs {
+                    let next = self.representative(*input, work)?;
+                    charge_uniformity_collection(work, 2 * std::mem::size_of::<Value>() + 2)?;
+                    // phi(a, self) forwards a; a self-only cycle has no anchor.
+                    if next == value {
+                        continue;
+                    }
+                    if common.is_some_and(|previous| previous != next) {
+                        different = true;
+                        break;
+                    }
+                    common = Some(next);
+                }
+                let Some(common) = common.filter(|_| !different) else {
+                    continue;
+                };
+                let expected = subgroup_forwarding_type_v1(context, value, work)?;
+                for input in self.0.rows[index].inputs {
+                    let actual = subgroup_forwarding_type_v1(context, *input, work)?;
+                    charge_uniformity_collection(work, 1)?;
+                    if actual != expected {
+                        return Err(forwarding_error_v1(
+                            "forwarding identity has unequal edge types",
+                        ));
+                    }
+                }
+                charge_uniformity_collection(work, 1)?;
+                self.0.rows[index].state = SubgroupForwardingStateV1::Resolved(common);
+                changed = true;
+            }
+            if !changed {
+                // Flatten the refined chains before the immutable query phase.
+                for index in 0..self.0.rows.len() {
+                    charge_uniformity_collection(work, 1)?;
+                    let root = self.representative(self.0.rows[index].value, work)?;
+                    charge_uniformity_collection(work, 1)?;
+                    self.0.rows[index].state = SubgroupForwardingStateV1::Resolved(root);
+                }
+                return Ok(self);
+            }
+        }
+    }
     fn representative(
         &self,
         value: Value,
         work: &mut usize,
     ) -> Result<Value, PlironTensorLayoutFindingV1> {
-        let Some(index) = self.0.lookup(value, work)? else {
-            return Ok(value);
-        };
-        charge_uniformity_collection(work, 1)?;
-        match self.0.rows[index].state {
-            SubgroupForwardingStateV1::Resolved(value) => Ok(value),
-            _ => Err(forwarding_error_v1(
-                "forwarding identity has an unresolved representative",
-            )),
+        let mut value = value;
+        for _ in 0..=self.0.rows.len() {
+            let Some(index) = self.0.lookup(value, work)? else {
+                return Ok(value);
+            };
+            charge_uniformity_collection(work, std::mem::size_of::<Value>() + 1)?;
+            match self.0.rows[index].state {
+                SubgroupForwardingStateV1::Resolved(next) => {
+                    if next == value {
+                        return Ok(value);
+                    }
+                    value = next;
+                }
+                _ => {
+                    return Err(forwarding_error_v1(
+                        "forwarding identity has an unresolved representative",
+                    ));
+                }
+            }
         }
+        Err(forwarding_error_v1(
+            "forwarding identity has a cyclic refined representative",
+        ))
     }
 
     fn inputs_equal(

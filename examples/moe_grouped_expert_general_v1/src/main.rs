@@ -1,15 +1,13 @@
 use std::io;
 
-use fe2o3_core::{
-    DeviceBuffer, GpuContext, KernelParams, LaunchConfig, launch_kernel_on_stream,
-};
+use fe2o3_core::{DeviceBuffer, GpuContext, KernelParams, LaunchConfig, launch_kernel_on_stream};
 use fe2o3_device::Bf16;
 use fe2o3_moe_grouped_expert_general_v1::reference::{
-    ReferenceLayoutV1, evaluate_reference_v1,
+    ReferenceLayoutV1, evaluate_reference_v1, validate_output_v1,
 };
 
 const HSACO_ENV: &str = "FE2O3_MOE_EXPERT_HSACO";
-const KERNEL: &str = "moe_grouped_expert_general_v1";
+const KERNEL: &str = fe2o3_moe_grouped_expert_general_v1::MOE_EXPERT_KERNEL_NAME_V1;
 
 fn invalid_input(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
@@ -20,6 +18,18 @@ fn checked_len(rows: u32, stride: u32, name: &'static str) -> Result<usize, io::
         .ok()
         .and_then(|rows| rows.checked_mul(stride as usize))
         .ok_or_else(|| invalid_input(name))
+}
+
+fn qualification_target_matches(requested: &str, observed: &str, wave: i32) -> bool {
+    matches!(requested, "gfx942" | "gfx950") && requested == observed && wave == 64
+}
+
+fn same_f32_bits(actual: &[f32], expected: &[f32]) -> bool {
+    actual.len() == expected.len()
+        && actual
+            .iter()
+            .zip(expected)
+            .all(|(a, b)| a.to_bits() == b.to_bits())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -70,9 +80,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let expert_bias = (0..bias_len)
         .map(|index| (index % 11) as f32 * 0.02 - 0.1)
         .collect::<Vec<_>>();
-    let initial_output = (0..output_len)
+    let mut initial_output = (0..output_len)
         .map(|index| 3000.0 + index as f32)
         .collect::<Vec<_>>();
+    initial_output.extend_from_slice(&[f32::from_bits(0x7f80_0001); 8]);
     let expected = evaluate_reference_v1(
         &routed_tokens,
         &expert_weights,
@@ -83,12 +94,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .map_err(invalid_input)?;
 
+    let requested = match std::env::var("FE2O3_MOE_EXPERT_TARGET") {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => "gfx942".into(),
+        Err(error) => return Err(error.into()),
+    };
+    if !matches!(requested.as_str(), "gfx942" | "gfx950") {
+        return Err(invalid_input("unsupported requested MoE qualification target").into());
+    }
     let context = GpuContext::new(0)?;
     let observed = context.observe_target()?;
-    if observed.target_id().processor() != "gfx942" || observed.hip_default_warp_size() != 64 {
+    if !qualification_target_matches(
+        &requested,
+        observed.target_id().processor(),
+        observed.hip_default_warp_size() as i32,
+    ) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "qualification requires a gfx942 wave64 device",
+            "qualification requires the requested gfx942/gfx950 wave64 device",
         )
         .into());
     }
@@ -102,7 +125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         io::Error::new(io::ErrorKind::NotFound, format!("{HSACO_ENV} is not set"))
     })?;
 
-    // SAFETY: the qualification runner compiles this exact symbol for gfx942. The argument
+    // SAFETY: the qualification runner compiles this exact symbol for the requested observed target. The argument
     // order and scalar widths mirror the compiler-emitted 120-byte explicit kernarg ABI, and
     // all allocations remain live through the synchronous stream completion.
     unsafe {
@@ -144,32 +167,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stream.synchronize()?;
     }
 
-    let actual = routed_output_device.to_host_vec(&stream)?;
-    let mut maximum_error = 0.0_f32;
-    for row in 0..layout.rows_padded as usize {
-        for column in 0..layout.output_stride as usize {
-            let index = row * layout.output_stride as usize + column;
-            if column < layout.output_columns as usize {
-                let error = (actual[index] - expected[index]).abs();
-                maximum_error = maximum_error.max(error);
-                let tolerance = 5.0e-3_f32.max(expected[index].abs() * 5.0e-3);
-                if error > tolerance {
-                    return Err(io::Error::other(format!(
-                        "MoE expert mismatch at ({row}, {column}): got {}, expected {}, tolerance {tolerance}",
-                        actual[index], expected[index]
-                    ))
-                    .into());
-                }
-            } else if actual[index].to_bits() != initial_output[index].to_bits() {
-                return Err(io::Error::other(format!(
-                    "MoE expert modified output padding at ({row}, {column})"
-                ))
-                .into());
-            }
-        }
+    if routed_tokens_device.to_host_vec(&stream)? != routed_tokens
+        || expert_weights_device.to_host_vec(&stream)? != expert_weights
+        || !same_f32_bits(&route_gates_device.to_host_vec(&stream)?, &route_gates)
+        || !same_f32_bits(&expert_bias_device.to_host_vec(&stream)?, &expert_bias)
+    {
+        return Err(io::Error::other("MoE modified immutable input buffers").into());
     }
+    let actual = routed_output_device.to_host_vec(&stream)?;
+    if actual.len() != initial_output.len()
+        || !same_f32_bits(&actual[output_len..], &initial_output[output_len..])
+    {
+        return Err(io::Error::other("MoE modified trailing output canaries").into());
+    }
+    let maximum_error = validate_output_v1(
+        &actual[..output_len],
+        &expected[..output_len],
+        &initial_output[..output_len],
+        layout,
+    )
+    .map_err(io::Error::other)?;
     println!(
-        "PASS {KERNEL}: expert {}, {}x{}x{}, {} workgroups, max_abs_error={maximum_error:.6}",
+        "PASS {KERNEL} target={requested}: expert {}, {}x{}x{}, {} workgroups, max_abs_error={maximum_error:.6}",
         layout.expert,
         layout.rows_padded,
         layout.output_columns,
@@ -177,4 +196,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (layout.rows_padded / 16) * layout.output_columns.div_ceil(16),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requested_target_must_be_supported_observed_and_wave64() {
+        for target in ["gfx942", "gfx950"] {
+            assert!(qualification_target_matches(target, target, 64));
+            assert!(!qualification_target_matches(target, target, 32));
+        }
+        assert!(!qualification_target_matches("gfx942", "gfx950", 64));
+        assert!(!qualification_target_matches("gfx950", "gfx942", 64));
+        assert!(!qualification_target_matches("gfx1100", "gfx1100", 64));
+        assert!(!qualification_target_matches("", "gfx950", 64));
+    }
+
+    #[test]
+    fn immutable_floats_and_nan_canaries_are_compared_bitwise_and_completely() {
+        let canary = f32::from_bits(0x7f80_0001);
+        assert!(same_f32_bits(&[canary, -0.0], &[canary, -0.0]));
+        assert!(!same_f32_bits(&[canary, -0.0], &[canary, 0.0]));
+        assert!(!same_f32_bits(&[canary], &[f32::from_bits(0x7f80_0002)]));
+        assert!(!same_f32_bits(&[canary], &[]));
+        assert!(!same_f32_bits(&[], &[canary]));
+        assert!(!same_f32_bits(&[1.0], &[2.0]));
+    }
 }

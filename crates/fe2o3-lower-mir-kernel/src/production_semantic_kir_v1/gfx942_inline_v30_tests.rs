@@ -176,7 +176,11 @@ impl IsaFixture {
         }
     }
 
-    fn lowering(&self, maximum_operations: usize) -> SemanticFunctionLoweringV1<'_, '_> {
+    fn lowering<'a, 'service, 'work>(
+        &'a self,
+        maximum_operations: usize,
+        budget: &'service mut ArgumentBudgetV1<'work>,
+    ) -> SemanticFunctionLoweringV1<'a, 'service> {
         let mut lowering = SemanticFunctionLoweringV1::new(
             &self.types,
             &self.callables,
@@ -193,6 +197,7 @@ impl IsaFixture {
             1,
             false,
             64,
+            budget,
         )
         .unwrap();
         // The constructor also meters source analysis with this limit. Isolate
@@ -206,7 +211,9 @@ impl IsaFixture {
 fn all_six_calls_preserve_exact_isa_operands_source_and_options() {
     for kind in ISA_KINDS {
         let fixture = IsaFixture::new(kind);
-        let mut lowering = fixture.lowering(1);
+        let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+        let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
+        let mut lowering = fixture.lowering(1, &mut lowering_budget);
         let mut target = BasicBlock::new(BlockId(0));
         lowering.begin_block(ISA_BLOCK, &mut target).unwrap();
         let terminator = lowering
@@ -290,7 +297,9 @@ fn isa_occurrence_caller_substitution_and_absence_are_rejected_before_emission()
         .unwrap(),
     );
     for call in [bare, wrong] {
-        let mut lowering = fixture.lowering(1);
+        let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+        let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
+        let mut lowering = fixture.lowering(1, &mut lowering_budget);
         let mut operations = Vec::new();
         assert!(
             lowering
@@ -319,7 +328,9 @@ fn isa_arity_scalar_contract_and_operation_budgets_are_exact() {
         )
         .unwrap()
         .with_inline_assembly_source_v30(source);
-        let mut lowering = fixture.lowering(1);
+        let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+        let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
+        let mut lowering = fixture.lowering(1, &mut lowering_budget);
         let mut operations = Vec::new();
         assert!(
             lowering
@@ -328,7 +339,9 @@ fn isa_arity_scalar_contract_and_operation_budgets_are_exact() {
         );
         assert!(operations.is_empty());
     }
-    let mut lowering = fixture.lowering(0);
+    let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+    let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
+    let mut lowering = fixture.lowering(0, &mut lowering_budget);
     let mut operations = Vec::new();
     assert!(matches!(
         lowering.lower_call(ISA_BLOCK, &fixture.call, &mut operations),
@@ -339,7 +352,9 @@ fn isa_arity_scalar_contract_and_operation_budgets_are_exact() {
         })
     ));
     assert!(operations.is_empty());
-    let mut lowering = fixture.lowering(1);
+    let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+    let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
+    let mut lowering = fixture.lowering(1, &mut lowering_budget);
     lowering.locals[1] = Some(SemanticValueBindingV1::Value {
         id: ValueId(0),
         ty: Type::Scalar(ScalarType::I32),

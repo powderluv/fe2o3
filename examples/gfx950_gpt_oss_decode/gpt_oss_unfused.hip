@@ -42,7 +42,8 @@ __device__ __forceinline__ void insert_candidate(
     float (&best)[4],
     unsigned (&ids)[4]) {
     for (int rank = 0; rank < 4; ++rank) {
-        const bool take = score > best[rank] || (score == best[rank] && id < ids[rank]);
+        const bool take = id != ~0u && (ids[rank] == ~0u ||
+            score > best[rank] || (score == best[rank] && id < ids[rank]));
         if (take) {
             const float old_score = best[rank];
             const unsigned old_id = ids[rank];

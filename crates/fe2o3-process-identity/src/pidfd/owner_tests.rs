@@ -135,6 +135,108 @@ fn received_owner_detects_descriptor_table_substitution() {
     );
 }
 
+fn nonblocking_pipe() -> (OwnedFd, OwnedFd) {
+    let mut raw = [-1; 2];
+    // SAFETY: the array is writable for two exclusively owned descriptors returned by pipe2.
+    assert_eq!(
+        unsafe { libc::pipe2(raw.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) },
+        0
+    );
+    // SAFETY: the successful syscall transferred both descriptors exclusively to this test.
+    let (reader, writer) = unsafe { (OwnedFd::from_raw_fd(raw[0]), OwnedFd::from_raw_fd(raw[1])) };
+    (reader, writer)
+}
+
+fn wait_for_pipe_eof(
+    reader: &OwnedFd,
+    timeout: Duration,
+    mut pending: impl FnMut(),
+) -> io::Result<()> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| io::Error::other("pipe EOF deadline overflow"))?;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "pipe EOF not observed",
+            ));
+        }
+        match rustix::io::read(reader, &mut [0]) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "data before pipe EOF",
+                ));
+            }
+            Err(error) => {
+                let error = io::Error::from(error);
+                if !matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) {
+                    return Err(error);
+                }
+            }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "pipe EOF not observed",
+            ));
+        }
+        // A concurrent fork can retain a CLOEXEC writer until its child execs.
+        // Only a zero-byte read proves closure; readiness or a timeout does not.
+        pending();
+        std::thread::sleep(remaining.min(Duration::from_millis(1)));
+    }
+}
+
+#[test]
+fn rejected_writer_eof_waits_for_a_delayed_duplicate() {
+    let (reader, writer) = nonblocking_pipe();
+    let mut duplicate = Some(rustix::io::fcntl_dupfd_cloexec(&writer, 0).unwrap());
+    assert!(ReceivedProcessPidfdV1::admit_received(writer, std::process::id()).is_err());
+    let mut observed_pending = false;
+    wait_for_pipe_eof(&reader, Duration::from_secs(5), || {
+        observed_pending = true;
+        drop(duplicate.take());
+    })
+    .unwrap();
+    assert!(observed_pending);
+    assert!(duplicate.is_none());
+}
+
+#[test]
+fn rejected_writer_eof_refuses_a_retained_duplicate() {
+    let (reader, writer) = nonblocking_pipe();
+    let duplicate = rustix::io::fcntl_dupfd_cloexec(&writer, 0).unwrap();
+    assert!(ReceivedProcessPidfdV1::admit_received(writer, std::process::id()).is_err());
+    assert_eq!(
+        wait_for_pipe_eof(&reader, Duration::from_millis(10), || {})
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::TimedOut,
+    );
+    drop(duplicate);
+    wait_for_pipe_eof(&reader, Duration::from_secs(5), || {}).unwrap();
+}
+
+#[test]
+fn rejected_writer_eof_refuses_unexpected_data() {
+    let (reader, writer) = nonblocking_pipe();
+    assert_eq!(rustix::io::write(&writer, b"x").unwrap(), 1);
+    assert!(ReceivedProcessPidfdV1::admit_received(writer, std::process::id()).is_err());
+    assert_eq!(
+        wait_for_pipe_eof(&reader, Duration::from_secs(5), || {})
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData,
+    );
+}
+
 #[test]
 fn rejected_received_descriptors_are_consumed_and_non_cloexec_is_rejected() {
     let pid = std::process::id();
@@ -146,20 +248,10 @@ fn rejected_received_descriptors_are_consumed_and_non_cloexec_is_rejected() {
             .kind(),
         PidfdObservationErrorKindV1::CloseOnExec
     );
-    let mut raw = [-1; 2];
-    // SAFETY: the array is writable for two exclusively owned descriptors returned by pipe2.
-    assert_eq!(
-        unsafe { libc::pipe2(raw.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) },
-        0
-    );
-    // SAFETY: the successful syscall transferred both descriptors exclusively to this test.
-    let (reader, writer) = unsafe { (OwnedFd::from_raw_fd(raw[0]), OwnedFd::from_raw_fd(raw[1])) };
+    let (reader, writer) = nonblocking_pipe();
     assert!(ReceivedProcessPidfdV1::admit_received(writer, pid).is_err());
-    assert_eq!(
-        rustix::io::read(&reader, &mut [0; 1]).unwrap(),
-        0,
-        "rejected consuming admission must close the original pipe writer"
-    );
+    wait_for_pipe_eof(&reader, Duration::from_secs(5), || {})
+        .expect("rejected consuming admission must close the original pipe writer");
 }
 
 #[test]

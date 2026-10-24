@@ -231,7 +231,13 @@ impl BoundsEdgeTransportV1<'_> {
                 budget.work(1)?;
                 let (fact, guard) = self.pull_back(obligation, edge, budget)?;
                 budget.work(BOUNDS_TRANSPORT_ROW_ITEMS_V1)?;
-                if guard == Some(fact)
+                if guard.is_some_and(|guard| {
+                    guard.lhs == fact.lhs
+                        && (guard.rhs == fact.rhs
+                            || matches!((guard.rhs, fact.rhs),
+                                (IndexExpr::Constant(upper), IndexExpr::Constant(extent))
+                                    if upper <= extent))
+                })
                     || matches!((fact.lhs, fact.rhs), (IndexExpr::Constant(a), IndexExpr::Constant(b)) if a < b)
                 {
                     continue;

@@ -3,6 +3,16 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)
+if [[ ${FE2O3_EXAMPLE_COMPILE_ONLY:-0} != 0 ]]; then
+    printf 'unfused HIP comparator is runtime-only; compile-only is unsupported\n' >&2
+    exit 2
+fi
+GPU=${ROCR_VISIBLE_DEVICES:-}
+if [[ -z $GPU || ! $GPU =~ ^([0-9]+|GPU-[[:xdigit:]]{16})$ ]]; then
+    printf 'GPT-OSS runtime requires one explicit ROCR_VISIBLE_DEVICES UUID or ordinal\n' >&2
+    exit 2
+fi
+unset HIP_VISIBLE_DEVICES
 BUILD_DIR=$SCRIPT_DIR/target/unfused
 BUNDLE=$BUILD_DIR/gpt_oss_unfused.bundle
 HSACO=$BUILD_DIR/gpt_oss_unfused.hsaco
@@ -57,7 +67,7 @@ done
 
 export PATH=${CARGO_HOME:-/home/harmenon/.cargo}/bin:$PATH
 unset HIP_VISIBLE_DEVICES
-export ROCR_VISIBLE_DEVICES=${ROCR_VISIBLE_DEVICES:-6}
+export ROCR_VISIBLE_DEVICES=$GPU
 export FE2O3_RUN_GFX950_ADVANCED_HARDWARE=1
 export FE2O3_GFX950_ADVANCED_HSACO=$HSACO
 export FE2O3_GFX950_ADVANCED_SHA256=$($SHA256SUM "$HSACO" | cut -d " " -f 1)
@@ -68,9 +78,14 @@ export FE2O3_GFX950_ADVANCED_SOURCE_COMMIT=$($GIT -C "$ROOT" rev-parse --verify 
 export FE2O3_GFX950_ADVANCED_SOURCE_TREE=$($GIT -C "$ROOT" rev-parse --verify 'HEAD^{tree}')
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 
-rustup run nightly-2026-04-03 cargo test --locked \
-    --manifest-path "$ROOT/Cargo.toml" \
-    -p fe2o3-hsa-runtime --features hardware-test-hooks \
-    --test gfx950_advanced_hardware \
-    gfx950_gpt_oss_unfused_hip_matches_cpu_reference \
-    -- --ignored --exact --nocapture
+TEST=gfx950_gpt_oss_unfused_hip_matches_cpu_reference
+TEST_ARGS=(test --locked --manifest-path "$ROOT/Cargo.toml"
+    -p fe2o3-hsa-runtime --features hardware-test-hooks
+    --test gfx950_advanced_hardware "$TEST")
+TEST_LIST=$(rustup run nightly-2026-04-03 cargo "${TEST_ARGS[@]}" -- --ignored --exact --list)
+if [[ $(grep -Fxc -- "$TEST: test" <<< "$TEST_LIST" || true) -ne 1 \
+    || $(grep -Ec -- ': test$' <<< "$TEST_LIST" || true) -ne 1 ]]; then
+    printf 'hardware selector discovery requires exactly one test: %s\n%s\n' "$TEST" "$TEST_LIST" >&2
+    exit 1
+fi
+rustup run nightly-2026-04-03 cargo "${TEST_ARGS[@]}" -- --ignored --exact --nocapture

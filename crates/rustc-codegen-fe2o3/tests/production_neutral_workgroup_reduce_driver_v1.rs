@@ -46,6 +46,15 @@ fn ordinary_row_affine_source_matches_oracle_and_replay() {
     row_affine_source_matches_oracle_and_replay();
 }
 
+#[test]
+#[ignore = "requires the pinned nightly rust-src component and AMD targets"]
+fn ordinary_row_affine_tile_source_matches_oracle_and_replay() {
+    row_affine_variant_matches_oracle_and_replay(
+        "row-affine-u32-tile-kernel",
+        "kernel_row_affine_u32_tile.rs",
+    );
+}
+
 #[derive(Clone, Copy)]
 struct ScanCase {
     feature: &'static str,

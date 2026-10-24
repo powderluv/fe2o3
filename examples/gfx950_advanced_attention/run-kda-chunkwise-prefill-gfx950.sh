@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-exec "$SCRIPT_DIR/run-gfx950.sh" kernel-kda-prefill
+if [[ $# -gt 1 ]]; then
+    printf 'usage: %s [tile|simt]\n' "$0" >&2
+    exit 2
+fi
+if [[ $# -eq 1 ]]; then
+    case "$1" in
+        tile|simt) export FE2O3_GFX950_ADVANCED_MODE=$1 ;;
+        *) printf 'usage: %s [tile|simt]\n' "$0" >&2; exit 2 ;;
+    esac
+fi
+exec "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/run-gfx950.sh" kernel-kda-prefill

@@ -913,6 +913,7 @@ mod root_guarded_access_preparation_controls {
             _ => None,
         };
         let access = GuardedRankedAccessV1 {
+            failure: GuardedAccessFailureV1::Trap,
             view,
             indices: vec![index],
             checked_success,

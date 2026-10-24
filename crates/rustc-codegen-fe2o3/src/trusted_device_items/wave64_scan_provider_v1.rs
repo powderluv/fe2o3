@@ -118,7 +118,7 @@ pub(crate) fn is_authenticated_gfx942_wave64_scan_instance_v1(
     instance: Instance<'_>,
     expected_target: &str,
 ) -> bool {
-    if expected_target != "gfx942:xnack-"
+    if !matches!(expected_target, "gfx942:xnack-" | "gfx950:xnack-")
         || !matches!(instance.def, InstanceKind::Item(_))
         || instance.args.len() != 1
     {

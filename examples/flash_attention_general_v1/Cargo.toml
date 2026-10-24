@@ -11,6 +11,11 @@ publish = false
 members = []
 resolver = "3"
 
+[features]
+default = ["kernel-tile-flash-attention"]
+kernel-tile-flash-attention = []
+kernel-simt-flash-attention = []
+
 [dependencies]
 fe2o3-device = { path = "../../crates/fe2o3-device" }
 
@@ -25,3 +30,6 @@ path = "src/main.rs"
 [lib]
 name = "fe2o3_flash_attention_general_v1"
 path = "src/lib.rs"
+
+[profile.test]
+debug = 0

@@ -29,10 +29,38 @@ def load_validator():
 
 
 def recovered_scope(manifest):
+    added_gpt_fixtures = {
+        f"gfx950-gpt-oss-{component}-{mode}"
+        for component in (
+            "decode", "held-fragments", "interleaved-stores", "materialized-attention",
+            "materialized-expert", "materialized-router", "pipelined-attention",
+            "scalar-attention", "serial-router",
+        )
+        for mode in ("simt", "tile")
+    }
     added_fixtures = {
+        'gfx950-moe-expert-rank-simt', 'gfx950-moe-route-tile', 'gfx950-combine-expert-ranks-tile', 'gfx950-speculative-transaction-tile', 'gfx950-qwen-ngram-gather-tile', 'gfx950-stage-gradient-shard-tile', 'gfx950-muon-update-tile',
         "gfx942-scalar-gemm", "gfx950-gpt-oss-pipelined-attention",
         "gfx950-gpt-oss-scalar-attention",
-    }
+        "gfx950-row-softmax-simt", "gfx950-row-softmax-tile",
+        "gfx950-scalar-gemm-simt", "gfx950-scalar-gemm-tile",
+        "gfx950-kda-decode-simt",
+        "gfx950-kda-decode-tile",
+        "gfx950-kda-prefill-simt",
+        "gfx950-kda-prefill-tile",
+        "gfx950-content-sparse-attention-simt",
+        "gfx950-content-sparse-attention-tile",
+        "gfx950-deepseek-sparse-attention-simt",
+        "gfx950-deepseek-sparse-attention-tile",
+        "gfx950-compressed-hybrid-attention-simt",
+        "gfx950-compressed-hybrid-attention-tile",
+        "gfx950-attnres-aggregate-simt",
+        "gfx950-attnres-aggregate-tile",
+        "gfx950-four-branch-residual-simt",
+        "gfx950-four-branch-residual-tile",
+        "gfx950-mhc-sinkhorn-mix-simt",
+        "gfx950-mhc-sinkhorn-mix-tile",
+    } | added_gpt_fixtures
     fixtures = []
     for original in manifest["compilerFixtures"]:
         if original["fixtureId"] in added_fixtures:
@@ -52,14 +80,68 @@ def recovered_scope(manifest):
         entry["compilerFixtureIds"] = [
             value for value in entry["compilerFixtureIds"] if value not in added_fixtures
         ]
+    for entry in entries:
+        if entry["lessonId"] == "gfx950-attnres-gr-mhc":
+            entry["sourcePaths"] = [path for path in entry["sourcePaths"]
+                                    if path != "examples/gfx950_advanced_attention/src/kernel_tile_mixing.rs"]
+    for entry in entries:
+        entry["sourcePaths"] = [
+            path for path in entry["sourcePaths"] if path not in {
+                "examples/gfx950_advanced_attention/src/kernel_simt_content_sparse.rs",
+                "examples/gfx950_advanced_attention/src/kernel_simt_compressed_hybrid.rs",
+            }
+        ]
+    added_paths = {
+        "gfx950-gpt-oss-120b-megakernel": {
+            "examples/gfx950_gpt_oss_decode/src/" + name
+            for name in (
+                "kernel_held_fragments.rs", "kernel_held_fragments_simt.rs",
+                "kernel_held_fragments_tile.rs", "kernel_interleaved_stores.rs",
+                "kernel_interleaved_stores_simt.rs", "kernel_interleaved_stores_tile.rs",
+                "kernel_pipelined_attention.rs", "kernel_pipelined_attention_simt.rs",
+                "kernel_pipelined_attention_tile.rs", "kernel_scalar_attention.rs",
+                "kernel_scalar_attention_simt.rs", "kernel_simt.rs",
+                "kernel_simt_components.rs", "kernel_tile.rs", "kernel_tile_components.rs",
+            )
+        },
+        "gfx950-advanced-moe": {
+            "examples/gfx950_advanced_systems/src/" + name
+            for name in (
+                "kernel_simt_moe_expert_rank.rs", "kernel_tile_moe_route.rs",
+                "kernel_tile_combine_expert_ranks.rs", "kernel_tile_stage_gradient_shard.rs",
+            )
+        },
+        "gfx950-muon-optimizer": {
+            "examples/gfx950_advanced_systems/src/kernel_tile_muon_update.rs",
+        },
+        "gfx950-ngram-embedding-gather": {
+            "examples/gfx950_advanced_systems/src/kernel_tile_qwen_ngram_gather.rs",
+        },
+    }
+    for entry in entries:
+        entry["sourcePaths"] = [path for path in entry["sourcePaths"]
+                                if path not in added_paths.get(entry["lessonId"], set())]
     suites = []
     for original in manifest["qualification"]["suites"]:
         if original["suiteId"] in {
+            'semantic-simulation-gfx950-moe-expert-rank-simt', 'semantic-simulation-gfx950-moe-route-tile', 'semantic-simulation-gfx950-combine-expert-ranks-tile', 'semantic-simulation-gfx950-speculative-transaction-tile', 'semantic-simulation-gfx950-qwen-ngram-gather-tile', 'semantic-simulation-gfx950-stage-gradient-shard-tile', 'semantic-simulation-gfx950-muon-update-tile',
             "cpu-reference-scalar-gemm", "semantic-simulation-scalar-gemm",
             "semantic-simulation-gfx950-gpt-oss-pipelined-attention",
             "semantic-simulation-gfx950-gpt-oss-scalar-attention",
             "cpu-reference-tiled-gemm-paired-default",
             "cpu-reference-tiled-gemm-paired-simt",
+            "cpu-reference-gfx950-row-softmax-simt", "cpu-reference-gfx950-row-softmax-tile",
+            "cpu-reference-gfx950-scalar-gemm-simt", "cpu-reference-gfx950-scalar-gemm-tile",
+            "semantic-simulation-gfx950-row-softmax-simt", "semantic-simulation-gfx950-row-softmax-tile",
+            "semantic-simulation-gfx950-scalar-gemm-simt", "semantic-simulation-gfx950-scalar-gemm-tile",
+            "semantic-simulation-gfx950-attnres-aggregate-simt",
+            "semantic-simulation-gfx950-attnres-aggregate-tile",
+            "semantic-simulation-gfx950-four-branch-residual-simt",
+            "semantic-simulation-gfx950-four-branch-residual-tile",
+            "semantic-simulation-gfx950-mhc-sinkhorn-mix-simt",
+            "semantic-simulation-gfx950-mhc-sinkhorn-mix-tile",
+        } or original["suiteId"] in {"semantic-simulation-" + fixture for fixture in added_fixtures} or original["suiteId"] in {
+            "cpu-reference-" + fixture for fixture in added_gpt_fixtures
         }:
             continue
         suite = {key: copy.deepcopy(original[key]) for key in ("suiteId", "gate", "command", "coverage")}
@@ -114,13 +196,66 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
             Counter(call.args[1] for call in walk.call_args_list),
             Counter({package: 1 for package in expected_packages}),
         )
-        self.assertEqual(len(fixtures), 50)
+        self.assertEqual(len(fixtures), 95)
         self.assertEqual(sum(f["target"] == "gfx942" for f in fixtures.values()), 11)
-        self.assertEqual(sum(f["target"] == "gfx950" for f in fixtures.values()), 39)
+        self.assertEqual(sum(f["target"] == "gfx950" for f in fixtures.values()), 84)
         self.assertEqual(len(self.manifest["entries"]), 25)
-        self.assertEqual(len(self.manifest["qualification"]["suites"]), 64)
+        self.assertEqual(len(self.manifest["qualification"]["suites"]), 131)
         self.assertTrue(all(e["classification"] == "compiler-produced" for e in self.manifest["entries"]))
         self.assertTrue(all(s["availability"] == "pending" for s in self.manifest["qualification"]["suites"]))
+
+    def test_f32_gfx950_counterparts_match_real_runner_modes(self):
+        fixtures = {row["fixtureId"]: row for row in self.manifest["compilerFixtures"]}
+        suites = {row["suiteId"]: row for row in self.manifest["qualification"]["suites"]}
+        for family, package in (("row-softmax", "row_softmax_general_v1"),
+                                ("scalar-gemm", "scalar_gemm_v1")):
+            for mode in ("simt", "tile"):
+                fixture_id = f"gfx950-{family}-{mode}"
+                with self.subTest(fixture=fixture_id):
+                    fixture = fixtures[fixture_id]
+                    features = ["gfx950-target", "qualification-legacy-hip"]
+                    if mode == "tile":
+                        features.append("structured-tile")
+                    inputs = fixture["compilerInput"]
+                    self.assertEqual(fixture["target"], "gfx950")
+                    self.assertEqual(fixture["matrix"]["runnerArguments"], [mode])
+                    self.assertEqual(fixture["matrix"]["runnerPath"], f"examples/{package}/run-gfx950.sh")
+                    self.assertEqual(fixture["matrix"]["artifactName"], package + ".hsaco")
+                    self.assertEqual(inputs["features"], features)
+                    self.assertIs(inputs["defaultFeatures"], False)
+                    leaf = "kernel_tile.rs" if mode == "tile" else "kernel.rs"
+                    self.assertEqual(inputs["sourcePaths"], [f"examples/{package}/src/{leaf}"])
+                    runner = (ROOT / fixture["matrix"]["runnerPath"]).read_text()
+                    runner_features = ["gfx950-target"]
+                    if mode == "tile":
+                        runner_features.append("structured-tile")
+                    runner_features.append("qualification-legacy-hip")
+                    self.assertIn(f"{mode}) FEATURES=" + ",".join(runner_features), runner)
+                    cpu = suites["cpu-reference-" + fixture_id]
+                    self.assertEqual(cpu["command"]["arguments"],
+                                     [inputs["packageManifest"], "lib", "--no-default-features",
+                                      "--features", ",".join(features)])
+
+    def test_f32_gfx950_counterparts_do_not_promote_retained_evidence(self):
+        for fixture in self.manifest["compilerFixtures"]:
+            if fixture["fixtureId"] not in {
+                "gfx950-row-softmax-simt", "gfx950-row-softmax-tile",
+                "gfx950-scalar-gemm-simt", "gfx950-scalar-gemm-tile",
+            }:
+                continue
+            with self.subTest(fixture=fixture["fixtureId"]):
+                simulation = fixture["simulation"]
+                self.assertEqual(simulation["status"], "pending-design")
+                self.assertEqual((simulation["bundleVersion"], simulation["canonicalKirVersion"]), (7, 12))
+                for field in ("requestSha256", "requestBytes", "expectationSha256", "expectationBytes"):
+                    self.assertIsNone(simulation[field])
+                kernel_id = f"fixture:{fixture['fixtureId']}:{fixture['compilerInput']['kernelSymbols'][0]}"
+                kernel = next(row for row in self.manifest["kernelInventory"]["kernels"]
+                              if row["kernelId"] == kernel_id)
+                self.assertEqual([row["kind"] for row in kernel["variants"]], ["simt", "tile"])
+                self.assertTrue(all(row["status"] == "pending" and row["source"] is None
+                                    for row in kernel["variants"]))
+        self.assertEqual(self.manifest["qualification"]["status"], "pending")
 
     def test_original_47_source_feature_symbol_and_semantic_obligations_are_preserved(self):
         payload = json.dumps(
@@ -160,12 +295,113 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
             ["cpu-semantic-simulation", "reductions-scans", "gemm-tiling", "softmax-invariant"],
         )
         payload = json.dumps(curriculum, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
-        self.assertEqual(hashlib.sha256(payload).hexdigest(), "8eed77833d36817e5b01530cb316cc0fa9702a2d6bd5ae3eb4e45506ad047e48")
+        self.assertEqual(hashlib.sha256(payload).hexdigest(), "ceaeacd49df67f52ea62446779c3b2cd4365f311361c646df5dd0ee497000052")
+
+    def test_public_grouped_expert_moe_display_keeps_physical_identity_and_history(self):
+        lesson = self.curriculum_lesson("moe-expert-compute")
+        tab = lesson["codeTabs"][0]
+        source = (ROOT / "examples/moe_grouped_expert_general_v1/src/kernel.rs").read_bytes()
+        self.assertEqual(len(source), 11320)
+        self.assertEqual(tab["sourceCommit"], "d558aa97758cf553c956c5ce92178eac96bd2461")
+        self.assertEqual(tab["displayedUtf8Bytes"], len(source))
+        self.assertEqual(tab["displayedSha256"], hashlib.sha256(source).hexdigest())
+        self.assertEqual(tab["sourceSha256"], tab["displayedSha256"])
+        self.assertEqual(tab["evidenceId"], "grouped-expert-moe-current-source-v1")
+        self.assertIsNone(tab["sourceItem"])
+        self.assertEqual(tab["sourceItemStatus"], "pending")
+        rows = [r for r in self.manifest["kernelInventory"]["displayItems"]
+                if r["lessonId"] == "moe-expert-compute" and r["tabOrdinal"] == 0]
+        actual = self.validator.ordinary_rust_function_items(source.decode("utf-8"))
+        self.assertEqual([(r["kernelSymbol"], r["functionUtf8Offset"]) for r in rows],
+                         [(r["kernelSymbol"], r["functionUtf8Offset"]) for r in actual])
+        self.assertEqual(len(rows), 10)
+        kernel = next(r for r in rows if r["classification"] == "kernel")
+        self.assertEqual(kernel["bindingStatus"], "fixture-source-contract")
+        self.assertEqual(kernel["kernelIds"],
+                         ["fixture:gfx942-grouped-expert-moe:moe_grouped_expert_general_v1"])
+        self.assertTrue(all(v["status"] == "pending" and v["sourceItems"] == []
+                            for v in lesson["variants"]))
+        self.assertEqual(lesson["codeTabs"][3]["sourceCommit"],
+                         "308d8fa00fa41e098b2a1a47bbfea1bc29735464")
+        self.assertEqual(lesson["codeTabs"][4]["sourceCommit"],
+                         "af0fd523e3b774377a9c5192cf0511e34fa19735")
+
+    def test_public_grouped_expert_moe_rejects_its_old_physical_kernel_offset(self):
+        kernel = next(r for r in self.manifest["kernelInventory"]["displayItems"]
+                      if r["lessonId"] == "moe-expert-compute" and r["classification"] == "kernel")
+        self.assertEqual(kernel["functionUtf8Offset"], 1806)
+        kernel["functionUtf8Offset"] = 1209
+        self.reject("fixture display differs from the exact current source occurrence")
+
+    def test_current_flash_display_preserves_every_physical_function_and_history(self):
+        lesson = self.curriculum_lesson("flash-attention")
+        tab = lesson["codeTabs"][0]
+        source = (ROOT / "examples/flash_attention_general_v1/src/kernel.rs").read_bytes()
+        self.assertEqual(tab["sourceCommit"], "055ffa8dccc70fccc7675721f98f2b096abd68e7")
+        self.assertEqual(tab["displayedUtf8Bytes"], 34804)
+        self.assertEqual(tab["sourceSha256"], hashlib.sha256(source).hexdigest())
+        self.assertEqual(tab["displayedSha256"], tab["sourceSha256"])
+        self.assertEqual(tab["evidenceId"], "flash-attention-current-source-v1")
+        self.assertEqual(tab["sourceItemStatus"], "pending")
+        self.assertIsNone(tab["sourceItem"])
+        rows = [row for row in self.manifest["kernelInventory"]["displayItems"]
+                if row["lessonId"] == "flash-attention" and row["tabOrdinal"] == 0]
+        actual = self.validator.ordinary_rust_function_items(source.decode())
+        self.assertEqual([(row["kernelSymbol"], row["functionUtf8Offset"]) for row in rows],
+                         [(row["kernelSymbol"], row["functionUtf8Offset"]) for row in actual])
+        self.assertEqual(len(rows), 23)
+        kernel = next(row for row in rows if row["classification"] == "kernel")
+        self.assertEqual(kernel["functionUtf8Offset"], 3320)
+        self.assertEqual(kernel["bindingStatus"], "fixture-source-contract")
+        self.assertTrue(all(variant["status"] == "pending" and not variant["sourceItems"]
+                            for variant in lesson["variants"]))
+        self.assertEqual(lesson["codeTabs"][1]["sourceCommit"], "9006001157e2c3062e44088634e467b0f8963ee0")
+        kernel["functionUtf8Offset"] = 1688
+        self.reject("fixture display differs from the exact current source occurrence")
+
+    def test_current_scalar_display_registers_all_helpers_without_kernel_authority(self):
+        lesson = self.curriculum_lesson("gfx950-gpt-oss-120b-megakernel")
+        tab = lesson["codeTabs"][6]
+        source = (ROOT / tab["sourcePath"]).read_text()
+        rows = [row for row in self.manifest["kernelInventory"]["displayItems"]
+                if row["lessonId"] == lesson["lessonId"] and row["tabOrdinal"] == 6]
+        actual = self.validator.ordinary_rust_function_items(source)
+        self.assertEqual([(row["kernelSymbol"], row["functionUtf8Offset"]) for row in rows],
+                         [(row["kernelSymbol"], row["functionUtf8Offset"]) for row in actual])
+        self.assertEqual(len(rows), 3)
+        helpers = [row for row in rows if row["classification"] == "helper"]
+        self.assertEqual([row["functionUtf8Offset"] for row in helpers], [1074, 24885])
+        self.assertTrue(all(row["bindingStatus"] == "not-applicable" and not row["kernelIds"]
+                            and not row["negativeCases"] for row in helpers))
+
+    def test_current_public_gemm_display_matches_source_without_transferring_receipts(self):
+        lesson = self.curriculum_lesson("gemm-tiling")
+        tab = lesson["codeTabs"][0]
+        source = (ROOT / "examples/tiled_gemm_general_v1/src/kernel.rs").read_bytes()
+        self.assertEqual(tab["sourceCommit"], "0e0963df4f230bf728a7b4605677c0ff09624adf")
+        self.assertEqual(tab["displayedUtf8Bytes"], len(source))
+        self.assertEqual(tab["displayedSha256"], hashlib.sha256(source).hexdigest())
+        self.assertEqual(tab["sourceSha256"], tab["displayedSha256"])
+        self.assertEqual(tab["evidenceId"], "tiled-gemm-current-source-v1")
+        self.assertEqual(tab["sourceItemStatus"], "pending")
+        self.assertIsNone(tab["sourceItem"])
+        rows = [row for row in self.manifest["kernelInventory"]["displayItems"]
+                if row["lessonId"] == "gemm-tiling" and row["tabOrdinal"] == 0]
+        actual = self.validator.ordinary_rust_function_items(source.decode("utf-8"))
+        self.assertEqual([(row["kernelSymbol"], row["functionUtf8Offset"]) for row in rows],
+                         [(row["kernelSymbol"], row["functionUtf8Offset"]) for row in actual])
+        kernel = next(row for row in rows if row["classification"] == "kernel")
+        self.assertEqual(kernel["bindingStatus"], "pending")
+        self.assertEqual(kernel["kernelIds"], ["fixture:gfx942-tiled-gemm:tiled_gemm_general_v1"])
+        self.assertTrue(all(variant["status"] == "pending" and variant["sourceItems"] == []
+                            for variant in lesson["variants"]))
+        self.assertEqual(lesson["codeTabs"][5]["sourceCommit"],
+                         "9006001157e2c3062e44088634e467b0f8963ee0")
 
     def test_legacy_manifests_remain_accepted_but_required_curriculum_cannot_be_omitted(self):
         self.manifest.pop("kernelInventory", None)
         del self.manifest["curriculum"]
-        self.assertEqual(len(self.validator.validate_manifest(ROOT, self.manifest)), 50)
+        self.assertEqual(len(self.validator.validate_manifest(ROOT, self.manifest)), 95)
         with tempfile.TemporaryDirectory(prefix="fe2o3-curriculum-") as temporary:
             path = Path(temporary) / "legacy.json"
             path.write_text(json.dumps(self.manifest), encoding="utf-8")
@@ -425,7 +661,7 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
 
 
     def test_matrix_records_are_stable_and_do_not_execute(self):
-        for target, count in (("gfx942", 11), ("gfx950", 39)):
+        for target, count in (("gfx942", 11), ("gfx950", 84)):
             result = subprocess.run(
                 [sys.executable, str(CHECKER), "--emit-matrix", target],
                 check=True, text=True, capture_output=True,
@@ -458,11 +694,11 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
         self.assertEqual(report["schema"], "fe2o3-tutorial-kernel-pair-obligations-v2")
         identities = report["kernelInventory"]
         for counts in (report, identities):
-            self.assertEqual(counts["knownVariantObligationCount"], 123)
-            self.assertEqual(counts["pendingVariantCount"], 101)
-            self.assertEqual(counts["unregisteredDisplayItemCount"], 5)
+            self.assertEqual(counts["knownVariantObligationCount"], 203)
+            self.assertEqual(counts["pendingVariantCount"], 127)
+            self.assertEqual(counts["unregisteredDisplayItemCount"], 6)
         self.assertIs(identities["runtimeCensusValidated"], False)
-        self.assertEqual(identities["knownKernelIdentityCount"], 61)
+        self.assertEqual(identities["knownKernelIdentityCount"], 101)
         self.assertEqual(identities["negativeCaseCount"], 3)
         self.assertTrue(identities["unresolvedBindings"])
         self.assertIs(report["qualified"], False)
@@ -470,7 +706,7 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
         self.assertIsNone(report["requiredPairCount"])
         self.assertEqual(report["qualifiedPairCount"], 0)
         self.assertEqual(report["requiredModes"], ["simt", "tile"])
-        self.assertEqual(len(report["fixtureSelections"]), 50)
+        self.assertEqual(len(report["fixtureSelections"]), 95)
         self.assertEqual(len(report["sourceDriverCases"]), 14)
         self.assertEqual(len(report["displayObservations"]), 58)
         self.assertEqual(sum(row["sourceItemStatus"] == "pending"
@@ -479,8 +715,8 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
                             for row in report["displayObservations"]))
         self.assertEqual(report["stageStatus"], "not-evaluated")
         self.assertEqual(report["variantBindingStatus"], "partial")
-        self.assertEqual(report["sourceBoundVariantCount"], 22)
-        self.assertEqual(report["sourceBoundPairCount"], 0)
+        self.assertEqual(report["sourceBoundVariantCount"], 76)
+        self.assertEqual(report["sourceBoundPairCount"], 31)
         self.assertEqual(report["productionContract"], self.original["productionContract"])
 
     def kernel_pair_report(self, inventory=None):
@@ -640,44 +876,98 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
             inventory, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
         ).encode("ascii")
         self.assertEqual(hashlib.sha256(payload).hexdigest(),
-                         "cc3f6f6adcb8aa8b675b6c916c8c4d51f18494965f6fd502b0f30f15938e73c6")
-        self.assertEqual(len(inventory["kernels"]), 61)
+                          "222be9a48168d8b0db745b782798e4a3e1fa2a5a173d05b01816e5a79e6bd15e")
+        self.assertEqual(len(inventory["kernels"]), 101)
         self.assertEqual(Counter(row["classification"] for row in inventory["displayItems"]),
-                         {"kernel": 80, "required-negative": 3, "conceptual": 26, "helper": 18})
+                         {"kernel": 81, "required-negative": 3, "conceptual": 26, "helper": 45})
         self.assertEqual(Counter(row["bindingStatus"] for row in inventory["displayItems"]),
-                         {"pending": 6, "source-driver-contract": 14, "fixture-source-contract": 63,
-                          "not-applicable": 44})
+                         {"pending": 8, "source-driver-contract": 14, "fixture-source-contract": 62,
+                          "not-applicable": 71})
         self.assertEqual([row["caseOrdinal"] for row in inventory["negativeCases"]], [6, 7, 8])
         bound = [(row["kernelId"], variant["kind"])
                  for row in inventory["kernels"] for variant in row["variants"]
                  if variant["status"] == "source-bound"]
-        self.assertEqual(bound, [
-            ("fixture:gfx942-fill-simulation:fill", "simt"),
-            ("fixture:gfx942-moe-top2:moe_top2_route_f32_t8_e4_k2_c4_v1", "simt"),
-            ("fixture:gfx942-scalar-gemm:scalar_gemm_v1", "simt"),
-            ("fixture:gfx942-typed-vecadd-source:vecadd", "simt"),
-            ("fixture:gfx942-wave64-collectives:wave64_collectives_v1", "simt"),
-            ("fixture:gfx942-workgroup-collectives:lds_publish_read_reduce_i32_v1", "simt"),
-            ("fixture:gfx950-attnres-aggregate-explicit-reuse:gfx950_attnres_aggregate", "simt"),
-            ("fixture:gfx950-attnres-aggregate:gfx950_attnres_aggregate", "simt"),
-            ("fixture:gfx950-compressed-hybrid-attention-division-baseline:gfx950_compressed_hybrid_attention", "simt"),
-            ("fixture:gfx950-compressed-hybrid-attention:gfx950_compressed_hybrid_attention", "simt"),
-            ("fixture:gfx950-content-sparse-attention-reciprocal-reuse:gfx950_content_sparse_attention", "simt"),
-            ("fixture:gfx950-content-sparse-attention:gfx950_content_sparse_attention", "simt"),
-            ("fixture:gfx950-deepseek-sparse-attention:gfx950_deepseek_sparse_attention", "simt"),
-            ("fixture:gfx950-four-branch-residual-explicit:gfx950_four_branch_residual", "simt"),
-            ("fixture:gfx950-four-branch-residual:gfx950_four_branch_residual", "simt"),
-            ("fixture:gfx950-kda-decode-baseline:gfx950_kda_decode", "simt"),
-            ("fixture:gfx950-kda-decode:gfx950_kda_decode", "simt"),
-            ("fixture:gfx950-kda-prefill-baseline:gfx950_kda_chunkwise_prefill", "simt"),
-            ("fixture:gfx950-kda-prefill:gfx950_kda_chunkwise_prefill", "simt"),
-            ("fixture:gfx950-mhc-sinkhorn-mix-scalar:gfx950_mhc_sinkhorn_mix", "simt"),
-            ("fixture:gfx950-mhc-sinkhorn-mix:gfx950_mhc_sinkhorn_mix", "simt"),
-            ("source-driver:cpu-semantic-simulation:6:row_affine_sum_u32_v1", "simt"),
-        ])
+        self.assertEqual(bound, [('fixture:gfx942-fill-simulation:fill', 'simt'),
+         ('fixture:gfx942-moe-top2:moe_top2_route_f32_t8_e4_k2_c4_v1', 'simt'),
+         ('fixture:gfx942-scalar-gemm:scalar_gemm_v1', 'simt'),
+         ('fixture:gfx942-typed-vecadd-source:vecadd', 'simt'),
+         ('fixture:gfx942-wave64-collectives:wave64_collectives_v1', 'simt'),
+         ('fixture:gfx942-workgroup-collectives:lds_publish_read_reduce_i32_v1', 'simt'),
+         ('fixture:gfx950-attnres-aggregate-explicit-reuse:gfx950_attnres_aggregate', 'simt'),
+         ('fixture:gfx950-attnres-aggregate:gfx950_attnres_aggregate', 'simt'),
+         ('fixture:gfx950-attnres-aggregate:gfx950_attnres_aggregate', 'tile'),
+         ('fixture:gfx950-combine-expert-ranks:gfx950_combine_expert_ranks_v1', 'simt'),
+         ('fixture:gfx950-combine-expert-ranks:gfx950_combine_expert_ranks_v1', 'tile'),
+         ('fixture:gfx950-compressed-hybrid-attention-division-baseline:gfx950_compressed_hybrid_attention',
+          'simt'),
+         ('fixture:gfx950-compressed-hybrid-attention:gfx950_compressed_hybrid_attention', 'simt'),
+         ('fixture:gfx950-compressed-hybrid-attention:gfx950_compressed_hybrid_attention', 'tile'),
+         ('fixture:gfx950-content-sparse-attention-reciprocal-reuse:gfx950_content_sparse_attention',
+          'simt'),
+         ('fixture:gfx950-content-sparse-attention:gfx950_content_sparse_attention', 'simt'),
+         ('fixture:gfx950-content-sparse-attention:gfx950_content_sparse_attention', 'tile'),
+         ('fixture:gfx950-deepseek-sparse-attention:gfx950_deepseek_sparse_attention', 'simt'),
+         ('fixture:gfx950-deepseek-sparse-attention:gfx950_deepseek_sparse_attention', 'tile'),
+         ('fixture:gfx950-four-branch-residual-explicit:gfx950_four_branch_residual', 'simt'),
+         ('fixture:gfx950-four-branch-residual:gfx950_four_branch_residual', 'simt'),
+         ('fixture:gfx950-four-branch-residual:gfx950_four_branch_residual', 'tile'),
+         ('fixture:gfx950-gpt-oss-decode:gfx950_gpt_oss_120b_decode_megakernel_v1', 'simt'),
+         ('fixture:gfx950-gpt-oss-decode:gfx950_gpt_oss_120b_decode_megakernel_v1', 'tile'),
+         ('fixture:gfx950-gpt-oss-held-fragments:gfx950_gpt_oss_120b_decode_megakernel_v1', 'simt'),
+         ('fixture:gfx950-gpt-oss-held-fragments:gfx950_gpt_oss_120b_decode_megakernel_v1', 'tile'),
+         ('fixture:gfx950-gpt-oss-interleaved-stores:gfx950_gpt_oss_120b_decode_megakernel_v1', 'simt'),
+         ('fixture:gfx950-gpt-oss-interleaved-stores:gfx950_gpt_oss_120b_decode_megakernel_v1', 'tile'),
+         ('fixture:gfx950-gpt-oss-materialized-attention:gfx950_gpt_oss_120b_attention_v1', 'simt'),
+         ('fixture:gfx950-gpt-oss-materialized-attention:gfx950_gpt_oss_120b_attention_v1', 'tile'),
+         ('fixture:gfx950-gpt-oss-materialized-expert:gfx950_gpt_oss_120b_expert_v1', 'simt'),
+         ('fixture:gfx950-gpt-oss-materialized-expert:gfx950_gpt_oss_120b_expert_v1', 'tile'),
+         ('fixture:gfx950-gpt-oss-materialized-router:gfx950_gpt_oss_120b_router_v1', 'simt'),
+         ('fixture:gfx950-gpt-oss-materialized-router:gfx950_gpt_oss_120b_router_v1', 'tile'),
+         ('fixture:gfx950-gpt-oss-serial-router:gfx950_gpt_oss_120b_decode_megakernel_v1', 'simt'),
+         ('fixture:gfx950-gpt-oss-serial-router:gfx950_gpt_oss_120b_decode_megakernel_v1', 'tile'),
+         ('fixture:gfx950-kda-decode-baseline:gfx950_kda_decode', 'simt'),
+         ('fixture:gfx950-kda-decode:gfx950_kda_decode', 'simt'),
+         ('fixture:gfx950-kda-decode:gfx950_kda_decode', 'tile'),
+         ('fixture:gfx950-kda-prefill-baseline:gfx950_kda_chunkwise_prefill', 'simt'),
+         ('fixture:gfx950-kda-prefill:gfx950_kda_chunkwise_prefill', 'simt'),
+         ('fixture:gfx950-kda-prefill:gfx950_kda_chunkwise_prefill', 'tile'),
+         ('fixture:gfx950-mhc-sinkhorn-mix-scalar:gfx950_mhc_sinkhorn_mix', 'simt'),
+         ('fixture:gfx950-mhc-sinkhorn-mix:gfx950_mhc_sinkhorn_mix', 'simt'),
+         ('fixture:gfx950-mhc-sinkhorn-mix:gfx950_mhc_sinkhorn_mix', 'tile'),
+         ('fixture:gfx950-moe-expert-rank:gfx950_moe_expert_rank_fp4_fp8_v1', 'simt'),
+         ('fixture:gfx950-moe-expert-rank:gfx950_moe_expert_rank_fp4_fp8_v1', 'tile'),
+         ('fixture:gfx950-moe-route:gfx950_moe_route_fp4_t16_e4_k2_v1', 'simt'),
+         ('fixture:gfx950-moe-route:gfx950_moe_route_fp4_t16_e4_k2_v1', 'tile'),
+         ('fixture:gfx950-muon-update:gfx950_muon_update_4x4_v1', 'simt'),
+         ('fixture:gfx950-muon-update:gfx950_muon_update_4x4_v1', 'tile'),
+         ('fixture:gfx950-qwen-ngram-gather:gfx950_qwen_ngram_gather_v1', 'simt'),
+         ('fixture:gfx950-qwen-ngram-gather:gfx950_qwen_ngram_gather_v1', 'tile'),
+         ('fixture:gfx950-speculative-transaction:gfx950_speculative_transaction_v1', 'simt'),
+         ('fixture:gfx950-speculative-transaction:gfx950_speculative_transaction_v1', 'tile'),
+         ('fixture:gfx950-stage-gradient-shard:gfx950_stage_gradient_shard_v1', 'simt'),
+         ('fixture:gfx950-stage-gradient-shard:gfx950_stage_gradient_shard_v1', 'tile'),
+         ('fixture:gfx950-gpt-oss-pipelined-attention:gfx950_gpt_oss_120b_decode_megakernel_v1', 'simt'),
+         ('fixture:gfx950-gpt-oss-pipelined-attention:gfx950_gpt_oss_120b_decode_megakernel_v1', 'tile'),
+         ('fixture:gfx950-gpt-oss-scalar-attention:gfx950_gpt_oss_120b_decode_megakernel_v1', 'simt'),
+         ('fixture:gfx950-gpt-oss-scalar-attention:gfx950_gpt_oss_120b_decode_megakernel_v1', 'tile'),
+         ('source-driver:cpu-semantic-simulation:6:row_affine_sum_u32_v1', 'simt'),
+         ('fixture:gfx950-moe-expert-rank-simt:gfx950_moe_expert_rank_fp4_fp8_v1', 'simt'),
+         ('fixture:gfx950-moe-expert-rank-simt:gfx950_moe_expert_rank_fp4_fp8_v1', 'tile'),
+         ('fixture:gfx950-moe-route-tile:gfx950_moe_route_fp4_t16_e4_k2_v1', 'simt'),
+         ('fixture:gfx950-moe-route-tile:gfx950_moe_route_fp4_t16_e4_k2_v1', 'tile'),
+         ('fixture:gfx950-combine-expert-ranks-tile:gfx950_combine_expert_ranks_v1', 'simt'),
+         ('fixture:gfx950-combine-expert-ranks-tile:gfx950_combine_expert_ranks_v1', 'tile'),
+         ('fixture:gfx950-speculative-transaction-tile:gfx950_speculative_transaction_v1', 'simt'),
+         ('fixture:gfx950-speculative-transaction-tile:gfx950_speculative_transaction_v1', 'tile'),
+         ('fixture:gfx950-qwen-ngram-gather-tile:gfx950_qwen_ngram_gather_v1', 'simt'),
+         ('fixture:gfx950-qwen-ngram-gather-tile:gfx950_qwen_ngram_gather_v1', 'tile'),
+         ('fixture:gfx950-stage-gradient-shard-tile:gfx950_stage_gradient_shard_v1', 'simt'),
+         ('fixture:gfx950-stage-gradient-shard-tile:gfx950_stage_gradient_shard_v1', 'tile'),
+         ('fixture:gfx950-muon-update-tile:gfx950_muon_update_4x4_v1', 'simt'),
+         ('fixture:gfx950-muon-update-tile:gfx950_muon_update_4x4_v1', 'tile')])
         pending = [variant for row in inventory["kernels"] for variant in row["variants"]
                    if variant["status"] == "pending"]
-        self.assertEqual(len(pending), 101)
+        self.assertEqual(len(pending), 127)
         self.assertTrue(all(variant["source"] is None for variant in pending))
         display = {(row["lessonId"], row["tabOrdinal"], row["kernelSymbol"]): row
                    for row in inventory["displayItems"]}
@@ -731,11 +1021,7 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
                                and row["classification"] == "kernel")
                 identity = f"fixture:{fixture_id}:{symbol}"
                 self.assertEqual(display["kernelIds"], [identity])
-                self.assertEqual(display["bindingStatus"],
-                                 "pending" if variant == "pipelined-attention" else "fixture-source-contract")
-                if variant == "pipelined-attention":
-                    self.assertIn("8192 bytes of LDS", display["reason"])
-                    self.assertIn("https://github.com/harsh-nod/fe2o3/issues/271", display["reason"])
+                self.assertEqual(display["bindingStatus"], "fixture-source-contract")
                 identities.append(identity)
         self.assertEqual(len(set(identities)), 2)
         report = self.kernel_pair_report()
@@ -794,10 +1080,13 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
         tab = next(row for row in lesson["codeTabs"] if row["ordinal"] == 5)
         display = next(row for row in self.manifest["kernelInventory"]["displayItems"]
                        if row["lessonId"] == lesson_id and row["tabOrdinal"] == 5)
-        self.assertEqual(display["bindingStatus"], "pending")
-        self.assertEqual(display["functionUtf8Offset"], 1508)
-        self.assertEqual(tab["displayedUtf8Bytes"], 22863)
-        self.assertEqual(tab["displayedSha256"], "faf9bc589658b1381e1042c71b952881488261cc85ff86c21dbb7f1f1a83a460")
+        self.assertEqual(display["bindingStatus"], "fixture-source-contract")
+        # Reintroduce the retained historical snapshot only in this negative
+        # fixture; the live tab now displays the corrected current source.
+        display.update(bindingStatus="pending", functionUtf8Offset=1508)
+        tab.update(displayedUtf8Bytes=22863,
+                   displayedSha256="faf9bc589658b1381e1042c71b952881488261cc85ff86c21dbb7f1f1a83a460",
+                   sourceSha256="faf9bc589658b1381e1042c71b952881488261cc85ff86c21dbb7f1f1a83a460")
         self.assertEqual(tab["sourceSha256"], tab["displayedSha256"])
         source = (ROOT / tab["sourcePath"]).read_bytes()
         self.assertNotEqual(hashlib.sha256(source).hexdigest(), tab["sourceSha256"])
@@ -822,6 +1111,11 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
         self.assertEqual(len(rows), 6)
         ids = {identity for row in rows for identity in row["kernelIds"]}
         kernels = [row for row in document["kernelInventory"]["kernels"] if row["kernelId"] in ids]
+        # This isolated display fixture intentionally excludes the paired
+        # implementations, so it cannot retain their cross-kernel bindings.
+        for kernel in kernels:
+            for variant in kernel["variants"]:
+                variant.update(status="pending", source=None)
         fixtures = {ref["fixtureId"] for row in kernels for ref in row["selections"]}
         document["compilerFixtures"] = [row for row in document["compilerFixtures"] if row["fixtureId"] in fixtures]
         lesson = next(row for row in document["curriculum"]["lessons"]
@@ -863,6 +1157,9 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
                                         if row["fixtureId"] == fixture_id]
         inventory = document["kernelInventory"]
         inventory["kernels"] = [row for row in inventory["kernels"] if row["kernelId"] == kernel_id]
+        for kernel in inventory["kernels"]:
+            for variant in kernel["variants"]:
+                variant.update(status="pending", source=None)
         inventory["negativeCases"] = []
         inventory["displayItems"] = [row for row in inventory["displayItems"]
                                      if row["lessonId"] in lessons and row["tabOrdinal"] == 0]
@@ -875,7 +1172,7 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
             lesson["codeTabs"] = lesson["codeTabs"][:1]
             tab = lesson["codeTabs"][0]
             physical = (ROOT / tab["sourcePath"]).read_bytes()
-            excerpt = physical[1261:1261 + tab["displayedUtf8Bytes"]].decode("utf-8")
+            excerpt = physical[1338:1338 + tab["displayedUtf8Bytes"]].decode("utf-8")
             runtime["lessons"].append({"id": lesson["lessonId"], "codeTabs": [
                 {**tab, "displayedCode": excerpt, "sourceFragments": [excerpt]},
             ]})
@@ -943,8 +1240,8 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
         self.assertEqual(self.manifest, before)
         self.assertEqual(expected["sourcePath"], "examples/fill/src/lib.rs")
         report = self.kernel_pair_report()
-        self.assertEqual(report["sourceBoundVariantCount"], 22)
-        self.assertEqual(report["sourceBoundPairCount"], 0)
+        self.assertEqual(report["sourceBoundVariantCount"], 76)
+        self.assertEqual(report["sourceBoundPairCount"], 31)
         self.assertEqual(report["qualifiedPairCount"], 0)
         self.assertEqual(report["stageStatus"], "not-evaluated")
         self.assertIs(report["qualified"], False)
@@ -955,8 +1252,8 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
     def test_current_fill_display_binds_source_and_historical_display_refuses(self):
         lesson = self.curriculum_lesson()
         tab = lesson["codeTabs"][0]
-        self.assertEqual(tab["sourceCommit"], "b9378bdbee0dd1e284a1c31b25c3614c5c2039fe")
-        self.assertEqual(tab["displayedUtf8Bytes"], 552)
+        self.assertEqual(tab["sourceCommit"], "7404720885b13ee77bef4c48364993b463f25a6a")
+        self.assertEqual(tab["displayedUtf8Bytes"], 837)
         self.assertEqual(tab["sourceSha256"], tab["displayedSha256"])
         current = (ROOT / "examples/fill/src/lib.rs").read_bytes()
         self.assertEqual(hashlib.sha256(current).hexdigest(), tab["sourceSha256"])
@@ -1008,12 +1305,12 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
 
     def test_real_source_bound_variant_report_does_not_qualify_or_complete_census(self):
         # A physical source association, not a new tile implementation or receipt.
-        kernel_id = "fixture:gfx950-gpt-oss-serial-router:gfx950_gpt_oss_120b_decode_megakernel_v1"
-        foreign_id = "fixture:gfx950-gpt-oss-held-fragments:gfx950_gpt_oss_120b_decode_megakernel_v1"
+        kernel_id = "fixture:gfx950-gpt-oss-serial-router-simt:gfx950_gpt_oss_120b_decode_megakernel_v1"
+        foreign_id = "fixture:gfx950-gpt-oss-held-fragments-simt:gfx950_gpt_oss_120b_decode_megakernel_v1"
         binding = self.bind_source_variant(self.manifest, ROOT, kernel_id)
         report = self.kernel_pair_report()
-        self.assertEqual(report["sourceBoundVariantCount"], 23)
-        self.assertEqual(report["sourceBoundPairCount"], 0)
+        self.assertEqual(report["sourceBoundVariantCount"], 77)
+        self.assertEqual(report["sourceBoundPairCount"], 31)
         self.assertEqual(report["variantBindingStatus"], "partial")
         self.assertIs(report["qualified"], False)
         self.assertEqual(report["qualifiedPairCount"], 0)
@@ -1222,7 +1519,14 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
                     for fixture in sorted(self.original["compilerFixtures"], key=lambda row: row["fixtureId"])
                     for symbol in fixture["compilerInput"]["kernelSymbols"]]
         self.assertEqual([(row["fixtureId"], row["selection"]["kernelSymbol"]) for row in rows], expected)
-        ablations = [row for row in rows if row["selection"]["kernelSymbol"] == "gfx950_attnres_aggregate"]
+        attnres = [row for row in rows if row["selection"]["kernelSymbol"] == "gfx950_attnres_aggregate"]
+        self.assertEqual({row["fixtureId"] for row in attnres}, {
+            "gfx950-attnres-aggregate", "gfx950-attnres-aggregate-explicit-reuse",
+            "gfx950-attnres-aggregate-simt", "gfx950-attnres-aggregate-tile",
+        })
+        ablations = [row for row in attnres if row["fixtureId"] in {
+            "gfx950-attnres-aggregate", "gfx950-attnres-aggregate-explicit-reuse",
+        }]
         self.assertEqual(len(ablations), 2)
         self.assertNotEqual(ablations[0]["selection"]["features"], ablations[1]["selection"]["features"])
         self.assertNotEqual(ablations[0]["compilerInputContractSha256"], ablations[1]["compilerInputContractSha256"])

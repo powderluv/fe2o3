@@ -185,7 +185,8 @@ fn expect_access(
 ) -> Result<()> {
     match actual {
         Some(actual)
-            if actual.view == view
+            if actual.failure == GuardedAccessFailureV1::Trap
+                && actual.view == view
                 && actual.indices.as_slice() == [index]
                 && actual.checked_success.is_none()
                 && actual.comparisons.as_slice()
@@ -820,6 +821,7 @@ fn oracle_fixture() -> (ExpectedView, ProductionRankedValueV1, GuardedRankedAcce
         index,
     ));
     let access = GuardedRankedAccessV1 {
+        failure: GuardedAccessFailureV1::Trap,
         view: view.result,
         indices: vec![index],
         checked_success: None,
@@ -853,9 +855,10 @@ fn actual_guarded_oracle_rejects_every_access_field_and_missing_row() {
         original.output_extent,
     )
     .unwrap();
-    for field in 0..11 {
+    for field in 0..12 {
         let mut changed = original.clone();
         match field {
+            11 => changed.failure = GuardedAccessFailureV1::ReturnFallback,
             0 => changed.view = ProductionRankedValueIdV1::new(99),
             1 => changed.indices[0] = ProductionRankedValueV1::Argument(3),
             2 => changed.indices.push(index),

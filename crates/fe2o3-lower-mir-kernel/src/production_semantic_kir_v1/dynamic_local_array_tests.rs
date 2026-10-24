@@ -6,7 +6,9 @@ use fe2o3_mir_model::semantic_mir_v1::{
 #[test]
 fn dynamic_local_array_emission_rejects_empty_and_overflowing_budgets_before_mutation() {
     let fixture = Fixture::new();
-    let mut lowering = fixture.lowering();
+    let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+    let mut budget = ArgumentBudgetV1::new(&mut work, 16 * 1024 * 1024);
+    let mut lowering = fixture.lowering(&mut budget);
     let mut operations = vec![];
     fill_array(&mut lowering, &mut operations);
     let Some(SemanticValueBindingV1::Aggregate(fields)) = lowering.locals[1].clone() else {
@@ -350,7 +352,9 @@ fn dynamic_local_array_selection_preserves_types_and_exact_emission_budgets() {
             Type::INDEX,
         ] {
             for element_type in [Type::Scalar(ScalarType::U32), Type::BOOL] {
-                let mut lowering = fixture.lowering();
+                let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+                let mut budget = ArgumentBudgetV1::new(&mut work, 16 * 1024 * 1024);
+                let mut lowering = fixture.lowering(&mut budget);
                 lowering.max_operations = 4096;
                 let mut operations = vec![];
                 let fields = (0..count)

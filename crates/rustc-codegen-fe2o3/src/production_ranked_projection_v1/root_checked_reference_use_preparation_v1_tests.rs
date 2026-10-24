@@ -53,6 +53,7 @@ mod checked_reference_use_controls {
     }
     fn guarded() -> GuardedRankedAccessV1 {
         GuardedRankedAccessV1 {
+            failure: GuardedAccessFailureV1::Trap,
             view: ProductionRankedValueIdV1::new(0),
             indices: vec![ProductionRankedValueV1::Argument(0)],
             comparisons: vec![(

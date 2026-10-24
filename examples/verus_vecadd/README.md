@@ -145,12 +145,16 @@ cargo +stable test --manifest-path examples/verus_vecadd/Cargo.toml
 cargo test -p fe2o3-vecadd
 ```
 
-Run all five positive Verus harnesses and all twenty-four expected proof
+Run all seven positive Verus harnesses and all twenty-eight expected proof
 rejections with:
 
 ```text
 VERUS=/absolute/path/to/verus examples/verus_vecadd/run-verus.sh --require
 ```
+
+The historical runner still prints the stale summary `6 proof harnesses, 26
+expected rejections`; the individual results cover seven harnesses and 28
+intended rejections. The source guards and proof obligations are unchanged.
 
 Run only the exact gfx942 alpha/zeta source-model proof and its five property
 mutations with:

@@ -47,6 +47,7 @@ pub(in super::super) fn lower_placed_function_with_availability_v29(
             id,
             LoweredFunctionSignatureV1 {
                 bf16_nominal: false,
+                wave64_nominal: false,
                 parameter_semantic_types: vec![],
                 call_arguments: vec![],
                 parameter_types: vec![],

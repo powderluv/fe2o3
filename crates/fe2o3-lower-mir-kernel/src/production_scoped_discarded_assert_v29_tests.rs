@@ -71,7 +71,8 @@ fn probe_authentication(
                     item.placement,
                     Some(cursor),
                     Some(&mut producer),
-                )?;
+                    None,
+)?;
                 let block_id = SemanticBlockIdV1::from_index(0);
                 let mut block = BasicBlock::new(item.placement.block(0)?);
                 lowering.begin_block(block_id, &mut block)?;

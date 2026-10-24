@@ -109,6 +109,7 @@ fn clone_execution_function_signature_v29(
     }
     Ok(LoweredFunctionSignatureV1 {
         bf16_nominal: signature.bf16_nominal,
+        wave64_nominal: signature.wave64_nominal,
         parameter_semantic_types,
         call_arguments,
         parameter_types,

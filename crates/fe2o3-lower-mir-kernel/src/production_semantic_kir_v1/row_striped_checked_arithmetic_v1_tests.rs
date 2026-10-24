@@ -15,7 +15,9 @@ mod row_striped_checked_arithmetic_v1_tests {
         Vec<Operation>,
     ) {
         let fixture = Fixture::new(ScalarType::Index);
-        let mut lowering = fixture.lowering();
+        let mut lowering_work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+        let mut lowering_budget = ArgumentBudgetV1::new(&mut lowering_work, 16 * 1024 * 1024);
+        let mut lowering = fixture.lowering(&mut lowering_budget);
         lowering.next_value = PARAMS as u32;
         lowering.max_operations = limit;
         let mut operations = Vec::new();

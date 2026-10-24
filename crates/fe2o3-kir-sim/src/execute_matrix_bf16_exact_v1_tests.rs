@@ -9,6 +9,23 @@ fn fixed_work_formula_is_exact_and_overflow_checked() {
 }
 
 #[test]
+fn finite_numerical_checks_are_additively_prepaid_without_overflow() {
+    use crate::MatrixBf16NumericsV1::{ExactV1, FiniteSequentialFmaV1};
+    assert_eq!(
+        resolution_work_with_numerics(64, ExactV1),
+        resolution_work(64)
+    );
+    assert_eq!(
+        resolution_work_with_numerics(64, FiniteSequentialFmaV1),
+        Some(26_048 + 4865)
+    );
+    assert_eq!(
+        resolution_work_with_numerics(usize::MAX, FiniteSequentialFmaV1),
+        None
+    );
+}
+
+#[test]
 fn compact_pending_matrix_state_preserves_shared_value_layouts() {
     assert_eq!(size_of::<Input>(), 32);
     assert_eq!(

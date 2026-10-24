@@ -14,7 +14,7 @@ mod matrix_bf16_exact_v1;
 mod matrix_fp4_exact_v1;
 mod matrix_fp4_fp8_exact_v1;
 mod matrix_fp8_exact_v1;
-pub use matrix_bf16_exact_v1::MatrixInputRoleV1;
+pub use matrix_bf16_exact_v1::{MatrixBf16NumericsV1, MatrixInputRoleV1};
 mod capability;
 mod complete_body_v19;
 mod debug;

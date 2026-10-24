@@ -11,6 +11,10 @@ publish = false
 # root workspace graph.
 [workspace]
 
+[features]
+default = []
+tile-kernel = []
+
 [dependencies]
 fe2o3-device = { path = "../../crates/fe2o3-device" }
 
@@ -26,3 +30,7 @@ syn = { version = "2", features = ["full", "visit"] }
 [lib]
 name = "fe2o3_wave64_collectives_v1"
 path = "src/lib.rs"
+
+# Keep genuine binding-only host tests inside the existing executable image limit.
+[profile.test]
+debug = 0

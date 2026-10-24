@@ -1889,6 +1889,7 @@ dependencies = [
 name = "fe2o3-scalar-gemm-v1"
 version = "0.1.0"
 dependencies = [
+ "fe2o3-core",
  "fe2o3-device",
  "fe2o3-host",
 ]
@@ -2088,6 +2089,7 @@ dependencies = [
 name = "fe2o3-vecadd"
 version = "0.1.0"
 dependencies = [
+ "fe2o3-core",
  "fe2o3-device",
  "fe2o3-host",
 ]

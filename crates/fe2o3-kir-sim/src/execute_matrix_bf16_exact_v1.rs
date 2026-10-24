@@ -35,6 +35,18 @@ pub(super) fn resolution_work(participants: usize) -> Option<usize> {
         .checked_add(RESOLUTION_FIXED_WORK)
 }
 
+// 768 selected-domain checks, 4096 FMA-result finiteness checks, mode dispatch.
+// Prepaid by the existing caller before rendezvous resolution, never a cap raise.
+pub(super) fn resolution_work_with_numerics(
+    participants: usize,
+    mode: crate::MatrixBf16NumericsV1,
+) -> Option<usize> {
+    resolution_work(participants)?.checked_add(match mode {
+        crate::MatrixBf16NumericsV1::ExactV1 => 0,
+        crate::MatrixBf16NumericsV1::FiniteSequentialFmaV1 => 768 + 4096 + 1,
+    })
+}
+
 pub(super) fn is_operation(operation: &OperationKind) -> bool {
     matches!(operation, OperationKind::Matrix(matrix) if domain::supported(matrix))
 }
@@ -160,13 +172,13 @@ pub(super) fn resolve<'a>(
             (MatrixInputRoleV1::B, &values.rhs),
         ] {
             for (component, bits) in values.iter().copied().enumerate() {
-                if !domain::bf16_input(bits) && rejected.is_none() {
+                if !engine.matrix_bf16_numerics.accepts_bf16(bits) && rejected.is_none() {
                     rejected = Some((lane, role, component));
                 }
             }
         }
         for (component, bits) in values.accumulator.iter().copied().enumerate() {
-            if !domain::f32_accumulator(bits) && rejected.is_none() {
+            if !engine.matrix_bf16_numerics.accepts_accumulator(bits) && rejected.is_none() {
                 rejected = Some((lane, MatrixInputRoleV1::Accumulator, component));
             }
         }
@@ -207,6 +219,20 @@ pub(super) fn resolve<'a>(
                     engine.target,
                 )
                 .map_err(|error| engine.at(arrival.site, map_soft_float_error(error)))?;
+                if engine.matrix_bf16_numerics == crate::MatrixBf16NumericsV1::FiniteSequentialFmaV1
+                    && !domain::finite_f32(value.bits() as u32)
+                {
+                    engine
+                        .select_debug_invocation(Some(machines[scratch.members[lane]].invocation));
+                    return Err(engine.at(
+                        arrival.site,
+                        SimulationExecutionErrorKindV1::NonFiniteMatrixResult {
+                            lane: lane as u8,
+                            component: component as u8,
+                            reduction: k as u8,
+                        },
+                    ));
+                }
             }
             *result = value.bits() as u32;
         }

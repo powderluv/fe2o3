@@ -57,7 +57,8 @@ fn finish_then_release_services<'source, 'service, 'work>(
             SemanticEmissionPlacementV1::default(),
             Some(cursor),
             None,
-        )?;
+            None,
+)?;
     assert!(std::ptr::eq(lowering.function, function));
     assert!(std::ptr::eq(lowering.types, semantic.types()));
     assert!(std::ptr::eq(lowering.callables, semantic.callables()));

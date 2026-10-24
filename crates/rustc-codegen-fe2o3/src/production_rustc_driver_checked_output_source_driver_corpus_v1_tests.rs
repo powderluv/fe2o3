@@ -1,4 +1,4 @@
-//! Additional source-driver selections, never aliases for the existing 50 cases.
+//! Additional source-driver selections, never aliases for the ordinary fixture cases.
 use super::*;
 use std::collections::BTreeMap;
 
@@ -237,6 +237,49 @@ fn input_for_case(
     Ok(input)
 }
 
+// Ordinary aliases follow the manifest validator's source-selection identity:
+// all compiler input fields and the selected symbol must agree. Per-fixture
+// contractSha256 includes the fixture reference and is deliberately not part
+// of CompilerInput, just as in tutorial_kernel_identities.py::INPUT_FIELDS.
+// This corpus admits only same-target aliases; source-driver cases retain
+// their separate, single-selection identities.
+fn fixture_aliases_match(kernel: &InventoryKernel, ordinary: &[Fixture]) -> bool {
+    if kernel.selections.len() == 1 {
+        return true;
+    }
+    if kernel.selections.is_empty() || kernel.selections.len() > CONFIGURATIONS {
+        return false;
+    }
+    let Selection::Fixture {
+        fixture_id,
+        kernel_symbol,
+    } = &kernel.selections[0]
+    else {
+        return false;
+    };
+    let Some(first) = ordinary.iter().find(|row| &row.fixture_id == fixture_id) else {
+        return false;
+    };
+    if kernel.kernel_id != format!("fixture:{fixture_id}:{kernel_symbol}") {
+        return false;
+    }
+    kernel.selections.iter().skip(1).all(|selection| {
+        let Selection::Fixture {
+            fixture_id,
+            kernel_symbol: symbol,
+        } = selection
+        else {
+            return false;
+        };
+        ordinary.iter().any(|row| {
+            &row.fixture_id == fixture_id
+                && symbol == kernel_symbol
+                && row.target == first.target
+                && row.compiler_input == first.compiler_input
+        })
+    })
+}
+
 fn source_driver_selections(bytes: &[u8]) -> Result<Vec<Selected>, SourceFailure> {
     if bytes.len() > MAX_MANIFEST_BYTES {
         return Err(invalid("manifest exceeds byte bound"));
@@ -378,7 +421,9 @@ fn source_driver_selections(bytes: &[u8]) -> Result<Vec<Selected>, SourceFailure
     let mut inventory_fixture = BTreeSet::new();
     let mut kernel_ids = BTreeSet::new();
     for kernel in document.kernel_inventory.kernels {
-        if !kernel_ids.insert(kernel.kernel_id.clone()) || kernel.selections.len() != 1 {
+        if !kernel_ids.insert(kernel.kernel_id.clone())
+            || !fixture_aliases_match(&kernel, &ordinary)
+        {
             return Err(invalid("duplicate or ambiguous inventory kernel identity"));
         }
         for selection in kernel.selections {

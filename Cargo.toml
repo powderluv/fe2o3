@@ -182,6 +182,10 @@ strip = "debuginfo"
 [profile.dev.package.cargo-fe2o3]
 strip = "debuginfo"
 
+# Keep test dependency archives within the existing host file-size limit.
+[profile.test]
+debug = 0
+
 [profile.test.package.cargo-fe2o3]
 strip = "debuginfo"
 
@@ -190,10 +194,13 @@ strip = "debuginfo"
 
 # Real-image admission fixtures must stay within the production image bound.
 [profile.test.package.rustc-codegen-fe2o3]
-strip = "debuginfo"
+strip = "symbols"
 
 # Binding-only host tests pin the real executable within the normal image cap.
 [profile.test.package.fe2o3-vecadd]
+strip = "debuginfo"
+
+[profile.test.package.fe2o3-fill]
 strip = "debuginfo"
 
 [profile.test.package.fe2o3-scalar-gemm-v1]

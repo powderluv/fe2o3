@@ -85,21 +85,21 @@ macro_rules! decode_fp8_e4m3_v1 {
         let exponent = (bits >> 3_u8) & 0xf;
         let mantissa = bits & 0x7;
         let magnitude = if exponent == 0xf && mantissa == 0x7 {
-            let nan_source = f32::from(mantissa ^ 7_u8);
+            let nan_source = (mantissa ^ 7_u8) as f32;
             nan_source / nan_source
         } else if exponent == 0 {
-            f32::from(mantissa) / 512.0
+            mantissa as f32 / 512.0
         } else {
-            let exponent0 = f32::from(exponent & 0x1);
-            let exponent1 = f32::from((exponent >> 1_u8) & 0x1);
-            let exponent2 = f32::from((exponent >> 2_u8) & 0x1);
-            let exponent3 = f32::from((exponent >> 3_u8) & 0x1);
+            let exponent0 = (exponent & 0x1) as f32;
+            let exponent1 = ((exponent >> 1_u8) & 0x1) as f32;
+            let exponent2 = ((exponent >> 2_u8) & 0x1) as f32;
+            let exponent3 = ((exponent >> 3_u8) & 0x1) as f32;
             let scale = (1.0 + exponent0)
                 * (1.0 + 3.0 * exponent1)
                 * (1.0 + 15.0 * exponent2)
                 * (1.0 + 255.0 * exponent3)
                 / 128.0;
-            (1.0 + f32::from(mantissa) / 8.0) * scale
+            (1.0 + mantissa as f32 / 8.0) * scale
         };
         if bits & 0x80 == 0 {
             magnitude
@@ -259,7 +259,8 @@ macro_rules! kda_chunk_wy_v1 {
 #[cfg(all(
     target_arch = "amdgpu",
     feature = "kernel-kda-decode",
-    not(feature = "kernel-kda-decode-baseline-v1")
+    not(feature = "kernel-kda-decode-baseline-v1"),
+    not(feature = "kernel-kda-decode-tile")
 ))]
 #[kernel(
     typed,
@@ -406,7 +407,8 @@ pub fn gfx950_kda_decode(
 #[cfg(all(
     target_arch = "amdgpu",
     feature = "kernel-kda-prefill",
-    not(feature = "kernel-kda-prefill-baseline-v1")
+    not(feature = "kernel-kda-prefill-baseline-v1"),
+    not(feature = "kernel-kda-prefill-tile")
 ))]
 #[kernel(
     typed,
@@ -692,7 +694,11 @@ fn deepseek_attention_score_v1(q: &[f32], k: &[f32], token: usize) -> Option<f32
 }
 
 /// Selects two content blocks, retains three tokens, and computes one 16-value output.
-#[cfg(all(target_arch = "amdgpu", feature = "kernel-content-sparse-attention"))]
+#[cfg(all(
+    target_arch = "amdgpu",
+    feature = "kernel-content-sparse-attention",
+    not(feature = "kernel-content-sparse-attention-simt")
+))]
 #[cfg_attr(
     not(feature = "kernel-content-sparse-attention-reciprocal-reuse-v1"),
     kernel(
@@ -1276,7 +1282,11 @@ pub fn gfx950_content_sparse_attention(
 }
 
 /// Consumes Lightning Indexer top-k token IDs and evaluates only those KV rows.
-#[cfg(all(target_arch = "amdgpu", feature = "kernel-deepseek-sparse-attention"))]
+#[cfg(all(
+    target_arch = "amdgpu",
+    feature = "kernel-deepseek-sparse-attention",
+    not(feature = "kernel-deepseek-sparse-attention-tile")
+))]
 #[kernel(
     typed,
     launch(required = [256, 1, 1], max = [256, 1, 1], max_grid = [4, 1, 1])
@@ -1629,7 +1639,11 @@ pub fn gfx950_deepseek_sparse_attention(
 }
 
 /// Mixes a four-token local window with three four-token compressed global blocks.
-#[cfg(all(target_arch = "amdgpu", feature = "kernel-compressed-hybrid-attention"))]
+#[cfg(all(
+    target_arch = "amdgpu",
+    feature = "kernel-compressed-hybrid-attention",
+    not(feature = "kernel-compressed-hybrid-attention-simt")
+))]
 #[cfg_attr(
     not(feature = "kernel-compressed-hybrid-attention-division-baseline-v1"),
     kernel(
@@ -1912,7 +1926,8 @@ pub fn gfx950_compressed_hybrid_attention(
 #[cfg(all(
     target_arch = "amdgpu",
     feature = "kernel-attnres-aggregate",
-    not(feature = "kernel-attnres-aggregate-explicit-reuse-v1")
+    not(feature = "kernel-attnres-aggregate-explicit-reuse-v1"),
+    not(feature = "kernel-attnres-aggregate-tile")
 ))]
 #[kernel(
     typed,
@@ -2018,7 +2033,8 @@ pub fn gfx950_attnres_aggregate(
 #[cfg(all(
     target_arch = "amdgpu",
     feature = "kernel-four-branch-residual",
-    not(feature = "kernel-four-branch-residual-explicit-v1")
+    not(feature = "kernel-four-branch-residual-explicit-v1"),
+    not(feature = "kernel-four-branch-residual-tile")
 ))]
 #[kernel(
     typed,
@@ -2104,7 +2120,8 @@ pub fn gfx950_four_branch_residual(
 #[cfg(all(
     target_arch = "amdgpu",
     feature = "kernel-mhc-sinkhorn-mix",
-    not(feature = "kernel-mhc-sinkhorn-mix-scalar-v1")
+    not(feature = "kernel-mhc-sinkhorn-mix-scalar-v1"),
+    not(feature = "kernel-mhc-sinkhorn-mix-tile")
 ))]
 #[kernel(
     typed,
@@ -2289,5 +2306,538 @@ mod tests {
 
         assert_eq!(decode_fp8_e4m3_v1!(0x00).to_bits(), 0.0_f32.to_bits());
         assert_eq!(decode_fp8_e4m3_v1!(0x80).to_bits(), (-0.0_f32).to_bits());
+    }
+}
+
+// Explicit C tiles preserve canonical arithmetic, with one checked 16x16
+// output tile per workgroup in a 64x16 parent.
+#[cfg(all(target_arch = "amdgpu", feature = "kernel-kda-decode-tile"))]
+#[kernel(typed, launch(required = [256, 1, 1], max = [256, 1, 1], max_grid = [4, 1, 1]))]
+pub fn gfx950_kda_decode(
+    query: &[f32],
+    key: &[f32],
+    value: &[f32],
+    alpha: &[f32],
+    beta: &[f32],
+    initial_state: &[f32],
+    mut final_state: DisjointSlice<f32, fe2o3_device::Tiled2D<Index1D, 256, 16, 16, 1>>,
+    mut output: DisjointSlice<f32, fe2o3_device::Tiled2D<Index1D, 256, 16, 16, 1>>,
+) {
+    // One workgroup owns one complete 16x16 matrix-state problem.
+    let batches = MULTIGRID_WORKGROUPS_V1;
+    let batch = thread::block_idx_x() as usize;
+    if query.len() != batches * KDA_KEY_DIMENSION_V1
+        || key.len() != batches * KDA_KEY_DIMENSION_V1
+        || value.len() != batches * KDA_VALUE_DIMENSION_V1
+        || alpha.len() != batches * KDA_KEY_DIMENSION_V1
+        || beta.len() != batches
+        || initial_state.len() != batches * KDA_STATE_ELEMENTS_V1
+        || final_state.len() != batches * KDA_STATE_ELEMENTS_V1
+        || output.len() != batches * KDA_STATE_ELEMENTS_V1
+    {
+        return;
+    }
+    let output_tile = thread::index_1d().checked_tiled_2d::<256, 16, 16, 1>();
+    // Checked views separate batch offsets from the recurrence arithmetic.
+    let Ok(query) = StridedReadView2D::from_shared_slice(
+        query,
+        batch.wrapping_mul(KDA_KEY_DIMENSION_V1),
+        1,
+        16,
+        16,
+    ) else {
+        return;
+    };
+    let Ok(key) = StridedReadView2D::from_shared_slice(
+        key,
+        batch.wrapping_mul(KDA_KEY_DIMENSION_V1),
+        1,
+        16,
+        16,
+    ) else {
+        return;
+    };
+    let Ok(value) = StridedReadView2D::from_shared_slice(
+        value,
+        batch.wrapping_mul(KDA_VALUE_DIMENSION_V1),
+        1,
+        16,
+        16,
+    ) else {
+        return;
+    };
+    let Ok(alpha) = StridedReadView2D::from_shared_slice(
+        alpha,
+        batch.wrapping_mul(KDA_KEY_DIMENSION_V1),
+        1,
+        16,
+        16,
+    ) else {
+        return;
+    };
+    let Ok(beta) = StridedReadView2D::from_shared_slice(beta, batch, 1, 1, 1) else {
+        return;
+    };
+    let Ok(state) = StridedReadView2D::from_shared_slice(
+        initial_state,
+        batch.wrapping_mul(KDA_STATE_ELEMENTS_V1),
+        16,
+        16,
+        16,
+    ) else {
+        return;
+    };
+    #[cfg(not(feature = "kernel-kda-decode-baseline-v1"))]
+    {
+        // The 256 threads map bijectively to (value column, key index).
+        let linear = thread::thread_idx_x() as usize;
+        let key_index = linear & 15;
+        let value_column = linear >> 4;
+        let subgroup = Gfx950Subgroup::current();
+        let query_value = query.load_or(0, key_index, 0.0);
+        let key_value = key.load_or(0, key_index, 0.0);
+        let alpha_value = alpha.load_or(0, key_index, 0.0);
+        let value_input = value.load_or(0, value_column, 0.0);
+        let step = beta.load_or(0, 0, 0.0);
+        let decay = alpha_value * state.load_or(value_column, key_index, 0.0);
+        // Wave16 reductions implement the matrix-vector products over K=16.
+        let prediction = subgroup.reduce_sum_f32::<16>(key_value * decay);
+        let error = value_input - prediction;
+        let updated = decay + step * key_value * error;
+        let result = subgroup.reduce_sum_f32::<16>(0.25 * query_value * updated);
+        // Each thread publishes its state element and replicated output element.
+        if let Some(output_tile) = output_tile {
+            if let Some(slot) = final_state.get_tiled_2d_mut(&output_tile, 0, 64, 16, 16) {
+                *slot = updated;
+            }
+            if let Some(slot) = output.get_tiled_2d_mut(&output_tile, 0, 64, 16, 16) {
+                *slot = result;
+            }
+        }
+    }
+}
+
+#[cfg(all(target_arch = "amdgpu", feature = "kernel-kda-prefill-tile"))]
+#[kernel(typed, launch(required = [256, 1, 1], max = [256, 1, 1], max_grid = [4, 1, 1]))]
+pub fn gfx950_kda_chunkwise_prefill(
+    query: &[f32],
+    key: &[f32],
+    value: &[f32],
+    alpha: &[f32],
+    beta: &[f32],
+    initial_state: &[f32],
+    mut final_state: DisjointSlice<f32, fe2o3_device::Tiled2D<Index1D, 256, 16, 16, 1>>,
+    mut output_chunk0: DisjointSlice<f32, fe2o3_device::Tiled2D<Index1D, 256, 16, 16, 1>>,
+    mut output_chunk1: DisjointSlice<f32, fe2o3_device::Tiled2D<Index1D, 256, 16, 16, 1>>,
+) {
+    // One workgroup owns one eight-token problem and its carried matrix state.
+    let batches = MULTIGRID_WORKGROUPS_V1;
+    let batch = thread::block_idx_x() as usize;
+    if query.len() != batches * PREFILL_TOKENS_V1 * KDA_KEY_DIMENSION_V1
+        || key.len() != batches * PREFILL_TOKENS_V1 * KDA_KEY_DIMENSION_V1
+        || value.len() != batches * PREFILL_TOKENS_V1 * KDA_VALUE_DIMENSION_V1
+        || alpha.len() != batches * PREFILL_TOKENS_V1 * KDA_KEY_DIMENSION_V1
+        || beta.len() != batches * PREFILL_TOKENS_V1
+        || initial_state.len() != batches * KDA_STATE_ELEMENTS_V1
+        || final_state.len() != batches * KDA_STATE_ELEMENTS_V1
+        || output_chunk0.len() != batches * KDA_STATE_ELEMENTS_V1
+        || output_chunk1.len() != batches * KDA_STATE_ELEMENTS_V1
+    {
+        return;
+    }
+    let output_tile = thread::index_1d().checked_tiled_2d::<256, 16, 16, 1>();
+    // Convert the workgroup batch to checked token-major input views.
+    let token_base = batch.wrapping_mul(PREFILL_TOKENS_V1);
+    let Ok(query) = StridedReadView2D::from_shared_slice(
+        query,
+        token_base.wrapping_mul(KDA_KEY_DIMENSION_V1),
+        8,
+        16,
+        16,
+    ) else {
+        return;
+    };
+    let Ok(key) = StridedReadView2D::from_shared_slice(
+        key,
+        token_base.wrapping_mul(KDA_KEY_DIMENSION_V1),
+        8,
+        16,
+        16,
+    ) else {
+        return;
+    };
+    let Ok(value) = StridedReadView2D::from_shared_slice(
+        value,
+        token_base.wrapping_mul(KDA_VALUE_DIMENSION_V1),
+        8,
+        16,
+        16,
+    ) else {
+        return;
+    };
+    let Ok(alpha) = StridedReadView2D::from_shared_slice(
+        alpha,
+        token_base.wrapping_mul(KDA_KEY_DIMENSION_V1),
+        8,
+        16,
+        16,
+    ) else {
+        return;
+    };
+    let Ok(beta) = StridedReadView2D::from_shared_slice(beta, token_base, 1, 8, 8) else {
+        return;
+    };
+    let Ok(initial_state) = StridedReadView2D::from_shared_slice(
+        initial_state,
+        batch.wrapping_mul(KDA_STATE_ELEMENTS_V1),
+        16,
+        16,
+        16,
+    ) else {
+        return;
+    };
+    // The 256 threads map bijectively to (value column, key index).
+    let linear = thread::thread_idx_x() as usize;
+    let key_index = linear & 15;
+    let value_column = linear >> 4;
+    let subgroup = Gfx950Subgroup::current();
+    let mut state = initial_state.load_or(value_column, key_index, 0.0);
+    let mut c00 = 0.0;
+    let mut c01 = 0.0;
+    let mut c02 = 0.0;
+    let mut c03 = 0.0;
+    // Execute two ordered four-token chunks; state0 is the explicit carry.
+    kda_chunk_wy_v1!(
+        0,
+        query,
+        key,
+        value,
+        alpha,
+        beta,
+        subgroup,
+        key_index,
+        value_column,
+        state,
+        c00,
+        c01,
+        c02,
+        c03
+    );
+    let mut c10 = 0.0;
+    let mut c11 = 0.0;
+    let mut c12 = 0.0;
+    let mut c13 = 0.0;
+    kda_chunk_wy_v1!(
+        4,
+        query,
+        key,
+        value,
+        alpha,
+        beta,
+        subgroup,
+        key_index,
+        value_column,
+        state,
+        c10,
+        c11,
+        c12,
+        c13
+    );
+    let selected0 = if key_index < 4 {
+        c00
+    } else if key_index < 8 {
+        c01
+    } else if key_index < 12 {
+        c02
+    } else {
+        c03
+    };
+    let selected1 = if key_index < 4 {
+        c10
+    } else if key_index < 8 {
+        c11
+    } else if key_index < 12 {
+        c12
+    } else {
+        c13
+    };
+    if let Some(output_tile) = output_tile {
+        if let Some(slot) = output_chunk0.get_tiled_2d_mut(&output_tile, 0, 64, 16, 16) {
+            *slot = selected0;
+        }
+        if let Some(slot) = output_chunk1.get_tiled_2d_mut(&output_tile, 0, 64, 16, 16) {
+            *slot = selected1;
+        }
+        // Publish the carried state and each chunk's final replicated output.
+        if let Some(slot) = final_state.get_tiled_2d_mut(&output_tile, 0, 64, 16, 16) {
+            *slot = state;
+        }
+    }
+}
+
+/// Consumes Lightning Indexer top-k token IDs and evaluates only those KV rows.
+#[cfg(all(
+    target_arch = "amdgpu",
+    feature = "kernel-deepseek-sparse-attention-tile"
+))]
+#[kernel(
+    typed,
+    launch(required = [256, 1, 1], max = [256, 1, 1], max_grid = [4, 1, 1])
+)]
+pub fn gfx950_deepseek_sparse_attention(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    index0: u32,
+    index1: u32,
+    index2: u32,
+    index3: u32,
+    mut output: DisjointSlice<f32, fe2o3_device::Tiled2D<Index1D, 256, 16, 16, 1>>,
+    mut softmax_maximum_output: DisjointSlice<f32, fe2o3_device::Tiled2D<Index1D, 256, 16, 16, 1>>,
+    mut softmax_normalizer_output: DisjointSlice<
+        f32,
+        fe2o3_device::Tiled2D<Index1D, 256, 16, 16, 1>,
+    >,
+) {
+    // Validate all batch-major tensors before any Wave16 reduction.
+    let batches = MULTIGRID_SUBGROUP_BATCHES_V1;
+    if q.len() != batches * HEAD_DIMENSION_V1
+        || k.len() != batches * ATTENTION_TOKENS_V1 * HEAD_DIMENSION_V1
+        || v.len() != batches * ATTENTION_TOKENS_V1 * CHANNELS_V1
+        || output.len() != batches * CHANNELS_V1
+        || softmax_maximum_output.len() != batches * CHANNELS_V1
+        || softmax_normalizer_output.len() != batches * CHANNELS_V1
+    {
+        fe2o3_device::trap();
+    }
+
+    // Convert sentinels to safe addresses, then carry validity as an explicit mask.
+    let raw0 = index0;
+    let raw1 = index1;
+    let raw2 = index2;
+    let raw3 = index3;
+    let valid0 = raw0 < ATTENTION_TOKENS_V1 as u32;
+    let valid1 = raw1 < ATTENTION_TOKENS_V1 as u32;
+    let valid2 = raw2 < ATTENTION_TOKENS_V1 as u32;
+    let valid3 = raw3 < ATTENTION_TOKENS_V1 as u32;
+    let token0 = raw0 as usize % ATTENTION_TOKENS_V1;
+    let token1 = raw1 as usize % ATTENTION_TOKENS_V1;
+    let token2 = raw2 as usize % ATTENTION_TOKENS_V1;
+    let token3 = raw3 as usize % ATTENTION_TOKENS_V1;
+    // Each Wave16 subgroup handles one batch; each lane owns one output channel.
+    let linear_index = thread::index_1d().get();
+    let batch = linear_index / CHANNELS_V1;
+    let column = linear_index % CHANNELS_V1;
+    let Ok(query_view) =
+        StridedReadView2D::from_shared_slice(q, 0, batches, HEAD_DIMENSION_V1, HEAD_DIMENSION_V1)
+    else {
+        fe2o3_device::trap();
+    };
+    let Ok(key_view) = StridedReadView2D::from_shared_slice(
+        k,
+        0,
+        batches * ATTENTION_TOKENS_V1,
+        HEAD_DIMENSION_V1,
+        HEAD_DIMENSION_V1,
+    ) else {
+        fe2o3_device::trap();
+    };
+    let Ok(value_view) = StridedReadView2D::from_shared_slice(
+        v,
+        0,
+        batches * ATTENTION_TOKENS_V1,
+        CHANNELS_V1,
+        CHANNELS_V1,
+    ) else {
+        fe2o3_device::trap();
+    };
+
+    // Eight coalesced depth slices per lane cover the full 128-wide dot product.
+    let depth0 = column;
+    let depth1 = column + CHANNELS_V1;
+    let depth2 = column + 2 * CHANNELS_V1;
+    let depth3 = column + 3 * CHANNELS_V1;
+    let depth4 = column + 4 * CHANNELS_V1;
+    let depth5 = column + 5 * CHANNELS_V1;
+    let depth6 = column + 6 * CHANNELS_V1;
+    let depth7 = column + 7 * CHANNELS_V1;
+    let query0 = query_view.load_or(batch, depth0, 0.0);
+    let query1 = query_view.load_or(batch, depth1, 0.0);
+    let query2 = query_view.load_or(batch, depth2, 0.0);
+    let query3 = query_view.load_or(batch, depth3, 0.0);
+    let query4 = query_view.load_or(batch, depth4, 0.0);
+    let query5 = query_view.load_or(batch, depth5, 0.0);
+    let query6 = query_view.load_or(batch, depth6, 0.0);
+    let query7 = query_view.load_or(batch, depth7, 0.0);
+    let batch_row = batch.wrapping_mul(ATTENTION_TOKENS_V1);
+    let row0 = batch_row.wrapping_add(token0);
+    let row1 = batch_row.wrapping_add(token1);
+    let row2 = batch_row.wrapping_add(token2);
+    let row3 = batch_row.wrapping_add(token3);
+    // Invalid slots use the safe row zero and are masked after the uniform
+    // collective sequence. Every Wave16 subgroup therefore executes the same
+    // four reductions even when the top-k list contains sentinels.
+    let partial0 = query0 * key_view.load_or(row0, depth0, 0.0)
+        + query1 * key_view.load_or(row0, depth1, 0.0)
+        + query2 * key_view.load_or(row0, depth2, 0.0)
+        + query3 * key_view.load_or(row0, depth3, 0.0)
+        + query4 * key_view.load_or(row0, depth4, 0.0)
+        + query5 * key_view.load_or(row0, depth5, 0.0)
+        + query6 * key_view.load_or(row0, depth6, 0.0)
+        + query7 * key_view.load_or(row0, depth7, 0.0);
+    let partial1 = query0 * key_view.load_or(row1, depth0, 0.0)
+        + query1 * key_view.load_or(row1, depth1, 0.0)
+        + query2 * key_view.load_or(row1, depth2, 0.0)
+        + query3 * key_view.load_or(row1, depth3, 0.0)
+        + query4 * key_view.load_or(row1, depth4, 0.0)
+        + query5 * key_view.load_or(row1, depth5, 0.0)
+        + query6 * key_view.load_or(row1, depth6, 0.0)
+        + query7 * key_view.load_or(row1, depth7, 0.0);
+    let partial2 = query0 * key_view.load_or(row2, depth0, 0.0)
+        + query1 * key_view.load_or(row2, depth1, 0.0)
+        + query2 * key_view.load_or(row2, depth2, 0.0)
+        + query3 * key_view.load_or(row2, depth3, 0.0)
+        + query4 * key_view.load_or(row2, depth4, 0.0)
+        + query5 * key_view.load_or(row2, depth5, 0.0)
+        + query6 * key_view.load_or(row2, depth6, 0.0)
+        + query7 * key_view.load_or(row2, depth7, 0.0);
+    let partial3 = query0 * key_view.load_or(row3, depth0, 0.0)
+        + query1 * key_view.load_or(row3, depth1, 0.0)
+        + query2 * key_view.load_or(row3, depth2, 0.0)
+        + query3 * key_view.load_or(row3, depth3, 0.0)
+        + query4 * key_view.load_or(row3, depth4, 0.0)
+        + query5 * key_view.load_or(row3, depth5, 0.0)
+        + query6 * key_view.load_or(row3, depth6, 0.0)
+        + query7 * key_view.load_or(row3, depth7, 0.0);
+
+    let subgroup = Gfx950Subgroup::current();
+    let reduced0 = subgroup.reduce_sum_f32::<16>(partial0);
+    let reduced1 = subgroup.reduce_sum_f32::<16>(partial1);
+    let reduced2 = subgroup.reduce_sum_f32::<16>(partial2);
+    let reduced3 = subgroup.reduce_sum_f32::<16>(partial3);
+    if !(valid0 || valid1 || valid2 || valid3)
+        || (valid0 && valid1 && raw0 == raw1)
+        || (valid0 && valid2 && raw0 == raw2)
+        || (valid0 && valid3 && raw0 == raw3)
+        || (valid1 && valid2 && raw1 == raw2)
+        || (valid1 && valid3 && raw1 == raw3)
+        || (valid2 && valid3 && raw2 == raw3)
+    {
+        fe2o3_device::trap();
+    }
+    let score0 = if valid0 {
+        reduced0 * ATTENTION_SCALE_V1
+    } else {
+        f32::NEG_INFINITY
+    };
+    let score1 = if valid1 {
+        reduced1 * ATTENTION_SCALE_V1
+    } else {
+        f32::NEG_INFINITY
+    };
+    let score2 = if valid2 {
+        reduced2 * ATTENTION_SCALE_V1
+    } else {
+        f32::NEG_INFINITY
+    };
+    let score3 = if valid3 {
+        reduced3 * ATTENTION_SCALE_V1
+    } else {
+        f32::NEG_INFINITY
+    };
+    let mut maximum = score0;
+    if score1 > maximum {
+        maximum = score1;
+    }
+    if score2 > maximum {
+        maximum = score2;
+    }
+    if score3 > maximum {
+        maximum = score3;
+    }
+
+    // Mask invalid candidates and apply a stable softmax over the retained rows.
+    let math = DeviceMath::current();
+    #[cfg(not(feature = "kernel-deepseek-sparse-attention-leader-exp-v1"))]
+    let weight0 = if valid0 {
+        math.exp_f32(score0 - maximum)
+    } else {
+        0.0
+    };
+    #[cfg(not(feature = "kernel-deepseek-sparse-attention-leader-exp-v1"))]
+    let weight1 = if valid1 {
+        math.exp_f32(score1 - maximum)
+    } else {
+        0.0
+    };
+    #[cfg(not(feature = "kernel-deepseek-sparse-attention-leader-exp-v1"))]
+    let weight2 = if valid2 {
+        math.exp_f32(score2 - maximum)
+    } else {
+        0.0
+    };
+    #[cfg(not(feature = "kernel-deepseek-sparse-attention-leader-exp-v1"))]
+    let weight3 = if valid3 {
+        math.exp_f32(score3 - maximum)
+    } else {
+        0.0
+    };
+    #[cfg(feature = "kernel-deepseek-sparse-attention-leader-exp-v1")]
+    let (weight0, weight1, weight2, weight3) = {
+        // Counterexample: serialize subgroup-invariant exponentials on lane zero
+        // and pay four exchanges. This lowers correctly but regresses top-4.
+        let leader_weight0 = if column == 0 && valid0 {
+            math.exp_f32(score0 - maximum)
+        } else {
+            0.0
+        };
+        let leader_weight1 = if column == 0 && valid1 {
+            math.exp_f32(score1 - maximum)
+        } else {
+            0.0
+        };
+        let leader_weight2 = if column == 0 && valid2 {
+            math.exp_f32(score2 - maximum)
+        } else {
+            0.0
+        };
+        let leader_weight3 = if column == 0 && valid3 {
+            math.exp_f32(score3 - maximum)
+        } else {
+            0.0
+        };
+        (
+            subgroup.broadcast_f32::<16>(leader_weight0, 0),
+            subgroup.broadcast_f32::<16>(leader_weight1, 0),
+            subgroup.broadcast_f32::<16>(leader_weight2, 0),
+            subgroup.broadcast_f32::<16>(leader_weight3, 0),
+        )
+    };
+    let normalizer = weight0 + weight1 + weight2 + weight3;
+    let mut numerator = 0.0_f32;
+    if valid0 {
+        numerator += weight0 * value_view.load_or(row0, column, 0.0);
+    }
+    if valid1 {
+        numerator += weight1 * value_view.load_or(row1, column, 0.0);
+    }
+    if valid2 {
+        numerator += weight2 * value_view.load_or(row2, column, 0.0);
+    }
+    if valid3 {
+        numerator += weight3 * value_view.load_or(row3, column, 0.0);
+    }
+    // The checked 16x16 tile preserves all batch/channel output coordinates.
+    let Some(output_tile) = thread::index_1d().checked_tiled_2d::<256, 16, 16, 1>() else {
+        fe2o3_device::trap();
+    };
+    if let Some(slot) = output.get_tiled_2d_mut(&output_tile, 0, 64, 16, 16) {
+        *slot = numerator / normalizer;
+    }
+    if let Some(slot) = softmax_maximum_output.get_tiled_2d_mut(&output_tile, 0, 64, 16, 16) {
+        *slot = maximum;
+    }
+    if let Some(slot) = softmax_normalizer_output.get_tiled_2d_mut(&output_tile, 0, 64, 16, 16) {
+        *slot = normalizer;
     }
 }

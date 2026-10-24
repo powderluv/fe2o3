@@ -7,12 +7,12 @@ use fe2o3_kir_sim::{
 };
 
 include!("production_checked_output_f32_fixture_v1_tests.rs");
+#[path = "production_checked_output_exp_connected_v1_tests.rs"]
+mod exp_connected;
 #[path = "production_checked_output_f32_native_v1_tests.rs"]
 mod native;
 #[path = "production_checked_output_numeric_cast_connected_v1_tests.rs"]
 mod numeric_cast_connected;
-#[path = "production_checked_output_exp_connected_v1_tests.rs"]
-mod exp_connected;
 
 fn fp_census(module: &Module, recipe: FpRecipe, helper: bool) {
     let mut recipes = 0;
@@ -435,7 +435,7 @@ fn exact_source_nan_payload_is_not_replaced_by_nan_class_equivalence() {
                 if mutation.is_none() {
                     let admitted = result.unwrap();
                     admitted.verify_equivalence(&mut budget).unwrap();
-                    native::reject_actual_literal_nan(&admitted, profile);
+                    native::check_actual_literal_nan(&admitted, profile);
                 } else {
                     assert!(matches!(
                         result,

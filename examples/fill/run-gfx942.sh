@@ -7,6 +7,14 @@ if [[ ${FE2O3_EXAMPLE_COMPILE_ONLY:-1} != 1 ]]; then
     exit 2
 fi
 FE2O3_EXAMPLE_COMPILE_ONLY=1
+FE2O3_EXAMPLE_CARGO_ARGS=()
+if [[ $# -gt 1 || ( $# -eq 1 && ${1:-} != structured-tile ) ]]; then
+    printf 'Usage: %s [structured-tile]\n' "$0" >&2
+    exit 2
+fi
+if (( $# == 1 )); then
+    FE2O3_EXAMPLE_CARGO_ARGS=(--no-default-features --features structured-tile)
+fi
 FE2O3_EXAMPLE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 FE2O3_EXAMPLE_CRATE=fe2o3_fill
 FE2O3_EXAMPLE_STEM=fill

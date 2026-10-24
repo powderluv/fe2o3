@@ -225,9 +225,47 @@ fn assert_saved_projected_address(operations: &[Operation]) {
 fn call_destination_preparation_keeps_attached_scan_budget_and_restores_ledger() {
     for projected in [false, true] {
         with_guarded_result_context(projected, |fixture, call| {
-            let mut work = fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(0);
-            let mut budget = ArgumentBudgetV1::new(&mut work, 37);
+            // Zero work is available after genuine construction on the same
+            // ledger; construction does not attach a replacement ledger.
+            let (constructor_work, constructor_storage, constructor_peak) = {
+                let mut baseline_work =
+                    fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(1_000_000);
+                let mut baseline_budget =
+                    ArgumentBudgetV1::new(&mut baseline_work, 16 * 1024 * 1024);
+                baseline_budget.reserve_storage(37).unwrap();
+                let baseline = SemanticFunctionLoweringV1::new(
+                    fixture.types,
+                    fixture.callables,
+                    fixture.function,
+                    SemanticParameterBindingsV1 {
+                        declarations: &[],
+                        values: &[],
+                        types: &[],
+                        local_bindings: None,
+                    },
+                    None,
+                    None,
+                    BTreeSet::new(),
+                    1,
+                    false,
+                    32,
+                    &mut baseline_budget,
+                )?;
+                drop(baseline);
+                (
+                    baseline_budget.work(),
+                    baseline_budget.storage() - 37,
+                    baseline_budget.peak_storage() - 37,
+                )
+            };
+            eprintln!(
+                "call-destination constructor prefix: projected={projected} work={constructor_work} storage={constructor_storage} peak={constructor_peak}"
+            );
+            let mut work =
+                fe2o3_kernel_ir::CanonicalKernelIrWorkBudgetV1::new(constructor_work);
+            let mut budget = ArgumentBudgetV1::new(&mut work, 37 + constructor_peak);
             budget.reserve_storage(37).unwrap();
+            let ledger = budget.work_ledger_identity_v1();
             let mut lowering = SemanticFunctionLoweringV1::new(
                 fixture.types,
                 fixture.callables,
@@ -244,10 +282,14 @@ fn call_destination_preparation_keeps_attached_scan_budget_and_restores_ledger()
                 1,
                 false,
                 32,
+                &mut budget,
             )?;
             assert!(lowering.execution.is_none());
             assert!(lowering.scoped_memory.is_none());
-            lowering.emission_work = Some(&mut budget);
+            let attached = lowering.emission_work.as_deref().unwrap();
+            assert_eq!(attached.emission_service_work_v1(), Some(constructor_work));
+            assert_eq!(attached.storage(), 37 + constructor_storage);
+            assert!(attached.work_ledger_identity_v1() == ledger);
             let next_value = lowering.next_value;
             let mut operations = Vec::new();
             let result = lowering.prepare_call_destination_v1(
@@ -275,8 +317,8 @@ fn call_destination_preparation_keeps_attached_scan_budget_and_restores_ledger()
             assert_eq!(lowering.emitted_operations, 0);
             assert_eq!(lowering.next_value, next_value);
             drop(lowering);
-            assert_eq!(budget.storage(), 37);
-            assert_eq!(budget.work(), 0);
+            assert_eq!(budget.storage(), 37 + constructor_storage);
+            assert_eq!(budget.work(), constructor_work);
             Ok(())
         })
         .unwrap();

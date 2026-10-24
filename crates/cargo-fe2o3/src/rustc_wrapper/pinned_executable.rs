@@ -23,6 +23,11 @@ use fe2o3_runtime_protocol::WorkerV3ApplicationHandoffProtocolErrorV1;
 /// A deliberately bounded read prevents a selected tool path from causing unbounded hashing work.
 pub(crate) const MAX_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Ordinary binding-only Cargo test images retain default debug information and can exceed
+/// the tool/authority limit (the MoE oracle measured 909,946,760 bytes). This separate finite
+/// allowance grants no authority and is selected only by the binding-only host-test runner.
+pub(crate) const MAX_BINDING_HOST_TEST_BYTES: u64 = 1024 * 1024 * 1024;
+
 #[derive(Debug)]
 pub(crate) enum PinExecutableError {
     #[allow(dead_code)] // Constructed by the non-Linux fail-closed implementation.
@@ -210,7 +215,9 @@ impl Error for PinExecutableError {
 
 #[cfg(target_os = "linux")]
 mod platform {
-    use super::{MAX_EXECUTABLE_BYTES, Path, PathBuf, PinExecutableError};
+    use super::{
+        MAX_BINDING_HOST_TEST_BYTES, MAX_EXECUTABLE_BYTES, Path, PathBuf, PinExecutableError,
+    };
     use fe2o3_process_identity::LinuxObjectIdentityV3;
     use rustix::fs::{Access, MemfdFlags, Mode, OFlags, SealFlags};
     use sha2::{Digest, Sha256};
@@ -307,6 +314,14 @@ mod platform {
 
     impl PinnedExecutable {
         pub(crate) fn open(path: &Path) -> Result<Self, PinExecutableError> {
+            Self::open_with_limit(path, MAX_EXECUTABLE_BYTES)
+        }
+
+        pub(crate) fn open_binding_host_test(path: &Path) -> Result<Self, PinExecutableError> {
+            Self::open_with_limit(path, MAX_BINDING_HOST_TEST_BYTES)
+        }
+
+        fn open_with_limit(path: &Path, limit: u64) -> Result<Self, PinExecutableError> {
             let display_path = path.to_path_buf();
             let retained_descriptor = retained_descriptor_number(path);
             let mut open_flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC;
@@ -336,7 +351,7 @@ mod platform {
                     ),
                 });
             }
-            Self::from_open_file(file, display_path)
+            Self::from_open_file(file, display_path, limit)
         }
 
         pub(crate) fn from_transferred_file(
@@ -358,7 +373,7 @@ mod platform {
                     ),
                 });
             }
-            Self::from_open_file(file, display_path)
+            Self::from_open_file(file, display_path, MAX_EXECUTABLE_BYTES)
         }
 
         pub(crate) fn try_clone_for_transfer(&self) -> Result<File, PinExecutableError> {
@@ -373,6 +388,7 @@ mod platform {
         fn from_open_file(
             mut file: File,
             display_path: PathBuf,
+            limit: u64,
         ) -> Result<Self, PinExecutableError> {
             let initial_metadata =
                 file.metadata()
@@ -394,11 +410,11 @@ mod platform {
             if initial.size == 0 {
                 return Err(PinExecutableError::Empty { path: display_path });
             }
-            if initial.size > MAX_EXECUTABLE_BYTES {
+            if initial.size > limit {
                 return Err(PinExecutableError::TooLarge {
                     path: display_path,
                     size: initial.size,
-                    limit: MAX_EXECUTABLE_BYTES,
+                    limit,
                 });
             }
 
@@ -1605,6 +1621,84 @@ mod platform {
         }
 
         #[test]
+        fn ordinary_host_test_limit_preserves_default_and_transfer_boundaries() {
+            assert_eq!(MAX_EXECUTABLE_BYTES, 512 * 1024 * 1024);
+            assert_eq!(MAX_BINDING_HOST_TEST_BYTES, 1024 * 1024 * 1024);
+            let root = TestDirectory::new();
+            let path = root.path().join("host-test");
+            write_executable(&path, b"x");
+            let resize = |size| {
+                OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_len(size)
+                    .unwrap();
+            };
+            resize(MAX_EXECUTABLE_BYTES);
+            assert!(PinnedExecutable::open(&path).is_ok());
+            resize(MAX_EXECUTABLE_BYTES + 1);
+            assert!(matches!(
+                PinnedExecutable::open(&path),
+                Err(PinExecutableError::TooLarge {
+                    limit: MAX_EXECUTABLE_BYTES,
+                    ..
+                })
+            ));
+            assert!(matches!(
+                PinnedExecutable::from_transferred_file(File::open(&path).unwrap(), path.clone()),
+                Err(PinExecutableError::TooLarge {
+                    limit: MAX_EXECUTABLE_BYTES,
+                    ..
+                })
+            ));
+            assert!(PinnedExecutable::open_binding_host_test(&path).is_ok());
+            resize(MAX_BINDING_HOST_TEST_BYTES);
+            assert!(PinnedExecutable::open_binding_host_test(&path).is_ok());
+            resize(MAX_BINDING_HOST_TEST_BYTES + 1);
+            assert!(matches!(
+                PinnedExecutable::open_binding_host_test(&path),
+                Err(PinExecutableError::TooLarge {
+                    limit: MAX_BINDING_HOST_TEST_BYTES,
+                    ..
+                })
+            ));
+        }
+
+        #[test]
+        fn ordinary_host_test_open_retains_file_and_post_pin_refusals() {
+            let root = TestDirectory::new();
+            let path = root.path().join("host-test");
+            write_executable(&path, b"");
+            assert!(matches!(
+                PinnedExecutable::open_binding_host_test(&path),
+                Err(PinExecutableError::Empty { .. })
+            ));
+            write_executable(&path, b"abc");
+            let alias = root.path().join("alias");
+            symlink(&path, &alias).unwrap();
+            assert!(matches!(
+                PinnedExecutable::open_binding_host_test(&alias),
+                Err(PinExecutableError::Open { .. })
+            ));
+            assert!(matches!(
+                PinnedExecutable::open_binding_host_test(root.path()),
+                Err(PinExecutableError::NotRegular { .. })
+            ));
+            let pinned = PinnedExecutable::open_binding_host_test(&path).unwrap();
+            fs::write(&path, b"changed").unwrap();
+            assert!(matches!(
+                pinned.command(),
+                Err(PinExecutableError::ExecutionObjectChanged { .. })
+            ));
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(matches!(
+                PinnedExecutable::open_binding_host_test(&path),
+                Err(PinExecutableError::NotExecutable { .. })
+            ));
+        }
+
+        #[test]
         fn retained_descriptor_prevents_path_trampoline() {
             let root = TestDirectory::new();
             let selected = root.path().join("rustc");
@@ -1728,6 +1822,10 @@ pub(crate) struct PinnedExecutable;
 #[cfg(not(target_os = "linux"))]
 impl PinnedExecutable {
     pub(crate) fn open(_path: &Path) -> Result<Self, PinExecutableError> {
+        Err(PinExecutableError::UnsupportedPlatform)
+    }
+
+    pub(crate) fn open_binding_host_test(_path: &Path) -> Result<Self, PinExecutableError> {
         Err(PinExecutableError::UnsupportedPlatform)
     }
 }

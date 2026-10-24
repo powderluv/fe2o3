@@ -856,15 +856,22 @@ fn analysis_shape(profile: Profile) -> (Census, usize, usize, usize) {
     let steps = 1 << 20;
     let max_arguments = usize::from(!matches!(profile, Profile::Empty));
     let inventory = 2 * blocks + operations;
-    let work = 3 * blocks + 5 * operations + 5 + 36 * (steps + 1);
+    // Nonempty entry arguments trigger a bounded scan of blocks, operations
+    // and successor occurrences, even when Later ties the successor arity.
+    let entry_scan = match profile {
+        Profile::Empty => 0,
+        Profile::Read | Profile::Mixed | Profile::Later => blocks + operations + successors + 1,
+    };
+    let work = 3 * blocks + 5 * operations + 5 + entry_scan + 36 * (steps + 1);
+    // Read/Mixed have one entry argument, no other block and no entry edge:
+    // at most one key is wide. Later has a one-argument successor, so it
+    // retains the coarse bound; Empty has only zero-argument keys.
+    let key_storage = match profile {
+        Profile::Read | Profile::Mixed => 2 * steps + 1,
+        Profile::Empty | Profile::Later => steps * (max_arguments + 2),
+    };
     let retained = inventory + 4 + 17 * steps;
-    let peak = retained
-        + 2 * blocks
-        + results
-        + 3 * block_arguments
-        + steps * (max_arguments + 2)
-        + 3
-        + 1836;
+    let peak = retained + 2 * blocks + results + 3 * block_arguments + key_storage + 3 + 1836;
     (census, work, retained, peak)
 }
 
@@ -903,7 +910,11 @@ fn native_analysis_domain_exact_and_one_short_keep_legacy_caps_and_failed_cache(
                     manager
                         .prepare_native_exact_trace_v1(context, function, &input, budget)
                         .unwrap();
-                    assert_eq!(manager.has_successful_exact_trace_v1(), accepted);
+                    assert_eq!(
+                        manager.has_successful_exact_trace_v1(),
+                        accepted,
+                        "{profile:?}: work={limit_work}, peak={limit_peak}"
+                    );
                     let bound = manager.resource_upper_bound();
                     if accepted {
                         assert_eq!(

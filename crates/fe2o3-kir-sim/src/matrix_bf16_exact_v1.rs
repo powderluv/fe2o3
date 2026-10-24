@@ -4,6 +4,43 @@ use fe2o3_kernel_ir::{
     TensorLayoutContractV1,
 };
 
+/// Numerical semantics for the existing BF16 matrix interpreter.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MatrixBf16NumericsV1 {
+    /// Original closed integer domain; all legacy entries retain this default.
+    #[default]
+    ExactV1,
+    /// Ordinary observation only: finite BF16 inputs widen exactly to F32, then
+    /// F32 fused multiply-add rounds to nearest, ties even in ascending k=0..15
+    /// order for each source matrix operation. Gradual underflow and signed zero
+    /// are retained. Nonfinite inputs and intermediate results are refused.
+    /// This is not native MFMA reduction/rounding equivalence or proof authority.
+    FiniteSequentialFmaV1,
+}
+impl MatrixBf16NumericsV1 {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ExactV1 => "exact-v1",
+            Self::FiniteSequentialFmaV1 => "finite-sequential-fma-v1",
+        }
+    }
+    pub(crate) fn accepts_bf16(self, bits: u16) -> bool {
+        match self {
+            Self::ExactV1 => bf16_input(bits),
+            Self::FiniteSequentialFmaV1 => bits & 0x7f80 != 0x7f80,
+        }
+    }
+    pub(crate) fn accepts_accumulator(self, bits: u32) -> bool {
+        match self {
+            Self::ExactV1 => f32_accumulator(bits),
+            Self::FiniteSequentialFmaV1 => finite_f32(bits),
+        }
+    }
+}
+pub(crate) const fn finite_f32(bits: u32) -> bool {
+    bits & 0x7f80_0000 != 0x7f80_0000
+}
+
 /// Positional operand only; no user values are retained in a domain refusal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]

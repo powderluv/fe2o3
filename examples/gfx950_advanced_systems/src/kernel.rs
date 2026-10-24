@@ -23,7 +23,7 @@ use crate::{
 };
 
 /// Stable top-2 routing, weights, expert counts, and compact dispatch metadata.
-#[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-moe-route"))]
+#[cfg(all(any(not(target_arch = "amdgpu"), feature = "kernel-moe-route"), not(feature = "kernel-moe-route-tile")))]
 #[kernel(
     typed,
     launch(required = [256, 1, 1], max = [256, 1, 1], max_grid = [4, 1, 1]),
@@ -90,8 +90,9 @@ pub fn gfx950_moe_route_fp4_t16_e4_k2_v1(
     while step < depth_steps {
         let depth = depth_group.wrapping_add(step.wrapping_mul(depth_stride));
         let bits = activations.load_or(token, depth, 0);
-        let magnitude =
-            (0xc864_3210_u32.wrapping_shr(((bits & 7) as u32).wrapping_mul(4)) & 15) as f32 * 0.5;
+        let fp4_shift = ((bits & 7) as u32) * 4;
+        let fp4_magnitudes = if fp4_shift < 32 { 0xc864_3210_u32 >> fp4_shift } else { 0 };
+        let magnitude = (fp4_magnitudes & 15) as f32 * 0.5;
         let sign = 1.0 - 2.0 * ((bits >> 3) & 1) as f32;
         let activation = sign * magnitude;
         route_logit0 += activation * router_weights.load_or(0, depth, 0.0);
@@ -234,7 +235,8 @@ pub fn gfx950_moe_route_fp4_t16_e4_k2_v1(
     let mut count = 0_u32;
     let mut record = 0_usize;
     while record < TOKENS * TOP_K {
-        let selected = (packed_routes.wrapping_shr(2_usize.wrapping_mul(record) as u32) & 3) as u32;
+        let shift = 2 * record;
+        let selected = if shift < 64 { ((packed_routes >> shift) & 3) as u32 } else { 0 };
         count = count.wrapping_add((selected == count_expert) as u32);
         record += 1;
     }
@@ -258,7 +260,8 @@ pub fn gfx950_moe_route_fp4_t16_e4_k2_v1(
     let mut dispatched0 = -1_i32;
     let mut route0 = 0_usize;
     while route0 < TOKENS * TOP_K {
-        let selected = (packed_routes.wrapping_shr(2_usize.wrapping_mul(route0) as u32) & 3) as u32;
+        let shift = 2 * route0;
+        let selected = if shift < 64 { ((packed_routes >> shift) & 3) as u32 } else { 0 };
         let dispatch_matches = (selected == dispatch_expert0) as usize;
         let choose = ((dispatch_matches != 0) & (seen0 == wanted0)) as i32;
         dispatched0 = dispatched0.wrapping_add(
@@ -286,7 +289,8 @@ pub fn gfx950_moe_route_fp4_t16_e4_k2_v1(
     let mut dispatched1 = -1_i32;
     let mut route1 = 0_usize;
     while route1 < TOKENS * TOP_K {
-        let selected = (packed_routes.wrapping_shr(2_usize.wrapping_mul(route1) as u32) & 3) as u32;
+        let shift = 2 * route1;
+        let selected = if shift < 64 { ((packed_routes >> shift) & 3) as u32 } else { 0 };
         let dispatch_matches = (selected == dispatch_expert1) as usize;
         let choose = ((dispatch_matches != 0) & (seen1 == wanted1)) as i32;
         dispatched1 = dispatched1.wrapping_add(
@@ -309,7 +313,7 @@ pub fn gfx950_moe_route_fp4_t16_e4_k2_v1(
 }
 
 /// Computes a routed expert partition and optional shared-expert contribution.
-#[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-moe-expert-rank"))]
+#[cfg(all(any(not(target_arch = "amdgpu"), feature = "kernel-moe-expert-rank"), not(feature = "kernel-moe-expert-rank-simt")))]
 #[cfg_attr(
     not(feature = "ablation-expert-serial"),
     kernel(
@@ -645,7 +649,7 @@ pub fn gfx950_moe_expert_rank_fp4_fp8_v1(
 }
 
 /// Adds two expert-rank partials in fixed rank order.
-#[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-combine-expert-ranks"))]
+#[cfg(all(any(not(target_arch = "amdgpu"), feature = "kernel-combine-expert-ranks"), not(feature = "kernel-combine-expert-ranks-tile")))]
 #[cfg_attr(
     not(feature = "ablation-combine-transposed"),
     kernel(
@@ -704,9 +708,12 @@ pub fn gfx950_combine_expert_ranks_v1(
 }
 
 /// Commits state only when every speculative token and score is accepted.
-#[cfg(any(
-    not(target_arch = "amdgpu"),
-    feature = "kernel-speculative-transaction"
+#[cfg(all(
+    any(
+        not(target_arch = "amdgpu"),
+        feature = "kernel-speculative-transaction"
+    ),
+    not(feature = "kernel-speculative-transaction-tile")
 ))]
 #[cfg_attr(
     not(feature = "ablation-speculative-recompute-prefix"),
@@ -897,7 +904,10 @@ pub fn gfx950_speculative_transaction_v1(
 }
 
 /// Probes every slot, verifies the full 3-gram, and resolves duplicate keys.
-#[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-qwen-ngram-gather"))]
+#[cfg(all(
+    any(not(target_arch = "amdgpu"), feature = "kernel-qwen-ngram-gather"),
+    not(feature = "kernel-qwen-ngram-gather-tile")
+))]
 #[cfg_attr(
     not(feature = "ablation-ngram-reverse-probe"),
     kernel(
@@ -1040,7 +1050,10 @@ pub fn gfx950_qwen_ngram_gather_v1(
 }
 
 /// Copies one gradient shard into deterministic transport staging.
-#[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-stage-gradient-shard"))]
+#[cfg(all(
+    any(not(target_arch = "amdgpu"), feature = "kernel-stage-gradient-shard"),
+    not(feature = "kernel-stage-gradient-shard-tile")
+))]
 #[cfg_attr(
     not(feature = "ablation-stage-tile4"),
     kernel(
@@ -1117,7 +1130,10 @@ pub fn gfx950_stage_gradient_shard_v1(
 }
 
 /// Reduces two shards and computes five Newton-Schulz Muon iterations.
-#[cfg(any(not(target_arch = "amdgpu"), feature = "kernel-muon-update"))]
+#[cfg(all(
+    any(not(target_arch = "amdgpu"), feature = "kernel-muon-update"),
+    not(feature = "kernel-muon-update-tile")
+))]
 #[cfg_attr(
     not(feature = "ablation-muon-broadcast16"),
     kernel(
@@ -1254,5 +1270,203 @@ pub fn gfx950_muon_update_4x4_v1(
         if let Some(slot) = output_norm.get_row_striped_2d_mut(&norm_row, 0, SYSTEM_BATCHES, 1, 1) {
             *slot = norm;
         }
+    }
+}
+
+/// Commits state only when every speculative token and score is accepted.
+#[cfg(all(
+    target_arch = "amdgpu",
+    feature = "kernel-speculative-transaction-tile"
+))]
+#[cfg_attr(
+    not(feature = "ablation-speculative-recompute-prefix"),
+    kernel(
+        typed,
+        launch(required = [256, 1, 1], max = [256, 1, 1], max_grid = [4, 1, 1])
+    )
+)]
+#[cfg_attr(
+    feature = "ablation-speculative-recompute-prefix",
+    kernel(
+        typed,
+        launch(required = [256, 1, 1], max = [256, 1, 1], max_grid = [4, 1, 1])
+    )
+)]
+#[allow(clippy::too_many_arguments)]
+pub fn gfx950_speculative_transaction_v1(
+    draft_tokens: &[i32],
+    target_tokens: &[i32],
+    draft_scores: &[f32],
+    thresholds: &[f32],
+    base_state: &[f32],
+    proposed_deltas: &[f32],
+    mut accepted_steps: DisjointSlice<u32, fe2o3_device::Tiled2D<Index1D, 64, 1, 64, 1>>,
+    mut committed: DisjointSlice<u32, fe2o3_device::Tiled2D<Index1D, 64, 1, 64, 1>>,
+    mut output_state: DisjointSlice<f32, fe2o3_device::Tiled2D<Index1D, 64, 1, 64, 1>>,
+) {
+    // One Wave64 owns a batch: lanes first evaluate candidates, then own state elements.
+    let global_index = thread::index_1d().get();
+    let batch = global_index / 64;
+    let lane = global_index & 63;
+    // Establish the full transactional buffer contract before subgroup broadcasts.
+    if batch >= SYSTEM_BATCHES
+        || draft_tokens.len() != SYSTEM_BATCHES * CANDIDATES * DRAFT_STEPS
+        || target_tokens.len() != SYSTEM_BATCHES * DRAFT_STEPS
+        || draft_scores.len() != SYSTEM_BATCHES * CANDIDATES * DRAFT_STEPS
+        || thresholds.len() != SYSTEM_BATCHES * DRAFT_STEPS
+        || base_state.len() != SYSTEM_BATCHES * STATE_WIDTH
+        || proposed_deltas.len() != SYSTEM_BATCHES * CANDIDATES * DRAFT_STEPS * STATE_WIDTH
+        || accepted_steps.len() != SYSTEM_BATCHES * CANDIDATES
+        || committed.len() != SYSTEM_BATCHES * CANDIDATES
+        || output_state.len() != SYSTEM_BATCHES * CANDIDATES * STATE_WIDTH
+    {
+        return;
+    }
+    // Checked views name candidate/step structure and remove repeated stride arithmetic.
+    let transaction_base = batch.wrapping_mul(CANDIDATES).wrapping_mul(DRAFT_STEPS);
+    let target_base = batch.wrapping_mul(DRAFT_STEPS);
+    let state_base = batch.wrapping_mul(STATE_WIDTH);
+    let delta_base = batch
+        .wrapping_mul(CANDIDATES)
+        .wrapping_mul(DRAFT_STEPS)
+        .wrapping_mul(STATE_WIDTH);
+    let Ok(target_tokens) = StridedReadView2D::from_shared_slice(
+        target_tokens,
+        target_base,
+        1,
+        DRAFT_STEPS,
+        DRAFT_STEPS,
+    ) else {
+        return;
+    };
+    let Ok(thresholds) =
+        StridedReadView2D::from_shared_slice(thresholds, target_base, 1, DRAFT_STEPS, DRAFT_STEPS)
+    else {
+        return;
+    };
+    let Ok(draft_tokens) = StridedReadView2D::from_shared_slice(
+        draft_tokens,
+        transaction_base,
+        CANDIDATES,
+        DRAFT_STEPS,
+        DRAFT_STEPS,
+    ) else {
+        return;
+    };
+    let Ok(draft_scores) = StridedReadView2D::from_shared_slice(
+        draft_scores,
+        transaction_base,
+        CANDIDATES,
+        DRAFT_STEPS,
+        DRAFT_STEPS,
+    ) else {
+        return;
+    };
+    #[cfg(feature = "ablation-speculative-recompute-prefix")]
+    macro_rules! accepted_prefix {
+        ($candidate:expr) => {{
+            let accepts0 = (draft_tokens.load_or($candidate, 0, 0)
+                == target_tokens.load_or(0, 0, 0))
+                & (draft_scores.load_or($candidate, 0, 0.0) >= thresholds.load_or(0, 0, 0.0));
+            let accepts1 = accepts0
+                & (draft_tokens.load_or($candidate, 1, 0) == target_tokens.load_or(0, 1, 0))
+                & (draft_scores.load_or($candidate, 1, 0.0) >= thresholds.load_or(0, 1, 0.0));
+            let accepts2 = accepts1
+                & (draft_tokens.load_or($candidate, 2, 0) == target_tokens.load_or(0, 2, 0))
+                & (draft_scores.load_or($candidate, 2, 0.0) >= thresholds.load_or(0, 2, 0.0));
+            let accepts3 = accepts2
+                & (draft_tokens.load_or($candidate, 3, 0) == target_tokens.load_or(0, 3, 0))
+                & (draft_scores.load_or($candidate, 3, 0.0) >= thresholds.load_or(0, 3, 0.0));
+            (accepts0 as usize)
+                .wrapping_add(accepts1 as usize)
+                .wrapping_add(accepts2 as usize)
+                .wrapping_add(accepts3 as usize)
+        }};
+    }
+    // Build a prefix: a later step can be accepted only when every earlier step was.
+    let acceptance_candidate = lane & (CANDIDATES - 1);
+    let accepts0 = (draft_tokens.load_or(acceptance_candidate, 0, 0)
+        == target_tokens.load_or(0, 0, 0))
+        & (draft_scores.load_or(acceptance_candidate, 0, 0.0) >= thresholds.load_or(0, 0, 0.0));
+    let accepts1 = accepts0
+        & (draft_tokens.load_or(acceptance_candidate, 1, 0) == target_tokens.load_or(0, 1, 0))
+        & (draft_scores.load_or(acceptance_candidate, 1, 0.0) >= thresholds.load_or(0, 1, 0.0));
+    let accepts2 = accepts1
+        & (draft_tokens.load_or(acceptance_candidate, 2, 0) == target_tokens.load_or(0, 2, 0))
+        & (draft_scores.load_or(acceptance_candidate, 2, 0.0) >= thresholds.load_or(0, 2, 0.0));
+    let accepts3 = accepts2
+        & (draft_tokens.load_or(acceptance_candidate, 3, 0) == target_tokens.load_or(0, 3, 0))
+        & (draft_scores.load_or(acceptance_candidate, 3, 0.0) >= thresholds.load_or(0, 3, 0.0));
+    let accepted_local = (accepts0 as usize)
+        .wrapping_add(accepts1 as usize)
+        .wrapping_add(accepts2 as usize)
+        .wrapping_add(accepts3 as usize);
+    // Re-map lanes to candidate/state pairs and broadcast one decision per candidate.
+    let candidate = lane / STATE_WIDTH;
+    let state_element = lane.wrapping_sub(candidate.wrapping_mul(STATE_WIDTH));
+    #[cfg(not(feature = "ablation-speculative-recompute-prefix"))]
+    let accepted = Gfx950Subgroup::current()
+        .broadcast_f32::<64>(accepted_local as f32, candidate as u32 & 63)
+        as usize;
+    #[cfg(feature = "ablation-speculative-recompute-prefix")]
+    let accepted = accepted_prefix!(candidate);
+    // Commit status and all state deltas together; rejected candidates retain base state.
+    if lane < CANDIDATES {
+        let Some(status_tile) = thread::index_1d().checked_tiled_2d::<64, 1, 64, 1>() else {
+            return;
+        };
+        if let Some(slot) =
+            accepted_steps.get_tiled_2d_mut(&status_tile, 0, SYSTEM_BATCHES, CANDIDATES, CANDIDATES)
+        {
+            *slot = accepted_local as u32;
+        }
+        if let Some(slot) =
+            committed.get_tiled_2d_mut(&status_tile, 0, SYSTEM_BATCHES, CANDIDATES, CANDIDATES)
+        {
+            *slot = if accepted_local == DRAFT_STEPS { 1 } else { 0 };
+        }
+    }
+    let mut value = base_state[state_base.wrapping_add(state_element)];
+    if accepted == DRAFT_STEPS {
+        value += proposed_deltas[delta_base.wrapping_add(
+            candidate
+                .wrapping_mul(DRAFT_STEPS)
+                .wrapping_mul(STATE_WIDTH)
+                .wrapping_add(state_element),
+        )];
+        value += proposed_deltas[delta_base.wrapping_add(
+            candidate
+                .wrapping_mul(DRAFT_STEPS)
+                .wrapping_add(1)
+                .wrapping_mul(STATE_WIDTH)
+                .wrapping_add(state_element),
+        )];
+        value += proposed_deltas[delta_base.wrapping_add(
+            candidate
+                .wrapping_mul(DRAFT_STEPS)
+                .wrapping_add(2)
+                .wrapping_mul(STATE_WIDTH)
+                .wrapping_add(state_element),
+        )];
+        value += proposed_deltas[delta_base.wrapping_add(
+            candidate
+                .wrapping_mul(DRAFT_STEPS)
+                .wrapping_add(3)
+                .wrapping_mul(STATE_WIDTH)
+                .wrapping_add(state_element),
+        )];
+    }
+    // A checked Wave64 tile owns the unchanged candidate/state destination.
+    let Some(state_tile) = thread::index_1d().checked_tiled_2d::<64, 1, 64, 1>() else {
+        return;
+    };
+    if let Some(slot) = output_state.get_tiled_2d_mut(
+        &state_tile,
+        0,
+        SYSTEM_BATCHES,
+        CANDIDATES * STATE_WIDTH,
+        CANDIDATES * STATE_WIDTH,
+    ) {
+        *slot = value;
     }
 }

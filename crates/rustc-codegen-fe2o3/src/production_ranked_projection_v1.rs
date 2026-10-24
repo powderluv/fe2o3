@@ -170,18 +170,18 @@ use fe2o3_mir_model::semantic_mir_v1::{
     SemanticMfmaOperandContractV1, SemanticMfmaOperandRoleV1, SemanticMfmaProfileV1,
     SemanticMfmaRegisterDistributionV1, SemanticMfmaStorageLayoutV1, SemanticMutabilityV1,
     SemanticOperandV1, SemanticPlaceV1, SemanticPointerKindV1, SemanticPointerMetadataV1,
-    SemanticProjectionKindV1, SemanticRvalueKindV1, SemanticRvalueV1, SemanticScalarTypeV1,
-    SemanticSourceArgumentOwnershipV1, SemanticSourceProvenanceV1, SemanticStatementKindV1,
-    SemanticSwitchTargetsV1, SemanticTerminatorKindV1, SemanticTypeDeclV1, SemanticTypeIdV1,
-    SemanticTypeShapeV1, SemanticUnaryOpV1, SemanticUncheckedBinaryOpV1, SemanticUnwindActionV1,
-    SemanticVolatilityV1, SemanticWorkgroupPipelineEventV1, SemanticWorkgroupScanKindV1,
-    SemanticWriteOnlyDisjointWriteKindV1, exact_transparent_scalar_carrier_field_v1,
+    SemanticProjectionKindV1, SemanticRustTypeKindV1, SemanticRvalueKindV1, SemanticRvalueV1,
+    SemanticScalarTypeV1, SemanticSourceArgumentOwnershipV1, SemanticSourceProvenanceV1,
+    SemanticStatementKindV1, SemanticSwitchTargetsV1, SemanticTerminatorKindV1, SemanticTypeDeclV1,
+    SemanticTypeIdV1, SemanticTypeShapeV1, SemanticUnaryOpV1, SemanticUncheckedBinaryOpV1,
+    SemanticUnwindActionV1, SemanticVolatilityV1, SemanticWorkgroupPipelineEventV1,
+    SemanticWorkgroupScanKindV1, SemanticWriteOnlyDisjointWriteKindV1,
+    exact_transparent_scalar_carrier_field_v1,
 };
 #[cfg(test)]
 use fe2o3_mir_model::semantic_mir_v1::{
     SemanticBackendScalarV1, SemanticExternAbiV1, SemanticFieldsShapeV1, SemanticFunctionSafetyV1,
-    SemanticRustTypeKindV1, SemanticRustcVariantsV1, SemanticTargetArchitectureV1,
-    SemanticTypeLayoutDetailsV1,
+    SemanticRustcVariantsV1, SemanticTargetArchitectureV1, SemanticTypeLayoutDetailsV1,
 };
 use fe2o3_mir_model::{
     SemanticEnumPayloadAvailabilityV1, SemanticEnumPayloadDominanceV1,
@@ -251,8 +251,17 @@ struct ProjectedSemanticAccessSiteV1 {
     statement: Option<usize>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GuardedAccessFailureV1 {
+    Trap,
+    // Only authenticated total load_or effects use this control behavior.
+    // The scalar fallback remains in semantic/native value lowering.
+    ReturnFallback,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct GuardedRankedAccessV1 {
+    failure: GuardedAccessFailureV1,
     view: ProductionRankedValueIdV1,
     indices: Vec<ProductionRankedValueV1>,
     checked_success: Option<ProductionRankedValueV1>,
@@ -417,6 +426,7 @@ struct IntrinsicProjectionV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ProjectedPipelineScalarV1 {
     Value(ProductionRankedValueV1),
+    GuardedIndex,
     Induction {
         induction: usize,
     },
@@ -430,6 +440,13 @@ enum ProjectedPipelineScalarV1 {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ProjectedPipelineEffectV1 {
+    // The actual source comparison computes this value once; its true edge
+    // dominates every associated access using the same ranked SSA result.
+    Guard {
+        index: ProjectedPipelineScalarV1,
+        bound: ProductionRankedValueV1,
+        access_block: usize,
+    },
     Create {
         owner: usize,
         result: Option<ProductionRankedValueIdV1>,
@@ -5249,6 +5266,7 @@ fn exact_less_than_definition_v1(
 
 fn project_authenticated_capabilities_v1(
     callables: &[SemanticCallableDeclV1],
+    types: &[SemanticTypeDeclV1],
     function: &SemanticFunctionDeclV1,
     enum_payload_dominance: &SemanticEnumPayloadDominanceV1,
     local_allocations: &[Option<AllocationContractV1>],
@@ -5276,6 +5294,7 @@ fn project_authenticated_capabilities_v1(
     )?;
     let pipeline_payloads = collect_workgroup_pipeline_payloads_v1(
         callables,
+        types,
         function,
         enum_payload_dominance,
         &pipeline_owners,
@@ -5531,74 +5550,7 @@ fn propagate_capability_dataflow_v1(
     Ok(entries)
 }
 
-fn collect_workgroup_pipeline_payloads_v1(
-    callables: &[SemanticCallableDeclV1],
-    function: &SemanticFunctionDeclV1,
-    enum_payload_dominance: &SemanticEnumPayloadDominanceV1,
-    pipeline_owners: &[Option<usize>],
-    entries: &[Option<ProjectedCapabilityStateV1>],
-    work: &mut usize,
-) -> Result<HashMap<usize, ProjectedMfmaOperandV1>, ProductionRankedProjectionErrorV1> {
-    let mut payloads = HashMap::new();
-    for (block_index, block) in function.blocks().iter().enumerate() {
-        let SemanticTerminatorKindV1::Call(call) = block.terminator().kind() else {
-            continue;
-        };
-        let Some(SemanticCallableDeclV1::CompilerIntrinsic {
-            operation: SemanticCompilerIntrinsicOperationV1::WorkgroupPipelineWrite { element, .. },
-            ..
-        }) = callables.get(call.callee().index() as usize)
-        else {
-            continue;
-        };
-        let Some(entry) = entries.get(block_index).and_then(Option::as_ref) else {
-            continue;
-        };
-        charge_capability_dataflow_work_v1(work, entry.len().saturating_add(1))?;
-        let mut state = try_clone_capability_state_v1(entry)?;
-        transfer_capability_statements_v1(
-            function,
-            block_index,
-            &mut state,
-            enum_payload_dominance,
-        )?;
-        let [receiver, _, _, value] = call.arguments() else {
-            return Err(ProductionRankedProjectionErrorV1::Incomplete(
-                "a workgroup pipeline write lacks its exact receiver, epoch, index, and payload",
-            ));
-        };
-        if value.ty() != *element {
-            return Err(ProductionRankedProjectionErrorV1::Incomplete(
-                "a workgroup pipeline write payload changed semantic type",
-            ));
-        }
-        let owner = raw_operand_place(receiver)
-            .and_then(|place| pipeline_owners.get(place.local().index() as usize))
-            .copied()
-            .flatten()
-            .ok_or(ProductionRankedProjectionErrorV1::Incomplete(
-                "a workgroup pipeline write lacks one compiler-owned origin",
-            ))?;
-        let Some(ProjectedCapabilityOriginV1::Operand(payload)) =
-            capability_known_origin_v1(&state, value)
-        else {
-            return Err(ProductionRankedProjectionErrorV1::Incomplete(
-                "a workgroup pipeline write lacks one authenticated typed payload",
-            ));
-        };
-        match payloads.insert(owner, payload) {
-            None => {}
-            Some(existing) if existing == payload => {}
-            Some(existing) => {
-                payloads.insert(owner, existing);
-                return Err(ProductionRankedProjectionErrorV1::Incomplete(
-                    "one workgroup pipeline receives incompatible typed payload layouts",
-                ));
-            }
-        }
-    }
-    Ok(payloads)
-}
+include!("production_ranked_projection_v1/pipeline_payloads_v1.rs");
 
 fn bind_capability_read_effects_to_call_blocks_v1(
     function: &SemanticFunctionDeclV1,
@@ -5780,6 +5732,7 @@ fn project_strided_read_effects_v1(
             next_value,
         )?;
         projected.push(Some(GuardedRankedAccessV1 {
+            failure: GuardedAccessFailureV1::ReturnFallback,
             view,
             indices: vec![row, column],
             checked_success: None,
@@ -7710,6 +7663,7 @@ fn project_intrinsic_contracts_with_multi_entry_v1(
     let local_allocations = local_allocation_contracts(types, function, &allocation_origins)?;
     let capability_effects = project_authenticated_capabilities_v1(
         callables,
+        types,
         function,
         &enum_payload_dominance,
         &local_allocations,
@@ -8047,6 +8001,7 @@ fn project_intrinsic_contracts_with_multi_entry_v1(
                 }
             };
             let access = GuardedRankedAccessV1 {
+                failure: GuardedAccessFailureV1::Trap,
                 view,
                 indices: vec![index],
                 checked_success: None,
@@ -9134,7 +9089,12 @@ fn project_workgroup_pipeline_pending_v1<'facts>(
                 let owner = pipeline_call_owner_v1(call, &owners)?;
                 let contract = &pending[owner];
                 let epoch = scalar_projector.project_root(block_index, &call.arguments()[1])?;
-                let index = scalar_projector.project_root(block_index, &call.arguments()[2])?;
+                let index = project_pipeline_guarded_index_v1(
+                    &mut scalar_projector,
+                    block_index,
+                    &call.arguments()[2],
+                    &mut effects,
+                )?;
                 let view = contract
                     .view
                     .ok_or(ProductionRankedProjectionErrorV1::Incomplete(
@@ -9172,6 +9132,8 @@ fn project_workgroup_pipeline_pending_v1<'facts>(
     }
     Ok(effects)
 }
+
+include!("production_ranked_projection_v1/pipeline_guarded_index_v1.rs");
 
 fn pipeline_call_owner_v1(
     call: &SemanticDirectCallV1,
@@ -17245,16 +17207,31 @@ impl<'a> SemanticAssertProofsV1<'a> {
             }
             let zero_target = targets.values()[0].edge().target().index() as usize;
             let nonzero_target = targets.otherwise().target().index() as usize;
+            let statement_count = block.statements().len();
+            let mut capture = ScalarAssignmentSiteV1 {
+                block: switch_block,
+                statement: statement_count,
+            };
             let discriminant_is_tested = self.local_is_value_preserving_alias_of(
                 discriminant_local,
                 local,
                 switch_block,
-                block.statements().len(),
-                None,
+                statement_count,
+                Some(&mut capture),
             )?;
             let discriminant_is_tested = discriminant_is_tested
                 && (discriminant_local == local
-                    || !self.block_defines_local(switch_block, local)?);
+                    || if capture.block != switch_block || capture.statement > statement_count {
+                        false
+                    } else {
+                        self.charge(statement_count - capture.statement)?;
+                        !self.block_defines_local_in_statement_range_v1(
+                            switch_block,
+                            local,
+                            capture.statement,
+                            statement_count,
+                        )?
+                    });
             let excluding_target = if discriminant_is_tested {
                 Some(nonzero_target)
             } else {
@@ -17531,36 +17508,52 @@ impl<'a> SemanticAssertProofsV1<'a> {
         };
         let left_local = simple_operand_local(left).map(|value| value.index() as usize);
         let right_local = simple_operand_local(right).map(|value| value.index() as usize);
+        let mut left_capture = site;
         let left_is_tested = if let Some(left_local) = left_local {
             self.local_is_value_preserving_alias_of(
                 left_local,
                 tested_local,
                 site.block,
                 site.statement,
-                None,
+                Some(&mut left_capture),
             )?
         } else {
             false
         };
+        let mut right_capture = site;
         let right_is_tested = if let Some(right_local) = right_local {
             self.local_is_value_preserving_alias_of(
                 right_local,
                 tested_local,
                 site.block,
                 site.statement,
-                None,
+                Some(&mut right_capture),
             )?
         } else {
             false
         };
-        let compares_tested_local_to_zero = left_is_tested
-            && self.operand_is_exact_unsigned_zero(right)
-            || right_is_tested && self.operand_is_exact_unsigned_zero(left);
-        if !compares_tested_local_to_zero {
+        let capture = if left_is_tested && self.operand_is_exact_unsigned_zero(right) {
+            left_capture
+        } else if right_is_tested && self.operand_is_exact_unsigned_zero(left) {
+            right_capture
+        } else {
             return Ok(None);
-        }
-        if site.block == switch_block && self.block_defines_local(switch_block, tested_local)? {
-            return Ok(None);
+        };
+        if site.block == switch_block {
+            let statement_count = self.function.blocks()[switch_block].statements().len();
+            if capture.block != switch_block || capture.statement > statement_count {
+                return Ok(None);
+            }
+            // Initialization before the observed value is valid; later writes are not.
+            self.charge(statement_count - capture.statement)?;
+            if self.block_defines_local_in_statement_range_v1(
+                switch_block,
+                tested_local,
+                capture.statement,
+                statement_count,
+            )? {
+                return Ok(None);
+            }
         }
         Ok(match operation {
             SemanticBinaryOpV1::Equal => Some(false_target),
@@ -20168,6 +20161,46 @@ fn build_ranked_cfg_from_prepared_assertions_v1(
         .max()
         .map_or(0, |value| value.saturating_add(1));
     let pipeline_values = prepare_pipeline_values_v1(&mut projected_blocks, &mut next_value)?;
+    let mut pipeline_guards = Vec::new();
+    for (guard, projected) in projected_blocks.iter().enumerate() {
+        for item in &projected.items {
+            if let ProjectedBlockItemV1::Pipeline(ProjectedPipelineEffectV1::Guard {
+                index:
+                    ProjectedPipelineScalarV1::Binary {
+                        result: Some(index),
+                        ..
+                    },
+                bound,
+                access_block,
+            }) = item
+            {
+                if projected
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, ProjectedBlockItemV1::Guarded(_)))
+                    || projected_blocks[*access_block]
+                        .items
+                        .iter()
+                        .any(|item| matches!(item, ProjectedBlockItemV1::Guarded(_)))
+                {
+                    return Err(ProductionRankedProjectionErrorV1::Incomplete(
+                        "a pipeline source guard requires an unexpanded direct access edge",
+                    ));
+                }
+                pipeline_guards.try_reserve(1).map_err(|_| {
+                    ProductionRankedProjectionErrorV1::Unsupported(
+                        "pipeline guard edge storage cannot be reserved",
+                    )
+                })?;
+                pipeline_guards.push((
+                    projected_target(&base_blocks, guard)?,
+                    projected_target(&base_blocks, *access_block)?,
+                    ProductionRankedValueV1::Local(*index),
+                    *bound,
+                ));
+            }
+        }
+    }
     let mut blocks = Vec::with_capacity(block_count);
     blocks.push(ProductionRankedBlockV1::new(
         entry_operations,
@@ -20203,6 +20236,19 @@ fn build_ranked_cfg_from_prepared_assertions_v1(
                     operations.push(operation);
                 }
                 ProjectedBlockItemV1::Guarded(access) => {
+                    if access.failure == GuardedAccessFailureV1::ReturnFallback
+                        && (access.access != AccessKindAttr::Read
+                            || access.memory_space != MemorySpaceAttr::Global
+                            || access.checked_success.is_some()
+                            || access.indices.len() != 2
+                            || access.comparisons.len() != 2
+                            || access.comparisons[0].0 != access.indices[0]
+                            || access.comparisons[1].0 != access.indices[1])
+                    {
+                        return Err(ProductionRankedProjectionErrorV1::Incomplete(
+                            "a total read fallback without its exact rank-two read predicates",
+                        ));
+                    }
                     let predicate = GuardPredicateV1::for_access(&access);
                     let access_block = current + predicate.comparisons.len();
                     let failure_block = access_block + 1;
@@ -20216,6 +20262,7 @@ fn build_ranked_cfg_from_prepared_assertions_v1(
                             access_block,
                             failure_block,
                             live.len(),
+                            access.failure,
                         )?;
                     } else {
                         append_predicate_blocks(
@@ -20286,12 +20333,41 @@ fn build_ranked_cfg_from_prepared_assertions_v1(
                         output_extent: access.output_extent,
                         semantic_site: access.semantic_site,
                     });
-                    push_block_at(
-                        &mut blocks,
-                        failure_block,
-                        Vec::new(),
-                        ProductionRankedTerminatorV1::Trap,
-                    )?;
+                    if access.failure == GuardedAccessFailureV1::ReturnFallback {
+                        if live.is_empty() {
+                            push_block_at(
+                                &mut blocks,
+                                failure_block,
+                                Vec::new(),
+                                ProductionRankedTerminatorV1::Branch {
+                                    target: ranked_block_id(continuation)?,
+                                },
+                            )?;
+                        } else {
+                            let block = ranked_block_id(failure_block)?;
+                            push_block_at_with_index_arguments(
+                                &mut blocks,
+                                failure_block,
+                                u32::try_from(live.len()).map_err(|_| {
+                                    ProductionRankedProjectionErrorV1::Unsupported(
+                                        "live induction argument count does not fit u32",
+                                    )
+                                })?,
+                                Vec::new(),
+                                ProductionRankedTerminatorV1::BranchArgs {
+                                    arguments: live_induction_block_arguments(block, live)?,
+                                    target: ranked_block_id(continuation)?,
+                                },
+                            )?;
+                        }
+                    } else {
+                        push_block_at(
+                            &mut blocks,
+                            failure_block,
+                            Vec::new(),
+                            ProductionRankedTerminatorV1::Trap,
+                        )?;
+                    }
                     current = continuation;
                     operations = Vec::new();
                 }
@@ -20299,7 +20375,8 @@ fn build_ranked_cfg_from_prepared_assertions_v1(
                     let access = match &effect {
                         ProjectedPipelineEffectV1::Access { kind, .. } => Some(*kind),
                         ProjectedPipelineEffectV1::Create { .. }
-                        | ProjectedPipelineEffectV1::Event { .. } => None,
+                        | ProjectedPipelineEffectV1::Event { .. }
+                        | ProjectedPipelineEffectV1::Guard { .. } => None,
                     };
                     let first_operation = operations.len();
                     materialize_pipeline_effect_v1(
@@ -20815,6 +20892,63 @@ fn build_ranked_cfg_from_prepared_assertions_v1(
             "semantic CFG projection produced a non-canonical block inventory",
         ));
     }
+    for (guard, access, index, bound) in pipeline_guards {
+        let guard_block = &blocks[guard];
+        let (mut true_arguments, false_arguments, true_block, false_block) =
+            match guard_block.terminator() {
+                ProductionRankedTerminatorV1::AnalysisSplit {
+                    first_block,
+                    second_block,
+                    ..
+                } if *second_block == ranked_block_id(access)? => {
+                    (Vec::new(), Vec::new(), *second_block, *first_block)
+                }
+                ProductionRankedTerminatorV1::AnalysisSplitArgs {
+                    first_arguments,
+                    second_arguments,
+                    first_block,
+                    second_block,
+                    ..
+                } if *second_block == ranked_block_id(access)? => (
+                    second_arguments.clone(),
+                    first_arguments.clone(),
+                    *second_block,
+                    *first_block,
+                ),
+                _ => {
+                    return Err(ProductionRankedProjectionErrorV1::Incomplete(
+                        "a pipeline source guard lost its exact direct true edge",
+                    ));
+                }
+            };
+        let access_block = &blocks[access];
+        if true_arguments.len() != access_block.index_argument_count() as usize {
+            return Err(ProductionRankedProjectionErrorV1::Incomplete(
+                "a pipeline source guard changed the access argument prefix",
+            ));
+        }
+        true_arguments.push(index);
+        blocks[guard] = ProductionRankedBlockV1::with_index_arguments(
+            guard_block.index_argument_count(),
+            guard_block.operations().to_vec(),
+            ProductionRankedTerminatorV1::IndexLessThanArgs {
+                lhs: index,
+                rhs: bound,
+                true_arguments,
+                false_arguments,
+                true_block,
+                false_block,
+            },
+        );
+        let access_block = &blocks[access];
+        blocks[access] = ProductionRankedBlockV1::with_index_arguments(
+            access_block.index_argument_count().checked_add(1).ok_or(
+                ProductionRankedProjectionErrorV1::Unsupported("too many pipeline guard arguments"),
+            )?,
+            access_block.operations().to_vec(),
+            access_block.terminator().clone(),
+        );
+    }
     Ok((blocks, sources, executable_effect_sources))
 }
 
@@ -20864,6 +20998,9 @@ fn prepare_pipeline_values_v1(
                 continue;
             };
             match effect {
+                ProjectedPipelineEffectV1::Guard { index, .. } => {
+                    prepare_pipeline_scalar_v1(index, next_value)?;
+                }
                 ProjectedPipelineEffectV1::Create { owner, result, .. } => {
                     let value = (*result).ok_or(ProductionRankedProjectionErrorV1::Incomplete(
                         "a workgroup pipeline creation result was not prepared",
@@ -20925,6 +21062,9 @@ fn materialize_pipeline_effect_v1(
     pipeline_values: &HashMap<usize, ProductionRankedValueV1>,
 ) -> Result<(), ProductionRankedProjectionErrorV1> {
     match effect {
+        ProjectedPipelineEffectV1::Guard { index, .. } => {
+            materialize_pipeline_scalar_v1(index, block, live, operations)?;
+        }
         ProjectedPipelineEffectV1::Create { owner, result, .. } => {
             let result = result.ok_or(ProductionRankedProjectionErrorV1::Incomplete(
                 "a workgroup pipeline creation result was not prepared",
@@ -21000,6 +21140,12 @@ fn materialize_pipeline_scalar_v1(
 ) -> Result<ProductionRankedValueV1, ProductionRankedProjectionErrorV1> {
     match scalar {
         ProjectedPipelineScalarV1::Value(value) => Ok(value),
+        ProjectedPipelineScalarV1::GuardedIndex => Ok(ProductionRankedValueV1::BlockArgument {
+            block,
+            argument: u32::try_from(live.len()).map_err(|_| {
+                ProductionRankedProjectionErrorV1::Unsupported("too many pipeline guard arguments")
+            })?,
+        }),
         ProjectedPipelineScalarV1::Induction { induction } => {
             let argument = live
                 .iter()
@@ -21156,6 +21302,7 @@ fn append_predicate_blocks_with_index_arguments(
     true_block: usize,
     false_block: usize,
     argument_count: usize,
+    failure: GuardedAccessFailureV1,
 ) -> Result<(), ProductionRankedProjectionErrorV1> {
     if predicate.comparisons.is_empty() {
         return Err(ProductionRankedProjectionErrorV1::Unsupported(
@@ -21190,7 +21337,11 @@ fn append_predicate_blocks_with_index_arguments(
                 lhs,
                 rhs,
                 true_arguments: arguments.clone(),
-                false_arguments: Vec::new(),
+                false_arguments: if failure == GuardedAccessFailureV1::ReturnFallback {
+                    arguments
+                } else {
+                    Vec::new()
+                },
                 true_block: ranked_block_id(next)?,
                 false_block: ranked_block_id(false_block)?,
             },
@@ -23840,6 +23991,7 @@ fn project_place_access_with_atomic(
         guarded_sites.push(GuardedAccessSiteV1 {
             insertion_operation: operations.len(),
             access: GuardedRankedAccessV1 {
+                failure: GuardedAccessFailureV1::Trap,
                 view: view_id,
                 indices: ranked_indices,
                 checked_success: None,
@@ -24081,6 +24233,14 @@ mod cold_compile_error_tests;
 
 #[cfg(test)]
 mod tests {
+    mod pipeline_guard_tests {
+        use super::*;
+        include!("production_ranked_projection_v1/pipeline_guard_v1_tests.rs");
+    }
+    mod workgroup_pipeline_payload_tests {
+        use super::*;
+        include!("production_ranked_projection_v1/workgroup_pipeline_payload_v1_tests.rs");
+    }
     mod pipeline_scalar_ssa_tests {
         use super::*;
         include!("production_ranked_projection_v1/pipeline_scalar_ssa_v1_tests.rs");
@@ -39284,6 +39444,7 @@ mod tests {
         let constants = constant_locals(&function).unwrap();
         project_authenticated_capabilities_v1(
             &[],
+            &types,
             &function,
             &enum_payload_dominance,
             &local_allocations,
@@ -39987,6 +40148,7 @@ mod tests {
         projected[2]
             .items
             .push(ProjectedBlockItemV1::Guarded(GuardedRankedAccessV1 {
+                failure: GuardedAccessFailureV1::Trap,
                 view: ProductionRankedValueIdV1::new(0),
                 indices: vec![ProductionRankedValueV1::Argument(0)],
                 checked_success: None,

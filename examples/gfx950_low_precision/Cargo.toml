@@ -10,9 +10,13 @@ publish = false
 [features]
 kernel-fp4-gemm = []
 kernel-fp8-gemm = []
+kernel-simt-fp8-gemm = []
+kernel-simt-fp4-gemm = []
 kernel-mixed-fp4-fp8-gemm = []
 kernel-fp4-attention = []
 kernel-fp8-attention = []
+kernel-simt-fp8-attention = []
+kernel-simt-fp4-attention = []
 
 [workspace]
 members = []
@@ -27,3 +31,7 @@ fe2o3-host = { path = "../../crates/fe2o3-host" }
 [lib]
 name = "fe2o3_gfx950_low_precision"
 path = "src/lib.rs"
+
+# Keep standalone host-test images within the pinned runner hashing bound.
+[profile.test]
+debug = 0

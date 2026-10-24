@@ -1,0 +1,76 @@
+{
+  "schema": "fe2o3-simulation-expectation-v1",
+  "arguments": [
+    {
+      "kind": "buffer",
+      "value": {
+        "element": "u16",
+        "access": "read_only",
+        "alignment": 2,
+        "bytes": "0x81428042",
+        "initialized": "0x0f"
+      }
+    },
+    {
+      "kind": "buffer",
+      "value": {
+        "element": "u16",
+        "access": "read_only",
+        "alignment": 2,
+        "bytes": "0x814282c2",
+        "initialized": "0x0f"
+      }
+    },
+    {
+      "kind": "buffer",
+      "value": {
+        "element": "f32",
+        "access": "read_write",
+        "alignment": 4,
+        "bytes": "0x0000803e0100807f",
+        "initialized": "0xff"
+      }
+    },
+    {
+      "kind": "scalar",
+      "type": "u32",
+      "bits": "0x00000001"
+    },
+    {
+      "kind": "scalar",
+      "type": "u32",
+      "bits": "0x00000001"
+    },
+    {
+      "kind": "scalar",
+      "type": "u32",
+      "bits": "0x00000002"
+    },
+    {
+      "kind": "scalar",
+      "type": "u32",
+      "bits": "0x00000002"
+    },
+    {
+      "kind": "scalar",
+      "type": "u32",
+      "bits": "0x00000001"
+    },
+    {
+      "kind": "scalar",
+      "type": "u32",
+      "bits": "0x00000001"
+    },
+    {
+      "kind": "scalar",
+      "type": "f32",
+      "bits": "0x3f800000"
+    },
+    {
+      "kind": "scalar",
+      "type": "f32",
+      "bits": "0x00000000"
+    }
+  ],
+  "shared_buffers": []
+}

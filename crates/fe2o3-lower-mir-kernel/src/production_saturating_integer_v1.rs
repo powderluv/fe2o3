@@ -198,7 +198,7 @@ impl SemanticFunctionLoweringV1<'_, '_> {
             )?;
             (overflow, clamp)
         };
-        self.emit(
+        let result = self.emit(
             operations,
             ty,
             OperationKind::Select {
@@ -206,6 +206,19 @@ impl SemanticFunctionLoweringV1<'_, '_> {
                 true_value: clamp,
                 false_value: raw,
             },
-        )
+        )?;
+        // For unsigned subtraction, max(lhs - rhs, 0) never exceeds lhs.
+        // Record this only for the final clamp selection, never the wrapped raw result.
+        if !signed
+            && operation == SemanticSaturatingIntegerOpV1::Subtract
+            && let Some(bound) = self.emitted_unsigned_exclusive_bounds.get(&lhs).copied()
+        {
+            let (value, _) = result
+                .clone()
+                .value()
+                .map_err(|detail| unsupported(0, None, None, detail))?;
+            self.emitted_unsigned_exclusive_bounds.insert(value, bound);
+        }
+        Ok(result)
     }
 }

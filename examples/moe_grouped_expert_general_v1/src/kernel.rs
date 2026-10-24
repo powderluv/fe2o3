@@ -12,6 +12,21 @@ use fe2o3_device::{
 
 pub const MOE_EXPERT_WORKGROUP_V1: [u32; 3] = [64, 1, 1];
 
+// Same-width 0/1 flag and value keep constant returns free of padding.
+// Callers reject every flag other than 1 before using the value.
+// The complement form is exactly lhs + rhs, with each subtraction bounded.
+// Retain the existing full-width arithmetic regression oracle below.
+// Native validation keeps the same complement guards in its own CFG.
+#[cfg(test)]
+fn checked_extent_add(lhs: usize, rhs: usize) -> (usize, usize) {
+    let available = usize::MAX - lhs;
+    if rhs > available {
+        return (0, 0);
+    }
+    let remaining = available - rhs;
+    (1, usize::MAX - remaining)
+}
+
 fn matrix_extent(rows: u32, columns: u32, stride: u32) -> usize {
     if rows == 0 || columns == 0 {
         0
@@ -53,15 +68,24 @@ pub fn moe_grouped_expert_general_v1(
     let weight_extent = if expert_count == 0 || reduction == 0 || output_columns == 0 {
         0
     } else {
-        ((expert_count - 1) as usize * expert_weight_stride as usize)
-            .checked_add((reduction - 1) as usize * weight_stride as usize)
-            .and_then(|extent| extent.checked_add(output_columns as usize))
-            .ok_or(KernelError::InvalidArgument)?
+        // Keep both checked-add guards directly on uniform kernel dimensions.
+        // The remaining capacity after the first sum is MAX - that exact sum.
+        let expert_offset = (expert_count - 1) as usize * expert_weight_stride as usize;
+        let reduction_offset = (reduction - 1) as usize * weight_stride as usize;
+        let after_experts = usize::MAX - expert_offset;
+        if reduction_offset > after_experts {
+            return Err(KernelError::InvalidArgument);
+        }
+        let after_reduction = after_experts - reduction_offset;
+        if output_columns as usize > after_reduction {
+            return Err(KernelError::InvalidArgument);
+        }
+        usize::MAX - (after_reduction - output_columns as usize)
     };
     let bias_extent = matrix_extent(expert_count, output_columns, bias_stride);
     let output_extent = matrix_extent(rows_padded, output_columns, output_stride);
     if rows_padded == 0
-        || !rows_padded.is_multiple_of(16)
+        || rows_padded % 16 != 0
         || output_columns == 0
         || reduction == 0
         || token_stride < reduction
@@ -79,14 +103,20 @@ pub fn moe_grouped_expert_general_v1(
         return Err(KernelError::InvalidArgument);
     }
     // Checked views separate route metadata from the quantized matrix operands.
-    let gates = StridedReadView2D::from_shared_slice(route_gates, 0, rows_padded as usize, 1, 1)?;
-    let biases = StridedReadView2D::from_shared_slice(
+    let Ok(gates) =
+        StridedReadView2D::from_shared_slice(route_gates, 0, rows_padded as usize, 1, 1)
+    else {
+        return Err(KernelError::InvalidArgument);
+    };
+    let Ok(biases) = StridedReadView2D::from_shared_slice(
         expert_bias,
         expert as usize * bias_stride as usize,
         1,
         output_columns as usize,
         bias_stride as usize,
-    )?;
+    ) else {
+        return Err(KernelError::InvalidArgument);
+    };
 
     // One Wave64 owns one 16x16 routed-output tile.
     let thread_index = thread::index_1d();
@@ -98,24 +128,28 @@ pub fn moe_grouped_expert_general_v1(
     let tile_row = tile / tiles_per_row;
     let tile_column = tile % tiles_per_row;
     let output_column = tile_column * 16 + lane_column;
-    let output_tile = thread_index
-        .checked_tiled_2d::<64, 16, 16, 4>()
-        .ok_or(KernelError::OutOfBounds)?;
-    let token_matrix = Bf16MfmaAMatrix::row_major(
+    let Some(output_tile) = thread_index.checked_tiled_2d::<64, 16, 16, 4>() else {
+        return Err(KernelError::OutOfBounds);
+    };
+    let Ok(token_matrix) = Bf16MfmaAMatrix::row_major(
         routed_tokens,
         0,
         rows_padded as usize,
         reduction as usize,
         token_stride as usize,
-    )?;
+    ) else {
+        return Err(KernelError::InvalidArgument);
+    };
     let weight_base = expert as usize * expert_weight_stride as usize;
-    let weight_matrix = Bf16MfmaBMatrix::row_major(
+    let Ok(weight_matrix) = Bf16MfmaBMatrix::row_major(
         expert_weights,
         weight_base,
         reduction as usize,
         output_columns as usize,
         weight_stride as usize,
-    )?;
+    ) else {
+        return Err(KernelError::InvalidArgument);
+    };
     let wave_lane = WaveLane::<Wave64>::current();
     let matrix = Matrix::current();
     // All lanes traverse the same K phases and retain accumulation in FP32.
@@ -174,6 +208,104 @@ pub fn moe_grouped_expert_general_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn expect_checked_value<T: From<u8> + PartialEq>((valid, value): (T, T)) -> T {
+        assert!(valid == T::from(1_u8), "unexpected rejected checked pair");
+        value
+    }
+
+    #[test]
+    fn private_checked_pairs_have_no_padding() {
+        use core::mem::{offset_of, size_of};
+        assert_eq!(size_of::<(usize, usize)>(), 2 * size_of::<usize>());
+        assert_eq!(offset_of!((usize, usize), 0), 0);
+        assert_eq!(offset_of!((usize, usize), 1), size_of::<usize>());
+    }
+
+    #[test]
+    fn private_checked_pairs_preserve_zero_max_and_rejection() {
+        assert_eq!(checked_extent_add(0, 0), (1, 0));
+        assert_eq!(checked_extent_add(usize::MAX, 0), (1, usize::MAX));
+        assert_eq!(checked_extent_add(0, usize::MAX), (1, usize::MAX));
+        assert_eq!(checked_extent_add(usize::MAX, 1), (0, 0));
+    }
+
+    #[test]
+    #[cfg(any(target_pointer_width = "32", target_pointer_width = "64"))]
+    fn checked_extent_add_matches_independent_u128_oracle() {
+        let check = |lhs: usize, rhs: usize| {
+            let expected = lhs as u128 + rhs as u128;
+            let actual = checked_extent_add(lhs, rhs);
+            if expected > usize::MAX as u128 {
+                assert_eq!(actual, (0, 0));
+            } else {
+                assert_eq!(expect_checked_value(actual) as u128, expected);
+            }
+        };
+        let boundaries = [
+            0,
+            1,
+            2,
+            15,
+            16,
+            usize::MAX / 3,
+            usize::MAX / 2,
+            usize::MAX / 2 + 1,
+            usize::MAX - 1,
+            usize::MAX,
+        ];
+        for lhs in boundaries {
+            for rhs in boundaries {
+                check(lhs, rhs);
+            }
+        }
+        let mut state = 0xb1d9_5037_248a_6c12_u64;
+        for _ in 0..1024 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let lhs = state as usize;
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            check(lhs, state as usize);
+        }
+    }
+
+    #[test]
+    fn checked_extent_add_preserves_two_stage_boundaries() {
+        assert_eq!(checked_extent_add(usize::MAX, 1), (0, 0));
+        let prefix = expect_checked_value(checked_extent_add(usize::MAX - 1, 1));
+        assert_eq!(prefix, usize::MAX);
+        assert_eq!(
+            expect_checked_value(checked_extent_add(prefix, 0)),
+            usize::MAX
+        );
+        assert_eq!(checked_extent_add(prefix, 1), (0, 0));
+        assert_eq!(expect_checked_value(checked_extent_add(0, 0)), 0);
+        assert_eq!(
+            expect_checked_value(checked_extent_add(0, usize::MAX)),
+            usize::MAX
+        );
+        assert_eq!(
+            expect_checked_value(checked_extent_add(usize::MAX, 0)),
+            usize::MAX
+        );
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn checked_extent_add_does_not_narrow_to_u32() {
+        let prefix = expect_checked_value(checked_extent_add(u32::MAX as usize, 1));
+        assert_eq!(prefix, 1_usize << 32);
+        assert_eq!(
+            expect_checked_value(checked_extent_add(prefix, prefix)),
+            1_usize << 33
+        );
+        assert_eq!(
+            expect_checked_value(checked_extent_add(
+                usize::MAX - u32::MAX as usize,
+                u32::MAX as usize
+            )),
+            usize::MAX
+        );
+    }
 
     #[test]
     fn matrix_extent_excludes_trailing_padding() {

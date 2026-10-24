@@ -1,9 +1,8 @@
 //! Safe Rust source for the scalar-attention GPT-OSS-120B gfx950 decode ablation.
 //!
-//! This file is a compiler-rejected counterexample, not a recommended kernel:
-//! replacing BF16 MFMA with scalar widening reaches a call terminator before the
-//! compiler has exact callable memory-effect summaries. The tutorial therefore
-//! reports no HSACO, numerical result, or latency for this source.
+//! Historical helper-call and private-array forms were compiler-rejected.
+//! Scalar QK uses authenticated BF16 widening with the original canonical NaN
+//! policy. The preserved decoder is test-only; qualification is in README.
 
 #![allow(missing_docs)]
 
@@ -19,11 +18,13 @@ use crate::{
 };
 
 const ATTENTION_SCALE: f32 = 0.125;
+// Empty slots are identified by u32::MAX, never by a numerical score floor.
 const ROUTER_FLOOR: f32 = -1.0e30;
 
-// Manual widening is intentionally local to this rejected scalar control.
+// Preserved decoder reference for exhaustive host equivalence tests.
+#[cfg(test)]
 #[inline(always)]
-fn widen_bf16(bits: u16) -> f32 {
+pub(crate) fn widen_bf16(bits: u16) -> f32 {
     let sign = if (bits & 0x8000) == 0 { 1.0 } else { -1.0 };
     let exponent = ((bits >> 7) & 0xff) as u32;
     let fraction = (bits & 0x7f) as u32;
@@ -89,6 +90,10 @@ fn widen_bf16(bits: u16) -> f32 {
     not(target_arch = "amdgpu"),
     feature = "kernel-gpt-oss-decode-scalar-attention"
 ))]
+#[cfg(not(any(
+    feature = "kernel-gpt-oss-mode-simt",
+    feature = "kernel-gpt-oss-mode-tile"
+)))]
 #[kernel(
     typed,
     launch(required = [256, 1, 1], max = [256, 1, 1], max_grid = [4, 1, 1]),
@@ -178,8 +183,10 @@ pub fn gfx950_gpt_oss_120b_decode_megakernel_v1(
         {
             let mut candidate_score = subgroup.broadcast_f32::<64>(local_logit0, source & 63);
             let mut candidate_id = source.wrapping_mul(2);
-            let take = ((candidate_score > best0)
-                | ((candidate_score == best0) & (candidate_id < id0)))
+            let take = ((candidate_id != u32::MAX)
+                & ((id0 == u32::MAX)
+                    | (candidate_score > best0)
+                    | ((candidate_score == best0) & (candidate_id < id0))))
                 as u32;
             let choose = take as f32;
             let keep = 1.0 - choose;
@@ -193,8 +200,10 @@ pub fn gfx950_gpt_oss_120b_decode_megakernel_v1(
             candidate_id = old_id
                 .wrapping_mul(take)
                 .wrapping_add(candidate_id.wrapping_mul(take ^ 1));
-            let take = ((candidate_score > best1)
-                | ((candidate_score == best1) & (candidate_id < id1)))
+            let take = ((candidate_id != u32::MAX)
+                & ((id1 == u32::MAX)
+                    | (candidate_score > best1)
+                    | ((candidate_score == best1) & (candidate_id < id1))))
                 as u32;
             let choose = take as f32;
             let keep = 1.0 - choose;
@@ -208,8 +217,10 @@ pub fn gfx950_gpt_oss_120b_decode_megakernel_v1(
             candidate_id = old_id
                 .wrapping_mul(take)
                 .wrapping_add(candidate_id.wrapping_mul(take ^ 1));
-            let take = ((candidate_score > best2)
-                | ((candidate_score == best2) & (candidate_id < id2)))
+            let take = ((candidate_id != u32::MAX)
+                & ((id2 == u32::MAX)
+                    | (candidate_score > best2)
+                    | ((candidate_score == best2) & (candidate_id < id2))))
                 as u32;
             let choose = take as f32;
             let keep = 1.0 - choose;
@@ -223,8 +234,10 @@ pub fn gfx950_gpt_oss_120b_decode_megakernel_v1(
             candidate_id = old_id
                 .wrapping_mul(take)
                 .wrapping_add(candidate_id.wrapping_mul(take ^ 1));
-            let take = ((candidate_score > best3)
-                | ((candidate_score == best3) & (candidate_id < id3)))
+            let take = ((candidate_id != u32::MAX)
+                & ((id3 == u32::MAX)
+                    | (candidate_score > best3)
+                    | ((candidate_score == best3) & (candidate_id < id3))))
                 as u32;
             let choose = take as f32;
             let keep = 1.0 - choose;
@@ -238,8 +251,10 @@ pub fn gfx950_gpt_oss_120b_decode_megakernel_v1(
         {
             let mut candidate_score = subgroup.broadcast_f32::<64>(local_logit1, source & 63);
             let mut candidate_id = source.wrapping_mul(2).wrapping_add(1);
-            let take = ((candidate_score > best0)
-                | ((candidate_score == best0) & (candidate_id < id0)))
+            let take = ((candidate_id != u32::MAX)
+                & ((id0 == u32::MAX)
+                    | (candidate_score > best0)
+                    | ((candidate_score == best0) & (candidate_id < id0))))
                 as u32;
             let choose = take as f32;
             let keep = 1.0 - choose;
@@ -253,8 +268,10 @@ pub fn gfx950_gpt_oss_120b_decode_megakernel_v1(
             candidate_id = old_id
                 .wrapping_mul(take)
                 .wrapping_add(candidate_id.wrapping_mul(take ^ 1));
-            let take = ((candidate_score > best1)
-                | ((candidate_score == best1) & (candidate_id < id1)))
+            let take = ((candidate_id != u32::MAX)
+                & ((id1 == u32::MAX)
+                    | (candidate_score > best1)
+                    | ((candidate_score == best1) & (candidate_id < id1))))
                 as u32;
             let choose = take as f32;
             let keep = 1.0 - choose;
@@ -268,8 +285,10 @@ pub fn gfx950_gpt_oss_120b_decode_megakernel_v1(
             candidate_id = old_id
                 .wrapping_mul(take)
                 .wrapping_add(candidate_id.wrapping_mul(take ^ 1));
-            let take = ((candidate_score > best2)
-                | ((candidate_score == best2) & (candidate_id < id2)))
+            let take = ((candidate_id != u32::MAX)
+                & ((id2 == u32::MAX)
+                    | (candidate_score > best2)
+                    | ((candidate_score == best2) & (candidate_id < id2))))
                 as u32;
             let choose = take as f32;
             let keep = 1.0 - choose;
@@ -283,8 +302,10 @@ pub fn gfx950_gpt_oss_120b_decode_megakernel_v1(
             candidate_id = old_id
                 .wrapping_mul(take)
                 .wrapping_add(candidate_id.wrapping_mul(take ^ 1));
-            let take = ((candidate_score > best3)
-                | ((candidate_score == best3) & (candidate_id < id3)))
+            let take = ((candidate_id != u32::MAX)
+                & ((id3 == u32::MAX)
+                    | (candidate_score > best3)
+                    | ((candidate_score == best3) & (candidate_id < id3))))
                 as u32;
             let choose = take as f32;
             let keep = 1.0 - choose;
@@ -324,14 +345,52 @@ pub fn gfx950_gpt_oss_120b_decode_megakernel_v1(
     let row1 = row0.wrapping_add(1);
     let row2 = row0.wrapping_add(2);
     let row3 = row0.wrapping_add(3);
-    let mut scores = [0.0_f32; 4];
+    let mut score0 = 0.0_f32;
+    let mut score1 = 0.0_f32;
+    let mut score2 = 0.0_f32;
+    let mut score3 = 0.0_f32;
     let mut attention_depth = 0_usize;
     while attention_depth < HEAD_DIM {
-        let key_value = widen_bf16(key.load_or(attention_depth, token_index, 0));
-        scores[0] += widen_bf16(query.load_or(row0, attention_depth, 0)) * key_value;
-        scores[1] += widen_bf16(query.load_or(row1, attention_depth, 0)) * key_value;
-        scores[2] += widen_bf16(query.load_or(row2, attention_depth, 0)) * key_value;
-        scores[3] += widen_bf16(query.load_or(row3, attention_depth, 0)) * key_value;
+        let key_value = {
+            let bits = key.load_or(attention_depth, token_index, 0);
+            if (bits & 0x7f80) == 0x7f80 && (bits & 0x7f) != 0 {
+                f32::NAN
+            } else {
+                fe2o3_device::Bf16::from_bits(bits).to_f32()
+            }
+        };
+        score0 += {
+            let bits = query.load_or(row0, attention_depth, 0);
+            if (bits & 0x7f80) == 0x7f80 && (bits & 0x7f) != 0 {
+                f32::NAN
+            } else {
+                fe2o3_device::Bf16::from_bits(bits).to_f32()
+            }
+        } * key_value;
+        score1 += {
+            let bits = query.load_or(row1, attention_depth, 0);
+            if (bits & 0x7f80) == 0x7f80 && (bits & 0x7f) != 0 {
+                f32::NAN
+            } else {
+                fe2o3_device::Bf16::from_bits(bits).to_f32()
+            }
+        } * key_value;
+        score2 += {
+            let bits = query.load_or(row2, attention_depth, 0);
+            if (bits & 0x7f80) == 0x7f80 && (bits & 0x7f) != 0 {
+                f32::NAN
+            } else {
+                fe2o3_device::Bf16::from_bits(bits).to_f32()
+            }
+        } * key_value;
+        score3 += {
+            let bits = query.load_or(row3, attention_depth, 0);
+            if (bits & 0x7f80) == 0x7f80 && (bits & 0x7f) != 0 {
+                f32::NAN
+            } else {
+                fe2o3_device::Bf16::from_bits(bits).to_f32()
+            }
+        } * key_value;
         attention_depth += 1;
     }
 
@@ -357,10 +416,10 @@ pub fn gfx950_gpt_oss_120b_decode_megakernel_v1(
     let sink1 = sinks.load_or(0, row1, 0.0);
     let sink2 = sinks.load_or(0, row2, 0.0);
     let sink3 = sinks.load_or(0, row3, 0.0);
-    let reduced0 = subgroup.reduce_max_f32::<16>(scores[0] * ATTENTION_SCALE);
-    let reduced1 = subgroup.reduce_max_f32::<16>(scores[1] * ATTENTION_SCALE);
-    let reduced2 = subgroup.reduce_max_f32::<16>(scores[2] * ATTENTION_SCALE);
-    let reduced3 = subgroup.reduce_max_f32::<16>(scores[3] * ATTENTION_SCALE);
+    let reduced0 = subgroup.reduce_max_f32::<16>(score0 * ATTENTION_SCALE);
+    let reduced1 = subgroup.reduce_max_f32::<16>(score1 * ATTENTION_SCALE);
+    let reduced2 = subgroup.reduce_max_f32::<16>(score2 * ATTENTION_SCALE);
+    let reduced3 = subgroup.reduce_max_f32::<16>(score3 * ATTENTION_SCALE);
     let choose0 = (reduced0 > sink0) as u32 as f32;
     let choose1 = (reduced1 > sink1) as u32 as f32;
     let choose2 = (reduced2 > sink2) as u32 as f32;
@@ -370,10 +429,10 @@ pub fn gfx950_gpt_oss_120b_decode_megakernel_v1(
     let max2 = reduced2 * choose2 + sink2 * (1.0 - choose2);
     let max3 = reduced3 * choose3 + sink3 * (1.0 - choose3);
     let math = Math::current();
-    let probability0 = math.exp_f32(scores[0] * ATTENTION_SCALE - max0);
-    let probability1 = math.exp_f32(scores[1] * ATTENTION_SCALE - max1);
-    let probability2 = math.exp_f32(scores[2] * ATTENTION_SCALE - max2);
-    let probability3 = math.exp_f32(scores[3] * ATTENTION_SCALE - max3);
+    let probability0 = math.exp_f32(score0 * ATTENTION_SCALE - max0);
+    let probability1 = math.exp_f32(score1 * ATTENTION_SCALE - max1);
+    let probability2 = math.exp_f32(score2 * ATTENTION_SCALE - max2);
+    let probability3 = math.exp_f32(score3 * ATTENTION_SCALE - max3);
     let denominator0 = subgroup.reduce_sum_f32::<16>(probability0) + math.exp_f32(sink0 - max0);
     let denominator1 = subgroup.reduce_sum_f32::<16>(probability1) + math.exp_f32(sink1 - max1);
     let denominator2 = subgroup.reduce_sum_f32::<16>(probability2) + math.exp_f32(sink2 - max2);
@@ -576,4 +635,30 @@ pub fn gfx950_gpt_oss_120b_decode_megakernel_v1(
         *slot = packed;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod decoder_tests {
+    use super::widen_bf16;
+
+    #[test]
+    fn authenticated_bf16_widening_matches_preserved_decoder_for_all_patterns() {
+        let mut evaluations = 0_u32;
+        for raw in 0..=u16::MAX {
+            let expected = widen_bf16(raw);
+            let actual = {
+                let bits = {
+                    evaluations += 1;
+                    raw
+                };
+                if (bits & 0x7f80) == 0x7f80 && (bits & 0x7f) != 0 {
+                    f32::NAN
+                } else {
+                    fe2o3_device::Bf16::from_bits(bits).to_f32()
+                }
+            };
+            assert_eq!(actual.to_bits(), expected.to_bits(), "BF16 bits {raw:#06x}");
+        }
+        assert_eq!(evaluations, 65536);
+    }
 }

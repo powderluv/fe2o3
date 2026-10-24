@@ -33,6 +33,7 @@ impl SemanticFunctionLoweringV1<'_, '_> {
                 lane_binding,
                 "typed MFMA lane has no exact u32 representation",
             )?;
+            self.emitted_unsigned_exclusive_bounds.insert(value, 64);
             SemanticValueBindingV1::WaveLane {
                 value,
                 wave: SemanticCurrentWaveV1::new(*wave_width),

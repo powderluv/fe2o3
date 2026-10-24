@@ -419,7 +419,10 @@ fn f64_constants_preserve_all_ieee_bit_classes_without_f32_widening() {
         constant_value(&Constant::F32Bits(1.0f32.to_bits())).as_deref(),
         Some("0x3FF0000000000000")
     );
-    assert!(constant_value(&Constant::F32Bits(0x7fc0_0042)).is_none());
+    assert_eq!(
+        constant_value(&Constant::F32Bits(0x7fc0_0042)).as_deref(),
+        Some("bitcast (i32 2143289410 to float)")
+    );
 }
 
 #[test]

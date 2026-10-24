@@ -6,6 +6,7 @@ use super::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ObservationExecutionOptionsV1 {
     capture_limits: SimulationDebugCaptureLimitsV1,
+    matrix_bf16_numerics: crate::MatrixBf16NumericsV1,
     allocation_reuse: Option<SimulationAllocationReuseV1>,
     dynamic_workgroup_memory: Option<DynamicWorkgroupMemoryRequestV1>,
 }
@@ -14,11 +15,21 @@ impl ObservationExecutionOptionsV1 {
     pub const fn new(capture_limits: SimulationDebugCaptureLimitsV1) -> Self {
         Self {
             capture_limits,
+            matrix_bf16_numerics: crate::MatrixBf16NumericsV1::ExactV1,
             allocation_reuse: None,
             dynamic_workgroup_memory: None,
         }
     }
 
+    /// Select ordinary numerical observation, never native/proof authority.
+    /// Nondefault semantics cannot be recorded/replayed by the legacy schedule ABI.
+    pub const fn with_matrix_bf16_numerics(mut self, mode: crate::MatrixBf16NumericsV1) -> Self {
+        self.matrix_bf16_numerics = mode;
+        self
+    }
+    pub const fn matrix_bf16_numerics(self) -> crate::MatrixBf16NumericsV1 {
+        self.matrix_bf16_numerics
+    }
     pub const fn with_allocation_reuse(mut self, policy: SimulationAllocationReuseV1) -> Self {
         self.allocation_reuse = Some(policy);
         self
@@ -113,6 +124,7 @@ impl AdmittedSimulationModuleV1 {
                 schedule: None,
                 resident_offset: 0,
                 allocation_reuse: options.allocation_reuse,
+                matrix_bf16_numerics: options.matrix_bf16_numerics,
             },
             event_sink,
             debug_sink,
@@ -136,6 +148,13 @@ impl AdmittedSimulationModuleV1 {
         event_sink: &mut impl SimulationEventSinkV1,
         debug_sink: &mut impl SimulationDebugSinkV1,
     ) -> Result<SimulationExecutionV1, SimulationErrorV1> {
+        if options.matrix_bf16_numerics != crate::MatrixBf16NumericsV1::ExactV1 {
+            return Err(SimulationErrorV1::Preflight(
+                SimulationPreflightErrorV1::InvalidLaunch(
+                    "observational BF16 numerics do not support persisted schedules",
+                ),
+            ));
+        }
         self.check_debug_capture_supported_v20()
             .map_err(SimulationErrorV1::Preflight)?;
         let plan = self
@@ -153,6 +172,7 @@ impl AdmittedSimulationModuleV1 {
                 schedule: Some(ExecutionScheduleRequestV1::Public(schedule)),
                 resident_offset: 0,
                 allocation_reuse: options.allocation_reuse,
+                matrix_bf16_numerics: options.matrix_bf16_numerics,
             },
             event_sink,
             debug_sink,

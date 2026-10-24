@@ -87,7 +87,8 @@ fn inspect_rollback(
                     placement,
                     Some(cursor),
                     Some(&mut producer),
-                )?;
+                    None,
+)?;
                 let block_id = SemanticBlockIdV1::from_index(0);
                 let mut block = BasicBlock::new(placement.block(0)?);
                 lowering.begin_block(block_id, &mut block)?;

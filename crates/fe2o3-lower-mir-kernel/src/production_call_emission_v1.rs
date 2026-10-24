@@ -478,6 +478,9 @@ impl<'a, 'service> SemanticFunctionLoweringV1<'a, 'service> {
             if prefix.signature.bf16_nominal {
                 bf16_check_call_bindings_v1(&source_bindings)?;
             }
+            if prefix.signature.wave64_nominal {
+                self.check_checked_wave64_call_bindings_v1(block, call, callee, &source_bindings, &arguments)?;
+            }
             (callee_id, arguments, Vec::new())
         };
         let (terminator, consumed_credit) = self.finish_defined_call_prefix_v1(

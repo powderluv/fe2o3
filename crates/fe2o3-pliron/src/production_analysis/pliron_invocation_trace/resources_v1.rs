@@ -33,6 +33,103 @@ pub(crate) fn preflight_execution_layout_resource_upper_bound_with_observation_v
 
 const TRACE_BLOCK_STATE_CENSUS_TEMPORARY_V1: usize = 3;
 
+// The visited-key set is local to one invocation. Its wide entry key is
+// allocated once if no successor occurrence can target entry. Every subsequent
+// retained or pending key follows a successful global step charge. We retain
+// the coarse bound for entry reentry, including unreachable/duplicate edges.
+#[allow(clippy::too_many_arguments)]
+fn preflight_single_entry_key_storage_v1(
+    context: &Context,
+    inventory: &BoundedPlironFunctionInventoryV1,
+    census: ProductionAnalysisInputCensusV1,
+    block_state: &mut InvocationTraceBlockStateCensusV1,
+    invocations: usize,
+    limits: ProductionAnalysisResourceLimitsV1,
+    observer: Option<&InvocationObserverV1<'_, '_>>,
+) -> Result<Option<usize>, ProductionAnalysisResourceLimitV1> {
+    if invocations == 0 {
+        return Ok(None);
+    }
+    let entry = inventory
+        .blocks()
+        .first()
+        .copied()
+        .ok_or_else(trace_block_state_census_error_v1)?;
+    let entry_arguments = entry.deref(context).get_num_arguments();
+    if entry_arguments == 0 || entry_arguments < block_state.max_block_arguments {
+        return Ok(None);
+    }
+    if entry_arguments != block_state.max_block_arguments {
+        return Err(trace_block_state_census_error_v1());
+    }
+    let phase = ProductionAnalysisResourcePhaseV1::InvocationTrace;
+    let work = checked_trace_sum_v1(&[
+        block_state.work,
+        census.blocks,
+        census.operations,
+        census.successors,
+        1,
+    ])?;
+    // Existing census output plus all simultaneously live scalar scan state.
+    // The final trace peak already exceeds this fixed scratch (even at M=1).
+    require_observed_v1(
+        limits,
+        phase,
+        ProductionAnalysisResourceUpperBoundV1::checked_phase(phase, work, 0, 12),
+        observer,
+    )?;
+    if inventory.blocks().len() != census.blocks
+        || inventory.operations().len() != census.operations
+    {
+        return Err(trace_block_state_census_error_v1());
+    }
+    let mut other_arguments = 0;
+    for block in inventory.blocks().iter().skip(1) {
+        other_arguments = other_arguments.max(block.deref(context).get_num_arguments());
+    }
+    let mut successor_count = 0usize;
+    let mut entry_has_incoming = false;
+    for site in inventory.operations() {
+        let raw = site.pointer().deref(context);
+        let count = raw.get_num_successors();
+        // Underdeclared counts must stop before any uncharged edge lookup.
+        if count
+            > census
+                .successors
+                .checked_sub(successor_count)
+                .ok_or_else(trace_block_state_census_error_v1)?
+        {
+            return Err(trace_block_state_census_error_v1());
+        }
+        for ordinal in 0..count {
+            entry_has_incoming |= raw.get_successor(ordinal) == entry;
+        }
+        successor_count = successor_count
+            .checked_add(count)
+            .ok_or_else(trace_resource_overflow_v1)?;
+    }
+    if successor_count != census.successors {
+        return Err(trace_block_state_census_error_v1());
+    }
+    block_state.work = work;
+    if entry_has_incoming || entry_arguments <= other_arguments {
+        return Ok(None);
+    }
+    // At most M keys, of which at most one has E arguments. Prior
+    // invocations' visited sets are dropped, so the E-m delta occurs once.
+    Ok(Some(checked_trace_sum_v1(&[
+        checked_trace_product_v1(
+            MAX_PLIRON_TRACE_TOTAL_STEPS_V1,
+            other_arguments
+                .checked_add(2)
+                .ok_or_else(trace_resource_overflow_v1)?,
+        )?,
+        entry_arguments
+            .checked_sub(other_arguments)
+            .ok_or_else(trace_resource_overflow_v1)?,
+    ])?))
+}
+
 /// Native launch cardinality enters the same legacy scheduler preflight. The
 /// native byte ledger separately pays correspondence, fold scratch and events.
 pub(crate) fn preflight_native_trace_v1(
@@ -49,8 +146,17 @@ pub(crate) fn preflight_native_trace_v1(
         .filter(|v| *v <= MAX_PLIRON_RACE_INVOCATIONS_V1)
         .and_then(|v| usize::try_from(v).ok())
         .ok_or_else(trace_resource_overflow_v1)?;
-    let block_state =
+    let mut block_state =
         collect_trace_block_state_census_observed_v1(context, inventory, census, limits, None)?;
+    let entry_key_storage = preflight_single_entry_key_storage_v1(
+        context,
+        inventory,
+        census,
+        &mut block_state,
+        invocations,
+        limits,
+        None,
+    )?;
     Ok(
         invocation_trace_resource_upper_bound_for_block_state_observed_v1(
             census,
@@ -59,6 +165,7 @@ pub(crate) fn preflight_native_trace_v1(
             3,
             limits,
             None,
+            entry_key_storage,
         )?
         .upper_bound(),
     )
@@ -171,8 +278,17 @@ pub(crate) fn preflight_invocation_trace_resource_upper_bound_with_observation_v
                 phase: ProductionAnalysisResourcePhaseV1::InvocationTrace,
                 resource: "invocation trace inventory unavailable",
             })?;
-            let block_state = collect_trace_block_state_census_observed_v1(
+            let mut block_state = collect_trace_block_state_census_observed_v1(
                 context, inventory, census, limits, observer,
+            )?;
+            let entry_key_storage = preflight_single_entry_key_storage_v1(
+                context,
+                inventory,
+                census,
+                &mut block_state,
+                invocations,
+                limits,
+                observer,
             )?;
             let exact_admission =
                 invocation_trace_resource_upper_bound_for_block_state_observed_v1(
@@ -182,6 +298,7 @@ pub(crate) fn preflight_invocation_trace_resource_upper_bound_with_observation_v
                     launch_rank,
                     limits,
                     observer,
+                    entry_key_storage,
                 )?;
             return Ok(ProductionInvocationTraceResourcePreflightV1 {
                 attempt_upper_bound: exact_admission.upper_bound(),
@@ -276,9 +393,11 @@ fn invocation_trace_resource_upper_bound_for_block_state_v1(
         launch_rank,
         limits,
         None,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn invocation_trace_resource_upper_bound_for_block_state_observed_v1(
     census: ProductionAnalysisInputCensusV1,
     block_state: InvocationTraceBlockStateCensusV1,
@@ -286,6 +405,7 @@ fn invocation_trace_resource_upper_bound_for_block_state_observed_v1(
     launch_rank: usize,
     limits: ProductionAnalysisResourceLimitsV1,
     observer: Option<&InvocationObserverV1<'_, '_>>,
+    entry_key_storage: Option<usize>,
 ) -> Result<ProductionInvocationTraceResourceAdmissionV1, ProductionAnalysisResourceLimitV1> {
     // A finite loop may revisit the same block with different block arguments.
     // The global step meter, rather than the static block/operation census, is
@@ -361,13 +481,16 @@ fn invocation_trace_resource_upper_bound_for_block_state_observed_v1(
     // Each key contains only the current block's arguments. Its allocation
     // follows a successful global step charge, including a duplicate candidate
     // while previous keys remain live; MAX + 1 fails before allocating a key.
-    let visited_state_storage = checked_trace_product_v1(
-        event_count,
-        block_state
-            .max_block_arguments
-            .checked_add(2)
-            .ok_or_else(trace_resource_overflow_v1)?,
-    )?;
+    let visited_state_storage = match entry_key_storage {
+        Some(storage) => storage,
+        None => checked_trace_product_v1(
+            event_count,
+            block_state
+                .max_block_arguments
+                .checked_add(2)
+                .ok_or_else(trace_resource_overflow_v1)?,
+        )?,
+    };
     let evaluation_stack_frames = MAX_PLIRON_TRACE_VALUE_VISITS_PER_QUERY_V1
         .checked_mul(TRACE_VALUE_STACK_FRAMES_PER_VISIT_V1)
         .and_then(|frames| frames.checked_add(TRACE_VALUE_STACK_FIXED_FRAMES_V1))

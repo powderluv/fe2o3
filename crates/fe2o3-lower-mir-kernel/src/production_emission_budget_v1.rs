@@ -1,5 +1,31 @@
 // Erase the shared ledger's borrow lifetime without changing its identity.
 trait SemanticEmissionBudgetV1 {
+    fn checked_wave64_borrow_v1(&mut self, owner: &ProductionSemanticSsaOwnerV1,
+        function: SemanticFunctionIdV1, block: SemanticBlockIdV1, statement: u32,
+        inspect: &mut dyn FnMut(&wave64_reference_call_v1::CheckedReferenceBorrowV1<'_>, &mut dyn SemanticEmissionBudgetV1) -> Result<(), ProductionSemanticKirErrorV1>,
+    ) -> Result<bool, ProductionSemanticKirErrorV1> {
+        let _ = (owner, function, block, statement, inspect);
+        Err(ArgumentResourceV1::Accounting.into())
+    }
+    fn checked_wave64_helper_v1(&mut self, owner: &ProductionSemanticSsaOwnerV1,
+        function: SemanticFunctionIdV1,
+        inspect: &mut dyn FnMut(&wave64_reference_call_v1::CheckedReferenceHelperV1<'_>, &mut dyn SemanticEmissionBudgetV1) -> Result<(), ProductionSemanticKirErrorV1>,
+    ) -> Result<bool, ProductionSemanticKirErrorV1> {
+        let _ = (owner, function, inspect); Err(ArgumentResourceV1::Accounting.into())
+    }
+    fn checked_wave64_call_v1(&mut self, owner: &ProductionSemanticSsaOwnerV1,
+        function: SemanticFunctionIdV1, block: SemanticBlockIdV1,
+        inspect: &mut dyn FnMut(&wave64_reference_call_v1::CheckedReferenceCallV1<'_>, &mut dyn SemanticEmissionBudgetV1) -> Result<(), ProductionSemanticKirErrorV1>,
+    ) -> Result<bool, ProductionSemanticKirErrorV1> {
+        let _ = (owner, function, block, inspect); Err(ArgumentResourceV1::Accounting.into())
+    }
+    fn checked_wave64_context_borrow_v1(&mut self, owner: &ProductionSemanticSsaOwnerV1,
+        function: SemanticFunctionIdV1, block: SemanticBlockIdV1, statement: u32,
+        inspect: &mut dyn FnMut(&wave64_reference_call_v1::CheckedContextBorrowV1<'_>, &mut dyn SemanticEmissionBudgetV1) -> Result<(), ProductionSemanticKirErrorV1>,
+    ) -> Result<bool, ProductionSemanticKirErrorV1> {
+        let _ = (owner, function, block, statement, inspect);
+        Err(ArgumentResourceV1::Accounting.into())
+    }
     fn work_ledger_identity_v1(&self) -> fe2o3_kernel_ir::CanonicalKernelIrWorkLedgerIdentityV1;
     fn charge_work(&mut self, amount: usize) -> Result<(), ProductionSemanticKirErrorV1>;
     fn reserve_storage(&mut self, amount: usize) -> Result<(), ProductionSemanticKirErrorV1>;
@@ -230,6 +256,42 @@ trait SemanticEmissionBudgetV1 {
 }
 
 impl SemanticEmissionBudgetV1 for ArgumentBudgetV1<'_> {
+    fn checked_wave64_borrow_v1(&mut self, owner: &ProductionSemanticSsaOwnerV1,
+        function: SemanticFunctionIdV1, block: SemanticBlockIdV1, statement: u32,
+        inspect: &mut dyn FnMut(&wave64_reference_call_v1::CheckedReferenceBorrowV1<'_>, &mut dyn SemanticEmissionBudgetV1) -> Result<(), ProductionSemanticKirErrorV1>,
+    ) -> Result<bool, ProductionSemanticKirErrorV1> {
+        let mut callback_error = None;
+        let result = wave64_reference_call_v1::with_checked_reference_borrow_v1(owner, function, block, statement, self,
+            |source, same| { if let Err(error) = inspect(source, same) { callback_error = Some(error); return Err(wave64_reference_call_v1::ReferenceErrorV1::Unavailable("consumer refused")); } Ok(()) });
+        wave64_query_result_v1(result, callback_error)
+    }
+    fn checked_wave64_helper_v1(&mut self, owner: &ProductionSemanticSsaOwnerV1,
+        function: SemanticFunctionIdV1,
+        inspect: &mut dyn FnMut(&wave64_reference_call_v1::CheckedReferenceHelperV1<'_>, &mut dyn SemanticEmissionBudgetV1) -> Result<(), ProductionSemanticKirErrorV1>,
+    ) -> Result<bool, ProductionSemanticKirErrorV1> {
+        let mut callback_error = None;
+        let result = wave64_reference_call_v1::with_checked_reference_helper_v1(owner, function, self,
+            |source, same| { if let Err(error) = inspect(source, same) { callback_error = Some(error); return Err(wave64_reference_call_v1::ReferenceErrorV1::Unavailable("consumer refused")); } Ok(()) });
+        wave64_query_result_v1(result, callback_error)
+    }
+    fn checked_wave64_call_v1(&mut self, owner: &ProductionSemanticSsaOwnerV1,
+        function: SemanticFunctionIdV1, block: SemanticBlockIdV1,
+        inspect: &mut dyn FnMut(&wave64_reference_call_v1::CheckedReferenceCallV1<'_>, &mut dyn SemanticEmissionBudgetV1) -> Result<(), ProductionSemanticKirErrorV1>,
+    ) -> Result<bool, ProductionSemanticKirErrorV1> {
+        let mut callback_error = None;
+        let result = wave64_reference_call_v1::with_checked_reference_call_v1(owner, function, block, self,
+            |source, same| { if let Err(error) = inspect(source, same) { callback_error = Some(error); return Err(wave64_reference_call_v1::ReferenceErrorV1::Unavailable("consumer refused")); } Ok(()) });
+        wave64_query_result_v1(result, callback_error)
+    }
+    fn checked_wave64_context_borrow_v1(&mut self, owner: &ProductionSemanticSsaOwnerV1,
+        function: SemanticFunctionIdV1, block: SemanticBlockIdV1, statement: u32,
+        inspect: &mut dyn FnMut(&wave64_reference_call_v1::CheckedContextBorrowV1<'_>, &mut dyn SemanticEmissionBudgetV1) -> Result<(), ProductionSemanticKirErrorV1>,
+    ) -> Result<bool, ProductionSemanticKirErrorV1> {
+        let mut callback_error = None;
+        let result = wave64_reference_call_v1::with_checked_context_borrow_v1(owner, function, block, statement, self,
+            |source, same| { if let Err(error) = inspect(source, same) { callback_error = Some(error); return Err(wave64_reference_call_v1::ReferenceErrorV1::Unavailable("consumer refused")); } Ok(()) });
+        wave64_query_result_v1(result, callback_error)
+    }
     fn source_enum_spill_storage_v57(
         &mut self,
         plan: &SourceReferencePlanV29<'_, '_>,

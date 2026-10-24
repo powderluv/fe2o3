@@ -34,11 +34,22 @@ modeled causal reference, tensor indexing and bounds, and total injective
 one-writer ownership of all 128 outputs. Ten independently pinned mutations
 must each fail its named postcondition.
 
-Run the authenticated proof on a host with the pinned Verus release:
+The retained proof is bound to public source
+`af0fd523e3b774377a9c5192cf0511e34fa19735`, not the changed current kernel.
+From the repository root, create a new detached worktree and use the pinned
+Verus `0.2026.08.02.b677dd5` release closure:
 
 ```sh
-VERUS=/absolute/path/to/pinned/verus examples/flash_attention_v1/run-verus.sh
+git worktree add --detach ../fe2o3-proof-flash-af0fd af0fd523e3b774377a9c5192cf0511e34fa19735
+(
+  cd ../fe2o3-proof-flash-af0fd
+  VERUS=/absolute/path/to/pinned/verus examples/flash_attention_v1/run-verus.sh
+)
 ```
+
+The neighboring worktree must not already exist. Expect 25 verified obligations
+and ten intended mutation rejections. The current kernel fails the retained
+source hash guard; changing that guard would not prove the changed source.
 
 The runner authenticates the exact kernel and proof bytes, the fixed profile
 and model-schema identities, every expected-negative source, the Verus

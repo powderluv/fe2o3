@@ -1,4 +1,4 @@
-//! Mutable safe Rust candidate for the gfx942 GEMM autoresearch loop.
+//! Mutable safe Rust candidate for the gfx942/gfx950 GEMM autoresearch loop.
 //!
 //! Keep experiments reviewable by preserving the same phases: validate dynamic
 //! extents, assign one wave per tile, construct typed matrices, execute uniform
@@ -18,7 +18,7 @@ fn accessed_extent(rows: u32, columns: u32, stride: u32) -> u64 {
     if rows == 0 || columns == 0 {
         return 0;
     }
-    u64::from(rows - 1) * u64::from(stride) + u64::from(columns)
+    ((rows - 1) as u64) * (stride as u64) + (columns as u64)
 }
 
 /// Computes `C = alpha * A * B + beta * C` for dynamic row-major matrices.
@@ -70,19 +70,30 @@ pub fn gemm_autoresearch_v1(
     let tile = raw_index / 64;
     let tile_row = tile / tiles_per_row;
     let tile_column = tile % tiles_per_row;
+    if tile_row > usize::MAX / 16 || tile_column > usize::MAX / 16 {
+        return Err(KernelError::InvalidArgument);
+    }
+    let tile_row_base = tile_row * 16;
+    let tile_column_base = tile_column * 16;
 
     // Typed views centralize layout and padding; the output witness captures ownership.
     let output_tile = thread_index.checked_tiled_2d::<64, 16, 16, 4>();
-    let a_matrix = Bf16MfmaAMatrix::row_major(a, 0, m as usize, k as usize, lda as usize)?;
-    let b_matrix = Bf16MfmaBMatrix::row_major(b, 0, k as usize, n as usize, ldb as usize)?;
+    let Ok(a_matrix) = Bf16MfmaAMatrix::row_major(a, 0, m as usize, k as usize, lda as usize)
+    else {
+        return Err(KernelError::InvalidArgument);
+    };
+    let Ok(b_matrix) = Bf16MfmaBMatrix::row_major(b, 0, k as usize, n as usize, ldb as usize)
+    else {
+        return Err(KernelError::InvalidArgument);
+    };
     let wave_lane = WaveLane::<Wave64>::current();
     let matrix = Matrix::current();
     // All lanes traverse identical K tiles and keep the FP32 accumulator in registers.
     let mut accumulator = F32AccumulatorFragment::zero(&wave_lane);
     let mut phase = 0_usize;
     while phase < k as usize {
-        let lhs = a_matrix.load_m16k16(&wave_lane, tile_row * 16, phase);
-        let rhs = b_matrix.load_k16n16(&wave_lane, phase, tile_column * 16);
+        let lhs = a_matrix.load_m16k16(&wave_lane, tile_row_base, phase);
+        let rhs = b_matrix.load_k16n16(&wave_lane, phase, tile_column_base);
         accumulator = matrix.multiply_accumulate(lhs, rhs, accumulator);
         phase += 16;
     }

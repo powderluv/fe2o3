@@ -6,8 +6,108 @@ use std::path::Component;
 
 const MANIFEST: &str = "config/tutorial-kernel-manifest-v1.json";
 const REPORT: &str = "FE2O3_TEST_CHECKED_OUTPUT_CORPUS_REPORT_V1";
-const CONFIGURATIONS: usize = 50;
+const CONFIGURATIONS: usize = 95;
 const ROOTS: usize = 34;
+
+// Original 50 configurations in order, followed by the 45 reviewed gfx950
+// counterparts. A same-count replacement must not silently drop an obligation.
+const FIXTURE_IDS: &[&str] = &[
+    "gfx942-fill-simulation",
+    "gfx942-flash-attention",
+    "gfx942-gemm-autoresearch",
+    "gfx942-grouped-expert-moe",
+    "gfx942-moe-top2",
+    "gfx942-row-softmax",
+    "gfx942-scalar-gemm",
+    "gfx942-tiled-gemm",
+    "gfx942-typed-vecadd-source",
+    "gfx942-wave64-collectives",
+    "gfx942-workgroup-collectives",
+    "gfx950-attnres-aggregate",
+    "gfx950-attnres-aggregate-explicit-reuse",
+    "gfx950-combine-expert-ranks",
+    "gfx950-compressed-hybrid-attention",
+    "gfx950-compressed-hybrid-attention-division-baseline",
+    "gfx950-content-sparse-attention",
+    "gfx950-content-sparse-attention-reciprocal-reuse",
+    "gfx950-deepseek-sparse-attention",
+    "gfx950-four-branch-residual",
+    "gfx950-four-branch-residual-explicit",
+    "gfx950-fp4-attention",
+    "gfx950-fp4-gemm",
+    "gfx950-fp8-attention",
+    "gfx950-fp8-gemm",
+    "gfx950-gpt-oss-decode",
+    "gfx950-gpt-oss-held-fragments",
+    "gfx950-gpt-oss-interleaved-stores",
+    "gfx950-gpt-oss-materialized-attention",
+    "gfx950-gpt-oss-materialized-expert",
+    "gfx950-gpt-oss-materialized-router",
+    "gfx950-gpt-oss-pipelined-attention",
+    "gfx950-gpt-oss-scalar-attention",
+    "gfx950-gpt-oss-serial-router",
+    "gfx950-kda-decode",
+    "gfx950-kda-decode-baseline",
+    "gfx950-kda-prefill",
+    "gfx950-kda-prefill-baseline",
+    "gfx950-mhc-sinkhorn-mix",
+    "gfx950-mhc-sinkhorn-mix-scalar",
+    "gfx950-moe-expert-rank",
+    "gfx950-moe-expert-rank-expert-serial",
+    "gfx950-moe-route",
+    "gfx950-muon-update",
+    "gfx950-muon-update-broadcast16",
+    "gfx950-qwen-ngram-gather",
+    "gfx950-qwen-ngram-gather-reverse-probe",
+    "gfx950-speculative-transaction",
+    "gfx950-speculative-transaction-recompute-prefix",
+    "gfx950-stage-gradient-shard",
+    "gfx950-gpt-oss-decode-simt",
+    "gfx950-gpt-oss-decode-tile",
+    "gfx950-gpt-oss-held-fragments-simt",
+    "gfx950-gpt-oss-held-fragments-tile",
+    "gfx950-gpt-oss-interleaved-stores-simt",
+    "gfx950-gpt-oss-interleaved-stores-tile",
+    "gfx950-gpt-oss-materialized-attention-simt",
+    "gfx950-gpt-oss-materialized-attention-tile",
+    "gfx950-gpt-oss-materialized-expert-simt",
+    "gfx950-gpt-oss-materialized-expert-tile",
+    "gfx950-gpt-oss-materialized-router-simt",
+    "gfx950-gpt-oss-materialized-router-tile",
+    "gfx950-gpt-oss-pipelined-attention-simt",
+    "gfx950-gpt-oss-pipelined-attention-tile",
+    "gfx950-gpt-oss-scalar-attention-simt",
+    "gfx950-gpt-oss-scalar-attention-tile",
+    "gfx950-gpt-oss-serial-router-simt",
+    "gfx950-gpt-oss-serial-router-tile",
+    "gfx950-row-softmax-simt",
+    "gfx950-row-softmax-tile",
+    "gfx950-scalar-gemm-simt",
+    "gfx950-scalar-gemm-tile",
+    "gfx950-attnres-aggregate-simt",
+    "gfx950-attnres-aggregate-tile",
+    "gfx950-four-branch-residual-simt",
+    "gfx950-four-branch-residual-tile",
+    "gfx950-mhc-sinkhorn-mix-simt",
+    "gfx950-mhc-sinkhorn-mix-tile",
+    "gfx950-kda-decode-simt",
+    "gfx950-kda-decode-tile",
+    "gfx950-kda-prefill-simt",
+    "gfx950-kda-prefill-tile",
+    "gfx950-content-sparse-attention-simt",
+    "gfx950-content-sparse-attention-tile",
+    "gfx950-deepseek-sparse-attention-simt",
+    "gfx950-deepseek-sparse-attention-tile",
+    "gfx950-compressed-hybrid-attention-simt",
+    "gfx950-compressed-hybrid-attention-tile",
+    "gfx950-moe-expert-rank-simt",
+    "gfx950-moe-route-tile",
+    "gfx950-combine-expert-ranks-tile",
+    "gfx950-speculative-transaction-tile",
+    "gfx950-qwen-ngram-gather-tile",
+    "gfx950-stage-gradient-shard-tile",
+    "gfx950-muon-update-tile",
+];
 
 #[path = "production_rustc_driver_checked_output_source_driver_corpus_v1_tests.rs"]
 mod source_driver_corpus;
@@ -15,7 +115,7 @@ mod source_driver_corpus;
 #[path = "production_rustc_driver_checked_output_source_census_v1_tests.rs"]
 mod source_census;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CargoTarget {
     pub kind: String,
@@ -23,7 +123,7 @@ pub(super) struct CargoTarget {
     pub source_path: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CompilerInput {
     pub package_manifest: String,
@@ -190,10 +290,17 @@ fn fixtures(bytes: &[u8]) -> Result<Vec<Fixture>, SourceFailure> {
         }
         roots.extend(input.kernel_symbols.iter().cloned());
     }
-    if fixtures.len() != CONFIGURATIONS || roots.len() != ROOTS || profiles != [11, 39] {
+    if fixtures.len() != CONFIGURATIONS
+        || roots.len() != ROOTS
+        || profiles != [11, 84]
+        || fixtures
+            .iter()
+            .map(|row| row.fixture_id.as_str())
+            .ne(FIXTURE_IDS.iter().copied())
+    {
         return Err(fail(
             SourceStage::Manifest,
-            "complete 50-configuration/34-root roster changed; review coverage rather than silently shrinking it",
+            "complete 95-configuration/34-root roster changed; review coverage rather than silently shrinking it",
         ));
     }
     Ok(fixtures)
@@ -432,7 +539,7 @@ fn run_case_with_simulation(
 }
 
 #[test]
-#[ignore = "full 50-case real Cargo/rustc P4 extraction gate; blocked cases fail, requires pinned rust-src and dependencies"]
+#[ignore = "full 95-case real Cargo/rustc P4 extraction gate; blocked cases fail, requires pinned rust-src and dependencies"]
 fn ordinary_tutorial_corpus_requires_every_checked_policy4_output() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -475,7 +582,7 @@ fn ordinary_tutorial_corpus_requires_every_checked_policy4_output() {
     eprintln!("P4 CORPUS REPORT\n{}", String::from_utf8(encoded).unwrap());
     assert!(
         all_checked_output_passed,
-        "not qualified: at least one of all 50 ordinary-source configurations is blocked; see exact stage refusals"
+        "not qualified: at least one of all 95 ordinary-source configurations is blocked; see exact stage refusals"
     );
 }
 
@@ -557,7 +664,7 @@ fn manifest_retains_all_feature_configurations_and_distinct_roots() {
         "config/tutorial-kernel-manifest-v1.json"
     ));
     let fixtures = fixtures(bytes).unwrap();
-    assert_eq!(fixtures.len(), 50);
+    assert_eq!(fixtures.len(), CONFIGURATIONS);
     assert_eq!(
         fixtures
             .iter()
@@ -601,6 +708,24 @@ fn manifest_retains_all_feature_configurations_and_distinct_roots() {
     let mut modified: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     modified["productionContract"]["allowsFallback"] = true.into();
     assert!(super::corpus::fixtures(&serde_json::to_vec(&modified).unwrap()).is_err());
+}
+
+#[test]
+fn manifest_refuses_lost_original_or_counterpart_obligations_at_the_same_count() {
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../config/tutorial-kernel-manifest-v1.json"
+    ));
+    // Exercise both the retained prefix and new counterparts, preserving
+    // counts, roots, targets, features and all valid input hashes.
+    for index in [0, 49, 50, 94] {
+        let mut modified: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        modified["compilerFixtures"][index]["fixtureId"] = "unreviewed-replacement".into();
+        assert!(fixtures(&serde_json::to_vec(&modified).unwrap()).is_err());
+    }
+    let mut modified: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    modified["compilerFixtures"][50]["target"] = "gfx942".into();
+    assert!(fixtures(&serde_json::to_vec(&modified).unwrap()).is_err());
 }
 
 #[test]
