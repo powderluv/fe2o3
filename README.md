@@ -12,11 +12,17 @@ instead of being joined by filenames or convention.
 > **Developer Preview**
 >
 > fe2o3 is under active development. It is not ready for production workloads,
-> does not yet provide a supported source-to-GPU first-run experience, and makes
+> does not yet provide a supported production direct-KFD first-run experience, and makes
 > no API, wire-format, or compatibility stability promise before the first
 > preview release. Current direct-KFD qualification is bounded to MI300X
 > `gfx942:xnack-` lanes. See [What works](#what-works) and
 > [Known limitations](#known-limitations) before evaluating it.
+
+For source-checkout experiments on MI350-family `gfx950` hardware, selected
+examples provide explicit SIMT and tile compile/numerical commands. Start with
+the [gfx950 engineering evaluation guide](docs/getting-started.md#gfx950-engineering-evaluation).
+Those example-specific HIP/HSA or external-HSACO observations are separate from
+production direct-KFD authorization, protected proofs, and a supported release.
 
 ## Typed kernel authoring
 
@@ -210,7 +216,7 @@ Run `cargo fe2o3 engineering hsaco --help` for the explicit compiler, host
 linker, provider, target, COV, resource-bound, vendor-source, and Cargo-selection
 arguments.
 
-There is currently no supported copy-and-paste source-to-GPU quick start.
+There is currently no supported copy-and-paste production direct-KFD quick start.
 `cargo fe2o3 build` enters the production compiler transaction, but ordinary
 example applications still lack the production Worker V3 verifier deployment
 and concrete semantic-to-final-machine proof backend/artifact needed to
@@ -229,7 +235,7 @@ a future GPU-ready preview, not a claim made by this source/simulator preview.
 | Area | Current developer-preview state |
 | --- | --- |
 | Rust kernel surface | Typed kernels, device indexing, checked buffer views, bounded scalar/control/memory subsets |
-| Compiler | Source/MIR through typed Pliron and verified KIR; bounded `gfx942` LLVM/HSACO vertical slices |
+| Compiler | Source/MIR through typed Pliron and verified KIR; selected `gfx942` and `gfx950` LLVM/HSACO engineering slices, with example-specific target and evidence limits |
 | CPU simulation | Deterministic execution of admitted canonical KIR V7 plus exact direct V9/V10/V11 custody, including supported helpers, barriers, workgroup memory, wave f32 collectives, memory intrinsics, pointer-access restriction, atomics, fences, floating point, and seeded schedule exploration |
 | Virtual runtime | Bounded model-only allocation, copy, queue, dependency, dispatch, completion, and ambiguous-failure lifetimes over admitted KIR; generated-host and multi-device integration remain incomplete |
 | CPU debugger | Work-item, logical wave, workgroup, operation, stack, SSA, allocation-relative memory, break/watch, reverse replay, and structured diagnosis over retained simulator evidence |

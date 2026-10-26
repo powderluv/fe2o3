@@ -35,7 +35,7 @@ Use the pinned toolchain for development-preview qualification.
 | --- | --- | --- | --- |
 | MI300X, `gfx942:xnack-`, Wave64 | Bounded qualified slices | Bounded diagnostics and exact qualification lanes | Experimental |
 | `gfx942` configurations other than the qualified profile | Target-dependent | Not qualified | Unavailable |
-| MI350 family, `gfx950` | Selected extraction/KIR and example surfaces exist | No qualified production direct-KFD launch path; separate example-specific hardware companions exist | Experimental, not a public runtime surface |
+| MI350 family, `gfx950:xnack-`, Wave64 | Selected ordinary Rust SIMT/tile examples compile through extraction/KIR to inspected LLVM/HSACO | No qualified production direct-KFD launch path; separate example-specific numerical companions exist | Experimental engineering evaluation, not a supported production runtime surface |
 | RDNA targets including `gfx1151` | Partial compile/code-object slices | No qualified production launch path | Experimental compile surface only |
 | Other AMD GPUs | Not qualified | Not qualified | Unavailable |
 | NVIDIA or other non-AMD GPUs | No backend | No runtime | Unavailable |
@@ -43,6 +43,15 @@ Use the pinned toolchain for development-preview qualification.
 fe2o3 does not infer support from a `gfx` name reported by a tool. Target,
 features, wave width, KFD topology identity, artifact metadata, and qualification
 policy must agree exactly.
+
+The [gfx950 engineering evaluation guide](getting-started.md#gfx950-engineering-evaluation)
+links the maintained BF16, FP8/FP4 and vecadd setup and commands. These selected
+paths are not a claim that every tutorial variant or every MI350-family
+configuration is qualified. Compile-only observations, actual numerical runs,
+CPU simulation, historical source-model proofs and protected production
+admission remain distinct. In particular, a gfx950 result does not qualify
+gfx942, and successful HSA/HIP numerical execution does not establish the
+direct-KFD and machine-refinement acceptance required by issue #275.
 
 ## Execution modes
 
@@ -52,8 +61,9 @@ policy must agree exactly.
 | CPU source bundle simulation | Rust kernel exported through production source/MIR/KIR stages | Experimental | Exact authority-free bundle content and deterministic KIR execution |
 | Direct-KFD diagnostic | Exact admitted artifact and invocation | Bounded qualified lanes | The properties named by that test only; the current runtime child multiplexes at most 65,536 logical streams over exactly two persistent compute lanes with caller-driven FIFO scheduling and disjoint-allocation concurrency |
 | Production application dispatch | Ordinary Rust application | Unavailable publicly | Typed Worker V3 refinement-backend/receipt consumption exists, but the protected verifier deployment and concrete issue #214 semantic-machine proof backend/artifact are missing |
-| HIP execution | N/A | Unavailable | Not a fallback runtime |
-| HSA execution | N/A | Unavailable on the production path | Legacy/qualification code does not define the public runtime |
+| Production HIP execution | N/A | Unavailable | Not a fallback runtime |
+| Production HSA execution | N/A | Unavailable | Legacy/qualification code does not define the public runtime |
+| gfx950 example numerical evaluation | Exact selected source, inspected HSACO and independent oracle | Experimental, example-specific | Explicit external-HSACO or HSA/HIP companions observe numerical behavior only; no protected publication, direct-KFD application authorization or source-to-machine refinement claim |
 | Runtime completion, events, and callbacks | Backend-neutral typed handles | Experimental | Submission/event query, poll, and bounded wait share one typed completion state; callbacks discharge exactly once on conclusive status, and stream query/synchronize returns an aggregate observation under one deadline. The optional async engine provides bounded executor-neutral event futures with stable budgeted completion polling and panic containment. Additive progress mode drives a separate bounded roster of pending streams through `flush_stream`; ordinary construction remains observation-only, and registration/future drop never cancels or releases work |
 | Typed atomic/collective launch wrappers | Admitted typed kernel plus explicit contract | Experimental direct/multi KFD SPI; no production authority | Operation, scope, success order, compare-exchange failure order/weak mode, geometry, and collective membership are preserved through additive backend SPIs and the exact Runtime Worker V5 transport. KFD ordinary/qualification constructors remain false; an unsafe semantic-authority constructor may enumerate exact non-System atomic and workgroup-collective profiles, which are retained through scheduling and final invocation authorization. Unlisted/invalid profiles reject before custody; later final-authority denial settles the accepted unpublished submission and releases custody before publication. A concrete production authority, broader profiles, native litmus evidence, and formal refinement remain unavailable |
 | Runtime Worker subprocess | Exact V1, V4, or V5 handshake | Experimental bounded transport | V1 requires an explicit immediate-progress marker and cannot host KFD. V4 forwards execution capabilities, flush, same-device async copy, cancellation, and deadline-bounded drain. V5 retains that exact surface and adds typed atomic/collective contract carriage. Direct and multi-device KFD implement the V5 server bound; copy-only native XGMI rejects semantic requests before custody and advertises neither capability. V4 bytes and source contracts remain unchanged, cross-version handshakes reject, and capability records fail closed outside the latest successful enumeration. Real child-process tests exercise V4 ordinary and V5 atomic background-flush completion plus timeout, decoded-terminal, and EOF sealing. The handshake is compatibility negotiation, not worker authentication, and these host tests establish no native progress. |

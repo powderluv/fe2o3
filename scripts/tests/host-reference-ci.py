@@ -36,6 +36,20 @@ main "$3"
 
 
 class HostReferenceCiTests(unittest.TestCase):
+    def test_vecadd_summary_matches_declared_fixture_cases(self):
+        lines = (ROOT / "examples/verus_vecadd/run-verus.sh").read_text().splitlines()
+        positives = sum(line.startswith("run_pass ") for line in lines)
+        negatives = sum(line.startswith(("run_rejected ", "run_rejected_exact "))
+                        for line in lines)
+        self.assertGreater(positives, 0)
+        self.assertGreater(negatives, 0)
+        summary = (f"Verus fixture run passed: {positives} proof harnesses, "
+                   f"{negatives} expected rejections")
+        self.assertEqual(
+            [line for line in lines if line.startswith("printf 'Verus fixture run passed:")],
+            [f"printf '{summary}\\n'"],
+        )
+
     def test_rope_proof_is_in_the_pinned_production_proof_job(self):
         workflow = (ROOT / ".github/workflows/row-softmax-v1.yml").read_text()
         proof_job = workflow.split("\n  proof-contract:", 1)[1].split("\n  host-contract:", 1)[0]

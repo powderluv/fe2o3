@@ -4,8 +4,10 @@ This guide exercises fe2o3 without a GPU. It first runs a frozen Kernel IR V7
 fixture, then exports an ordinary Rust kernel through the production
 source/MIR/KIR stages and simulates the resulting bundle.
 
-fe2o3 does not yet have a supported public source-to-GPU dispatch command. The
-[GPU boundary](#gpu-boundary) explains what can be evaluated on MI300X today.
+fe2o3 does not yet have a supported public production direct-KFD dispatch
+command. The [GPU boundary](#gpu-boundary) describes that limitation; selected
+[gfx950 engineering examples](#gfx950-engineering-evaluation) have separate
+source-checkout compile and numerical evaluation commands.
 
 ## Requirements
 
@@ -22,6 +24,15 @@ entering the checkout.
 
 No GPU, KFD device, ROCm runtime, HIP runtime, or HSA runtime is needed for the
 CPU simulator workflow.
+
+A measured CPU-only `no-gpu` run on 2026-10-26 at
+[332658a](https://github.com/harsh-nod/fe2o3/commit/332658add5b8cfb3b2ef0dd1ca736107a947e723)
+used about 17.18 GB of allocated disk across the core and tutorial-site
+checkouts, private Cargo cache, and fresh default build target. The pinned Rust
+compiler was already installed and its storage is excluded. Peak memory was
+about 10 GiB under a 16 GiB execution cap. This is one measured environment,
+not a universal minimum or a GPU result; allow additional space for toolchain
+installation, native products, retained outputs, and later builds.
 
 ## Clone and inspect
 
@@ -260,7 +271,8 @@ visualizes selected golden transcripts and their provenance.
 
 ## GPU boundary
 
-Current hardware qualification is bounded to MI300X `gfx942:xnack-` lanes. A
+Current production direct-KFD qualification is bounded to MI300X
+`gfx942:xnack-` lanes. A
 machine used for repository qualification needs Linux KFD access, the pinned
 ROCm/LLVM tool environment for the selected lane, and permission to open the
 relevant `/dev/kfd` and DRM render nodes.
@@ -281,8 +293,63 @@ external contributor.
 
 A community-ready GPU quick start must compile an ordinary kernel from a clean
 checkout, authenticate its current artifact and launch contract, execute it
-through direct KFD, verify its output, and cleanly tear down. Until that exists,
-the absence of a GPU command in this guide is intentional.
+through direct KFD, verify its output, and cleanly tear down. The separate
+engineering examples below do not satisfy that production acceptance criterion.
+
+## gfx950 engineering evaluation
+
+These are explicit example-specific workflows, not a fallback from a denied
+production command. They compile ordinary Rust sources, inspect the produced
+target/ABI/ISA, and optionally compare actual GPU outputs against independent
+CPU oracles. A numerical pass is not a source-to-machine refinement proof,
+protected publication receipt, or general direct-KFD application authorization.
+It does not close the whole-curriculum acceptance in
+[#275](https://github.com/harsh-nod/fe2o3/issues/275).
+
+Start from the repository root and follow the selected example's complete
+setup before its commands. Each example documents its actual `simt` and `tile`
+selections, oracle, supported shapes and remaining evidence limits:
+
+| Example | Maintained setup and commands | Numerical host path |
+| --- | --- | --- |
+| BF16 dynamic strided GEMM | [Run on gfx950](../examples/tiled_gemm_general_v1/README.md#run-on-gfx950), using `run-gfx950.sh` with `simt` and `tile` | Explicit external-HSACO unsafe qualification host |
+| BF16 Flash Attention | [Paired commands](../examples/flash_attention_general_v1/README.md#paired-commands) and [gfx950 setup](../examples/flash_attention_general_v1/GFX950.md), using `run-gfx950.sh` with `simt` and `tile` | Explicit external-HSACO unsafe qualification host |
+| BF16 grouped routed expert | [gfx950 paired commands and setup](../examples/moe_grouped_expert_general_v1/README.md#gfx950-paired-commands), using `run-gfx950.sh` with `simt` and `tile` | Explicit external-HSACO unsafe qualification host |
+| FP8 and FP4 GEMM | [Setup and Rust-to-HSACO runners](../examples/gfx950_low_precision/README.md#setup), using `run-fp8-gemm-gfx950.sh` and `run-fp4-gemm-gfx950.sh` with `simt` and `tile` | Digest-pinned HSA numerical fixtures |
+| F32 vector addition | [Vecadd setup and numerical commands](../examples/vecadd/README.md), using `run-gfx950.sh` with `simt` and `tile` | Digest-pinned HSA numerical fixtures |
+
+For these runners, `FE2O3_EXAMPLE_COMPILE_ONLY=1` suppresses GPU execution;
+successful compilation and ISA checks must not be reported as a numerical
+run. For actual execution, use a physical `gfx950:xnack-` Wave64 device with
+the required access and visibility. An MI300X/gfx942 device, CPU simulation,
+or a target string cannot substitute for that device. Do not run competing
+GPU jobs on a shared device without its owner's execution lease.
+
+The setup is path-specific. Use the pinned `nightly-2026-04-03` toolchain and
+the selected runner's documented ROCm LLVM/runtime development libraries.
+Where a digest-pinned tool/bitcode manifest is required, select the matching
+checked-in ROCm 7.2.1 or 7.2.4 closure exactly as that README describes.
+Changing only `ROCM_PATH` does not make different tool or library bytes valid.
+
+Fetch the locked root, selected standalone example, and required nightly
+`rust-src` dependencies in the same effective `CARGO_HOME` before an offline
+step. A root-workspace fetch alone does not populate every example or
+`-Zbuild-std=core` closure. See the existing
+[compile-matrix prerequisites](testing.md#rocm-compile-coverage).
+
+Check free persistent storage for the checkout, Cargo cache, build targets and
+retained outputs before building. Available RAM does not compensate for a full
+filesystem. Cold compiler/host builds have a separate resource cost from a warm
+numerical run; follow the example's declared profile and prebuild instructions
+instead of applying an undocumented profile or reusing a private compiler.
+Changing profiles or output directories can trigger a rebuild. No universal
+minimum memory/disk requirement or bounded cold-build time is established by
+these example instructions.
+
+Keep each complete command, source revision, compiler/tool identities, target,
+oracle result and first failure diagnostic with its output. Historical receipts
+retain their original revision and cannot qualify a changed source, variant,
+target, or toolchain merely because the example name is unchanged.
 
 ## Next steps
 

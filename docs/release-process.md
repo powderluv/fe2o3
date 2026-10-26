@@ -127,11 +127,18 @@ The release job uses the **release** GitHub environment installed by
 
 ## Canonical branch rules
 
-The canonical repository uses a user-owned-compatible ruleset for its default
-branch. It has no bypass actors, rejects deletion and non-fast-forward updates,
-requires squash-only pull requests, and requires one approval with CODEOWNERS,
-stale-review dismissal, last-push approval, and thread resolution. Its strict
-required checks are pinned to the GitHub Actions app:
+The release baseline requires a user-owned-compatible ruleset for the canonical
+default branch. This is a release prerequisite, not a claim that the ruleset is
+deployed. On 2026-10-26, the canonical `main` branch API reported
+`protected: false`; the active repository rulesets covered release-tag creation
+and immutability, not branch protection. Reviewed source publication and passing
+CI do not satisfy this missing release control. Issue
+[#267](https://github.com/harsh-nod/fe2o3/issues/267) remains open.
+
+The proposed baseline has no bypass actors, rejects deletion and
+non-fast-forward updates, requires squash-only pull requests, and requires one
+approval with CODEOWNERS, stale-review dismissal, last-push approval, and thread
+resolution. Its strict required checks are pinned to the GitHub Actions app:
 
 - **Fork-safe preflight**
 - **Generic parity policy gate**
@@ -155,9 +162,15 @@ and before tagging every release:
       --repo harsh-nod/fe2o3 \
       --actions-integration-id "${actions_app_id}"
 
-This canonical baseline intentionally omits merge queues, required-workflow
-rules, and the protected signed-evidence check. It does not deploy or grant the
-separate protected parity publication authority described above.
+Do not infer that this baseline is active from the checked-in renderer or a
+successful source integration. The live `verify` command must pass before a
+release. Installing or changing repository policy is a separate administrator
+operation, not part of a documentation update.
+
+This proposed canonical baseline intentionally omits merge queues,
+required-workflow rules, and the protected signed-evidence check. It does not
+deploy or grant the separate protected parity publication authority described
+above.
 
 ## Review and publish
 
