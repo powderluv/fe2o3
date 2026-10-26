@@ -58,8 +58,9 @@ cargo fe2o3 test --locked --all-targets \
   --manifest-path examples/gfx950_low_precision/Cargo.toml
 ```
 
-The checked-in test profile keeps the standalone test executables within the
-pinned host runner's 512 MiB hashing bound without profile environment overrides.
+The checked-in test profile requires no profile environment overrides; the
+ordinary binding-only host-test runner has a fixed 1 GiB executable bound,
+while shared tool and protected executable paths retain their 512 MiB bound.
 
 The production rustc importer, V8/V9 Kernel IR schemas, exact gfx950 target
 profile, and full-module AMDGPU lowering consume all of these device terminals.

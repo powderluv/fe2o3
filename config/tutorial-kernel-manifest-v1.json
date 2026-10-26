@@ -4,8 +4,8 @@
     "schema": "fe2o3-tutorial-curriculum-obligations-v2",
     "site": {
       "repository": "harsh-nod/fe2o3-kernels",
-      "commit": "2cb465f4cb0cd17f3679140813dc2e16893d0304",
-      "tree": "ad6b0082c1510d32aef563097e61bcba288a20cd"
+      "commit": "97f719748a5a45b2e88eebb02e4a25c401d8515b",
+      "tree": "425caf9de6b2e7c12493e42c62b4365ff06d54a9"
     },
     "status": "pending",
     "lessons": [
@@ -958,8 +958,8 @@
             "kind": "result",
             "label": "Expected result",
             "language": "text",
-            "displayedUtf8Bytes": 225,
-            "displayedSha256": "71b1538fb1fb5fee49fbed7d3b80d04ff38dc8b5899ff2605c12722b3e2d1ef4",
+            "displayedUtf8Bytes": 176,
+            "displayedSha256": "16805a90bb1b729fc15162bdc93cac99e44d6d4cf32484e85f6f7d0a26c4e046",
             "sourcePath": null,
             "sourceCommit": null,
             "sourceSha256": null,

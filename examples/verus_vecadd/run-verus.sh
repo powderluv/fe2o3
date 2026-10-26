@@ -434,4 +434,4 @@ if [ "$failures" -ne 0 ]; then
     printf 'Verus fixture run failed: %s unexpected result(s)\n' "$failures" >&2
     exit 1
 fi
-printf 'Verus fixture run passed: 6 proof harnesses, 26 expected rejections\n'
+printf 'Verus fixture run passed: 7 proof harnesses, 28 expected rejections\n'

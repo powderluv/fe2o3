@@ -295,7 +295,24 @@ class TutorialKernelSourceContractTests(unittest.TestCase):
             ["cpu-semantic-simulation", "reductions-scans", "gemm-tiling", "softmax-invariant"],
         )
         payload = json.dumps(curriculum, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
-        self.assertEqual(hashlib.sha256(payload).hexdigest(), "ceaeacd49df67f52ea62446779c3b2cd4365f311361c646df5dd0ee497000052")
+        self.assertEqual(hashlib.sha256(payload).hexdigest(), "34b1d6e35f3c26f9b0aef61d14f6555de11321912f8a49d91f51dc6e5cda4199")
+
+    def test_historical_verus_result_matches_retained_acb3_counts(self):
+        lesson = self.curriculum_lesson("verus-contracts")
+        self.assertEqual(lesson["role"], "conceptual")
+        self.assertEqual(lesson["variants"], [])
+        tab = lesson["codeTabs"][3]
+        self.assertEqual(tab["kind"], "result")
+        self.assertEqual(tab["sourceItemStatus"], "not-applicable")
+        self.assertIsNone(tab["sourceCommit"])
+        self.assertIsNone(tab["sourceItem"])
+        expected = (
+            "source-model-verified\n\n"
+            "Expected results at acb3d275: 5 verified harnesses and 24 intended proof rejections. "
+            "Verus fixture run passed: 5 proof harnesses, 24 expected rejections."
+        ).encode("utf-8")
+        self.assertEqual(tab["displayedUtf8Bytes"], len(expected))
+        self.assertEqual(tab["displayedSha256"], hashlib.sha256(expected).hexdigest())
 
     def test_public_grouped_expert_moe_display_keeps_physical_identity_and_history(self):
         lesson = self.curriculum_lesson("moe-expert-compute")
