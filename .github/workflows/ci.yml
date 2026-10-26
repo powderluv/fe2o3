@@ -23,7 +23,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
@@ -125,7 +125,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
@@ -143,7 +143,7 @@ jobs:
           cargo -V
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
 
       - name: Prepare external private temporary directory
         shell: bash
@@ -188,7 +188,7 @@ jobs:
 
       - name: Upload failure logs
         if: ${{ failure() || cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: generic-core-${{ matrix.group }}-logs-${{ github.run_attempt }}
           path: ${{ env.CI_LOG_DIR }}/
@@ -208,7 +208,7 @@ jobs:
       FE2O3_STATIC_PROOF_CUSTODIAN_TARGET_DIR: ${{ github.workspace }}/target/ci/native-static
     steps:
       - name: Check out repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Install static build tools
@@ -243,7 +243,7 @@ jobs:
 
       - name: Retain native static CPU diagnostics
         if: ${{ always() && env.NATIVE_STATIC_DIAGNOSTICS != '' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: native-static-cpu-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.NATIVE_STATIC_DIAGNOSTICS }}
@@ -281,7 +281,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
@@ -299,14 +299,14 @@ jobs:
           cargo -V
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
 
       - name: Run target-isolated codegen integration shard
         run: scripts/ci-local.sh rustc-codegen-shard "${{ matrix.shard }}"
 
       - name: Upload failure logs
         if: ${{ failure() || cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: rustc-codegen-${{ matrix.shard }}-logs-${{ github.run_attempt }}
           path: ${{ env.CI_LOG_DIR }}/
@@ -327,7 +327,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Require every generic dependency to succeed
         env:
